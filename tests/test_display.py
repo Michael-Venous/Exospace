@@ -55,13 +55,32 @@ class DisplayServerTests(unittest.TestCase):
         self.addCleanup(self.server.close)
         self.host, self.port = self.server.url.removeprefix("http://").split(":")
 
-    def request(self, method, path, body=None):
+    def request(self, method, path, body=None, **headers):
         conn = http.client.HTTPConnection(self.host, int(self.port), timeout=2)
         self.addCleanup(conn.close)
         conn.request(method, path, json.dumps(body) if body is not None else None,
-                     {"Content-Type": "application/json"})
+                     {"Content-Type": "application/json", **headers})
         response = conn.getresponse()
         return response.status, response.read()
+
+    def test_other_websites_cannot_drive_the_agent(self):
+        evil = {"Origin": "http://evil.example"}
+        self.assertEqual(self.request("POST", "/goal", {"text": "delete everything"}, **evil)[0], 403)
+        self.assertEqual(self.request("POST", "/goal", {"text": "x"}, **{"Content-Type": "text/plain"})[0], 400)
+        same_page = {"Origin": f"http://localhost:{self.port}"}
+        self.assertEqual(self.request("POST", "/goal", {"text": "open mail"}, **same_page)[0], 200)
+        self.assertEqual(self.commands.qsize(), 1)
+
+    def test_dns_rebinding_hosts_are_refused(self):
+        self.bus.set_frame(b"\xff\xd8jpeg")
+        self.assertEqual(self.request("GET", "/screen.jpg", Host=f"evil.example:{self.port}")[0], 403)
+        self.assertEqual(self.request("GET", "/events", Host="evil.example")[0], 403)
+        self.assertEqual(self.request("POST", "/stop", {}, Host="evil.example")[0], 403)
+        self.stop.assert_not_called()
+
+    def test_refuses_to_listen_on_all_interfaces(self):
+        with self.assertRaises(ValueError):
+            DisplayServer(self.bus, self.commands, self.stop, host="0.0.0.0", port=0)
 
     def test_page_is_served(self):
         status, body = self.request("GET", "/")

@@ -9,6 +9,13 @@ POST /stop        cancel whatever is running (same path as barge-in)
 
 The server never touches HID: goals and taps are queued for the main loop,
 which stays the single HID writer.
+
+Any web page in a browser on this machine can reach a localhost port, and this
+server can drive the target computer. So every request must name this server
+in its Host header (blocks DNS rebinding), browser POSTs must come from this
+page's own origin, and POST bodies must be application/json (cross-site pages
+can't send that without a CORS preflight, which this server never approves).
+Local programs without an Origin header (curl, the voice server) are allowed.
 """
 
 from __future__ import annotations
@@ -39,10 +46,15 @@ class Command:
 class DisplayServer:
     def __init__(self, bus: EventBus, commands: queue.Queue[Command],
                  stop: Callable[[str], None], host: str = "127.0.0.1", port: int = 8770) -> None:
+        if host in ("", "0.0.0.0", "::"):
+            raise ValueError("bind the display to a specific address, not all interfaces")
         page = resources.files("brain.display").joinpath("page.html").read_bytes()
         handler = type("Handler", (_Handler,), {"bus": bus, "commands": commands, "stop": staticmethod(stop),
-                                                "page": page})
+                                                "page": page, "hosts": frozenset()})
         self._httpd = ThreadingHTTPServer((host, port), handler)
+        bound = self._httpd.server_address[1]
+        names = {host, "localhost", "127.0.0.1"} if host in ("127.0.0.1", "localhost") else {host}
+        handler.hosts = frozenset(f"{name}:{bound}" for name in names)
         self._httpd.daemon_threads = True
         self._thread = threading.Thread(target=self._httpd.serve_forever, kwargs={"poll_interval": SHUTDOWN_POLL_S},
                                         name="display", daemon=True)
@@ -65,11 +77,14 @@ class _Handler(BaseHTTPRequestHandler):
     commands: queue.Queue[Command]
     stop: Callable[[str], None]
     page: bytes
+    hosts: frozenset[str]  # "host:port" values this server answers to
 
     def log_message(self, format: str, *args: object) -> None:  # keep the REPL readable
         pass
 
     def do_GET(self) -> None:
+        if not self._trusted_host():
+            return
         path = self.path.split("?", 1)[0]
         if path == "/":
             self._reply(200, "text/html; charset=utf-8", self.page)
@@ -85,6 +100,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(404, "text/plain", b"not found")
 
     def do_POST(self) -> None:
+        if not self._trusted_host():
+            return
+        origin = self.headers.get("Origin")
+        if origin is not None and origin.removeprefix("http://") not in self.hosts:
+            self._reply(403, "application/json", b'{"error":"cross-origin request refused"}')
+            return
         try:
             body = self._json_body()
             if self.path == "/goal":
@@ -127,7 +148,15 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             self.bus.unsubscribe(client)
 
+    def _trusted_host(self) -> bool:
+        if self.headers.get("Host") in self.hosts:
+            return True
+        self._reply(403, "text/plain", b"unknown host")
+        return False
+
     def _json_body(self) -> dict[str, object]:
+        if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+            raise ValueError("Content-Type must be application/json")
         length = int(self.headers.get("Content-Length") or 0)
         if not 0 < length <= MAX_BODY:
             raise ValueError("JSON body required")
