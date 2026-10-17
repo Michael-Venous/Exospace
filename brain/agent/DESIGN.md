@@ -142,6 +142,29 @@ use it.)
 running *on* the target, which breaks "nothing installed" and our hardware story. The Voice Control overlay is the
 closest we can get from outside the machine. Test it tonight on the MacBook.
 
+### What to copy from computah (our speed baseline)
+[musubipapi/computah](https://github.com/musubipapi/computah) (MIT) is the fast Mac voice agent the team wants to
+match. It reads the macOS accessibility tree (no screenshots), lets Deepgram Flux handle speech, and asks Jev one
+*choice question* per step. Ideas that carry over even though we only have pixels and keyboard/mouse:
+1. **Ask a fast model to choose, never to write.** Each step is "here are the options, pick one ID," with a
+   `none_here` answer (our escalation) and a probability per option. Code maps the ID back to a real target.
+   **Homemade Jev:** vLLM on the B200 supports constrained choice output (the model can only answer one of the given
+   IDs) plus logprobs, which gives the probability. A small, fast model served this way plays Jev's role.
+2. **Group the screen into choices first.** They don't send the whole tree, just a short list of actionable
+   candidates ("AXButton; label=Done"). Ours: Voice Control badges or OCR boxes, as above.
+3. **First pick the route:** `application` (open an app) / `navigation` (open a URL) / `controls`. Our first two
+   are controller skills, so most requests never need the screen at all.
+4. **Type the user's own words, not the model's.** The model picks *which words* of the transcript are the value
+   (by token position), and code copies them exactly. No retyped or made-up text.
+5. **Never repeat an uncertain action** to see whether it worked. A keystroke over HID can't be undone, so read the
+   screen again and escalate instead.
+6. **A new speech turn revokes permission to send input**, which is our barge-in plus cancel path (§5.6). Key down
+   and key up always stay paired (`release_all`).
+7. **"Sent" is not "done."** Only evidence on the fresh screen counts as success.
+8. **Prepare during speech, act after.** Deepgram's early end-of-turn event lets them read controls and pick an
+   action before the user finishes, with no input sent until the final transcript matches. With push-to-talk, we can
+   prepare from the partial transcript while the button is still held.
+
 ### Reaching the B200s (HiPerGator) from the Pi
 Running a model there is fine, not just training:
 1. Start a Slurm job on the B200 partition that runs vLLM (`vllm serve <model> --port 8000`). Never run it on a login
