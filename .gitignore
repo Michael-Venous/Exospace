@@ -27,3 +27,14 @@ session.json
 session.tmp
 bench/model_calls.jsonl
 work/
+
+# CircuitPython drive (copy of the Pico; only firmware/pico source is tracked)
+boot_out.txt
+settings.toml
+firmware/pico/lib/
+firmware/pico/sd/
+.fseventsd/
+.Trashes
+.Trash-*
+.metadata_never_index
+System Volume Information/
