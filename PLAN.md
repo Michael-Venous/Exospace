@@ -74,9 +74,12 @@ Model output (any space) → **normalized [0,1] within the active screen rect** 
 {"type":"type_text","text":"..."}
 {"type":"hotkey","keys":["CMD","SPACE"]}
 {"type":"skill","name":"open_app","args":{"name":"Notes"}}
+{"type":"skill","name":"wait"}                 // until the screen changes, at most 10 s
 {"type":"scroll","dy":-3}
 {"type":"done"} | {"type":"ask_user","question":"..."} | {"type":"fail","reason":"..."}
 ```
+*(2026-10-17, approved: `wait` added for slow loads and installs; it sends no input, so a still screen after it
+is not a failed verification. Offered to the direct/legacy executors; race gets it once measured end to end.)*
 
 ### 5.4 Device profile (set on every connect)
 ```json

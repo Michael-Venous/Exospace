@@ -19,6 +19,7 @@ for axis in ('x','y','x2','y2'): ACTION_SCHEMA['properties'].pop(axis)
 ACTION_SCHEMA['properties']['type']['enum'].remove('swipe')
 ACTION_SCHEMA['properties']['type']['enum'].remove('done')
 ACTION_SCHEMA['properties']['type']['enum'] += ['hover','drag']
+ACTION_SCHEMA['properties']['name']['enum'].remove('wait')  # not offered to race until measured end to end
 ACTION_SCHEMA['properties']['target']={'type':'string'}
 ACTION_SCHEMA['properties']['destination']={'type':'string'}
 ACTION_SCHEMA['properties']['fallback_x']={'type':'number'}

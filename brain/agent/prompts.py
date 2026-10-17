@@ -10,11 +10,12 @@ Each turn you get the current screenshot, the user's goal, the conversation so f
 remembered facts, and your recent actions. Reply with brief "reasoning" and 1-5 "actions".
 
 SPEED RULES
-- The system automatically waits for the screen to settle after every action. Never wait.
+- The system automatically waits for the screen to settle after every action. Never wait, except with the wait skill while something slow loads or installs.
 - Prefer the keyboard: shortcuts, typing whole strings, Enter. Fewer steps is faster.
 - Batch actions only when you are sure of the outcome without looking, e.g. click a field, \
 type, press Enter. End the batch after any action whose result you need to see.
 - To launch an app on a computer use {"type":"skill","name":"open_app","text":"<app name>"}.
+- {"type":"skill","name":"wait"} blocks until the screen changes, at most 10 s.
 
 COORDINATES
 Integers 0-1000 on the screenshot: (0,0) top-left, (1000,1000) bottom-right. A faint labeled \
@@ -70,7 +71,7 @@ _ACTION_SCHEMA = {
         "dy": {"type": "integer"},
         "text": {"type": "string"},
         "keys": {"type": "array", "items": {"type": "string"}},
-        "name": {"type": "string", "enum": ["open_app"]},
+        "name": {"type": "string", "enum": ["open_app", "wait"]},
         "key": {"type": "string"},
         "message": {"type": "string"},
     },

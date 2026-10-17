@@ -14,6 +14,7 @@ from brain.keys import canonical_combo
 from brain.types import Action, ActionError, DeviceProfile
 
 TYPE_CHUNK = 32  # chars per UART "type" command, so cancel lands quickly
+WAIT_S = 10.0  # longest block of the wait skill
 
 _ASCII_FIXES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."})
 
@@ -126,6 +127,19 @@ class Controller:
             if elapsed >= cfg.timeout_s:
                 return elapsed
             self.cancel.sleep(cfg.poll_s)
+
+    def wait_for_change(self) -> None:
+        """Block until the screen changes (a load or install progressing) or WAIT_S passes."""
+        frame = self.capture.grab()
+        if frame is None:
+            return
+        before = thumbnail(frame)
+        deadline = time.monotonic() + WAIT_S
+        while time.monotonic() < deadline:
+            self.cancel.sleep(self.settle.poll_s)
+            frame = self.capture.grab()
+            if frame is None or frame_change(before, thumbnail(frame)) >= self.settle.threshold:
+                return
 
     def _send(self, cmd: dict[str, object]) -> None:
         self.cancel.check()

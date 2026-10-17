@@ -106,7 +106,7 @@ class Agent:
                             continue
                         stale_discards = 0
                     notes = list(plan.rejected)
-                    changed_input = False
+                    acted = sent_input = False
                     action_failed = bool(plan.rejected)
                     terminal = None
                     for action in plan.actions:
@@ -114,13 +114,13 @@ class Agent:
                         if action.type == "remember":
                             self.memory.remember(action.key, action.value)
                         elif action.type in TERMINAL_ACTIONS:
-                            if action.type == "done" and changed_input:
+                            if action.type == "done" and acted:
                                 notes.append("Verify the result on a fresh screen before returning done.")
                             else:
                                 terminal = action
                             break
                         else:
-                            if changed_input and action.x is not None:
+                            if acted and action.x is not None:
                                 # Aimed at the screen the batch was planned on, e.g. a tapped field
                                 # opened the keyboard over it.
                                 stamp = time.monotonic()
@@ -133,7 +133,9 @@ class Agent:
                             stamp = time.monotonic()
                             try:
                                 ctl.execute(action, profile)
-                                changed_input = True
+                                acted = True
+                                # A wait sends no input, so a still screen after it is no failure.
+                                sent_input = sent_input or not (action.type == "skill" and action.name == "wait")
                                 self._emit_action(step, action, ok=True)
                             except ActionError as exc:
                                 self._emit_action(step, action, ok=False)
@@ -151,7 +153,7 @@ class Agent:
                     acknowledge = getattr(self.executor, "acknowledge", None)
                     if callable(acknowledge):
                         acknowledge(bool(plan.actions) and not action_failed)
-                    if changed_input:
+                    if sent_input:
                         after = ctl.capture.grab()
                         if after is None or is_blank(after):
                             token.cancel("video lost")

@@ -2,6 +2,7 @@
 
 import csv
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -259,6 +260,24 @@ class RuntimeTests(unittest.TestCase):
         result = agent.run("Click it", self.profile)
         self.assertEqual((result.status, result.message), ("cancelled", "target disconnected"))
         resume.assert_not_called()
+
+    def test_waiting_on_a_still_screen_is_not_a_failure(self):
+        self.hid.change = False
+        self.fast.next_actions.side_effect = [Plan("loading", [Action("skill", name="wait")], [])] * 3 + [
+            Plan("loaded", [Action("done", summary="Loaded")], [])]
+        with patch("brain.controller.WAIT_S", 0.01):
+            result = self.agent().run("Wait for the install", self.profile)
+        self.assertEqual(result.status, "done")
+
+    def test_wait_returns_when_the_screen_changes(self):
+        with patch("brain.controller.WAIT_S", 5),                 patch.object(self.cancel, "sleep", side_effect=lambda s: self.capture.frame.fill(200)):
+            started = time.monotonic()
+            self.controller.wait_for_change()
+        self.assertLess(time.monotonic() - started, 1)
+
+    def test_race_is_not_offered_wait_yet(self):
+        from brain.agent.jev_flash import ACTION_SCHEMA
+        self.assertEqual(ACTION_SCHEMA["properties"]["name"]["enum"], ["open_app"])
 
     def test_disconnect_during_detection_keeps_pending_goal(self):
         monitor = SimpleNamespace(connected=True, generation=1)
