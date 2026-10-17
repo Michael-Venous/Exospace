@@ -18,7 +18,6 @@ for axis in ('x','y','x2','y2'): ACTION_SCHEMA['properties'].pop(axis)
 ACTION_SCHEMA['properties']['type']['enum'].remove('swipe')
 ACTION_SCHEMA['properties']['type']['enum'].remove('done')
 ACTION_SCHEMA['properties']['type']['enum'] += ['hover','drag']
-ACTION_SCHEMA['properties']['name']['enum'].remove('wait')  # not offered to race until measured end to end
 ACTION_SCHEMA['properties']['target']={'type':'string'}
 ACTION_SCHEMA['properties']['destination']={'type':'string'}
 ACTION_SCHEMA['properties']['fallback_x']={'type':'number'}
@@ -60,7 +59,8 @@ then click the newly visible submenu item in a separate stage. Drag holds the
 button while moving to destination. These are different actions.
 Other actions: type_text(text), hotkey(keys), scroll(dy: mouse-wheel notches,
 positive down, about 5 per screenful; never pixels),
-skill(name=open_app,text=app), remember(key,text), ask_user(message), fail(message).
+skill(name=open_app,text=app), skill(name=wait) as its own stage while a page, install
+or restart is still loading, remember(key,text), ask_user(message), fail(message).
 No done action is needed: completion is checked after the last stage.
 Typing is literal. NEVER put tabs in text. Each hotkey is ONE simultaneous
 combination, not a sequence. Batch TAB and typing only when focus/tab order are

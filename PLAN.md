@@ -84,7 +84,7 @@ Model output (any space) → **normalized [0,1] within the active screen rect** 
 {"type":"remember","key":"...","value":...}
 {"type":"done"} | {"type":"ask_user","question":"..."} | {"type":"fail","reason":"..."}
 ```
-`wait` is offered to the direct executor only; race gets it once measured end to end.
+`wait` is offered to every executor; race plans it as its own stage (measured: a page that loads for 6 s, 2/2 passed with one click each).
 
 ### 5.4 Device profile (set on every connect)
 ```json

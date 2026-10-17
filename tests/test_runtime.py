@@ -371,9 +371,12 @@ class RuntimeTests(unittest.TestCase):
             self.controller.wait_for_change()
         self.assertLess(time.monotonic() - started, 1)
 
-    def test_race_is_not_offered_wait_yet(self):
-        from brain.agent.jev_flash import ACTION_SCHEMA
-        self.assertEqual(ACTION_SCHEMA["properties"]["name"]["enum"], ["open_app"])
+    def test_race_planner_can_wait(self):
+        from brain.agent.jev_flash import ACTION_SCHEMA, validate_steps
+        self.assertEqual(ACTION_SCHEMA["properties"]["name"]["enum"], ["open_app", "wait"])
+        steps = validate_steps({"completion": "results shown", "steps": [{"ready": "spinner", "expected": "results",
+                                           "actions": [{"type": "skill", "name": "wait"}]}]})
+        self.assertEqual(steps[0]["actions"][0]["name"], "wait")
 
     def direct(self, *replies):
         model = Mock()
