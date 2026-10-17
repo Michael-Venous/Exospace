@@ -32,11 +32,16 @@ class Config:
     jev_timeout_s: float = 20.0
     jev_min_presence: float = 0.85
     jev_min_confidence: float = 0.6
+    zai_api_key: str = ""
+    zai_model: str = "glm-4.6v-flashx"
+    zai_base_url: str = "https://api.z.ai/api/paas/v4"
 
     @classmethod
     def load(cls) -> Config:
         load_dotenv()
         env = os.environ.get
+        executor = env("EXECUTOR") or "race"
+        zai = bool(env("ZAI_API_KEY")) and executor == "direct"
         return cls(
             gemini_api_key=env("GEMINI_API_KEY", ""),
             gemini_model=env("FAST_MODEL", env("GEMINI_MODEL", "gemini-3.8-flash")),
@@ -50,13 +55,18 @@ class Config:
             bench_csv=Path(env("BENCH_CSV", "bench/results.csv")),
             planner_model=env("PLANNER_MODEL", "gemini-4-argon"),
             planner_thinking=env("PLANNER_THINKING", "medium") or None,
-            model_timeout_s=float(env("MODEL_TIMEOUT_S", "30")),
+            # z.ai flashx, 1,299 calls: p99 14 s, and a hung call runs to the timeout. At 12 s
+            # 1.9% retry and a hang costs 12 s, not 30.
+            model_timeout_s=float(env("MODEL_TIMEOUT_S") or ("12" if zai else "30")),
             planner_timeout_s=float(env("PLANNER_TIMEOUT_S", "120")),
             model_log=Path(env("MODEL_LOG", "bench/model_calls.jsonl")),
-            executor=env("EXECUTOR", "race"),
+            executor=executor,
             typesafe_api_key=env("TYPESAFE_API_KEY", ""),
             jev_model=env("JEV_MODEL", "jev-1.14.0"),
             jev_timeout_s=float(env("JEV_TIMEOUT_S", "20")),
             jev_min_presence=float(env("JEV_MIN_PRESENCE", "0.85")),
             jev_min_confidence=float(env("JEV_MIN_CONFIDENCE", "0.6")),
+            zai_api_key=env("ZAI_API_KEY", ""),
+            zai_model=env("ZAI_MODEL", "glm-4.6v-flashx"),
+            zai_base_url=env("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
         )
