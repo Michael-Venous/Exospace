@@ -18,8 +18,12 @@ Two things make this a strong fit:
 2. **One input.** Everything starts from a single button, and assistive switch users already have a button they
    can press (section 3).
 
-**A secondary mode for low vision and blind users:** "read me what's on screen" plus result read-back. Don't lead
-with it, because operating systems ship screen readers and our demo is visual.
+**Second: low vision and blind users.** "Read me what's on screen," full read-back of results (verbosity on), and
+large text on the box's touchscreen. It's second, not first, because operating systems ship screen readers and our
+demo is visual. Our edge is the same: no setup on a device that isn't yours.
+
+**Not targeted:** deaf and hard-of-hearing users can use a keyboard and mouse fine. Still, every spoken line also
+shows up in the on-screen log, so nothing is audio-only.
 **Be honest about the limit:** speech-to-text struggles with dysarthria (slurred speech), so people who can't speak
 clearly aren't served yet. Wording from PLAN.md §11: "designed for limited hand mobility," never "validated."
 
@@ -124,6 +128,13 @@ local OCR finds text boxes → each box becomes an option → Jev picks one with
 is converted to normalized coordinates (§5.2) → a normal `click`. About 0.3 s, with real confidence numbers.
 It can't see icons, so UI-TARS or Gemini handle icon-only screens. Add it as a `config` in `bench/results.csv`
 and let the numbers decide (PLAN.md §8).
+
+### Sensitive data never leaves the Pi unmasked
+Gemini is a cloud model, and frames sent to it can contain passwords, card numbers, SSNs or bank routing numbers.
+Before a frame goes to Gemini, the Pi runs local OCR and blacks out matching boxes: password fields, 9-digit
+SSN-like numbers, 16-digit card-like numbers, and 9-digit routing numbers next to "routing". If a password field has
+focus, the agent asks the user instead of typing it. Frames sent to our own B200 server are a lower risk, but get the
+same masking if it's cheap enough. A good line for judges: "it blurs your SSN before any AI sees it."
 
 ## 7. Interfaces between modules (typed, small)
 ```python
