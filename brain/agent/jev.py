@@ -177,6 +177,7 @@ class JevVision:
         values['route_execute']=float(route.get('choice')=='execute')
         self.last_scores={'route':route.get('choice'),'route_confidence':route.get('confidence')}
         points={}
+        self.last_points={}  # every target's box center, before the presence/confidence gates
         for key in targets:
             a=answers[f'{key}_box']
             self.last_scores[key]={'presence':answers[f'{key}_present'].get('noul'),
@@ -186,14 +187,19 @@ class JevVision:
             # Intent clarity is a routing decision, not another copy of the
             # localization probability cutoff. Keep its score for diagnostics.
             probability(answers[f'{key}_clear'].get('noul'))
-            if min(probability(answers[f'{key}_present'].get('noul')),
-                   probability(answers[f'{key}_unique'].get('noul'))) < self.min_presence \
-                    or probability(a.get('confidence')) < self.min_confidence:
-                points[key]=None
-                continue
-            box=a.get('box',{})
-            left,right,top,bottom=[probability(box.get(k)) for k in ('left','right','top','bottom')]
-            if not left<right or not top<bottom: raise ValueError('Invalid Jev box ordering')
-            x,y=(left+right)/2*pw/w,(top+bottom)/2*ph/h
-            points[key]=(x,y) if 0<=x<=1 and 0<=y<=1 else None
+            gated=min(probability(answers[f'{key}_present'].get('noul')),
+                      probability(answers[f'{key}_unique'].get('noul'))) < self.min_presence \
+                or probability(a.get('confidence')) < self.min_confidence
+            box=a.get('box') or {}
+            try:
+                left,right,top,bottom=[probability(box.get(k)) for k in ('left','right','top','bottom')]
+                ordered=left<right and top<bottom
+            except ValueError:
+                if not gated: raise
+                ordered=False
+            if not ordered and not gated: raise ValueError('Invalid Jev box ordering')
+            x,y=((left+right)/2*pw/w,(top+bottom)/2*ph/h) if ordered else (-1,-1)
+            center=(x,y) if 0<=x<=1 and 0<=y<=1 else None
+            self.last_points[key]=center
+            points[key]=None if gated else center
         return values,points

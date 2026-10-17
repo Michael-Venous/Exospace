@@ -86,7 +86,16 @@ class RaceTests(unittest.TestCase):
             first = self.race.next_actions(b"img", self.ctx("open john's email"))
         self.assertEqual((first.actions[0].type, first.actions[0].x), ("click", .3))
         self.race.acknowledge(True)
+        self.race.jev.completion.return_value = .9
         self.assertEqual(self.race.next_actions(b"img", self.ctx("open john's email")).actions[0].type, "done")
+
+    def test_a_click_that_misses_the_goal_falls_back_to_the_planner(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
+            self.race.next_actions(b"img", self.ctx("close the calculator"))
+        self.race.acknowledge(True)
+        self.race.jev.completion.return_value = .05  # e.g. the neighbouring minimize button
+        result = self.race.next_actions(b"img", self.ctx("close the calculator"))
+        self.assertEqual(result.reasoning, "planned")
 
     def test_click_without_visible_effect_falls_back_to_the_planner(self):
         with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):

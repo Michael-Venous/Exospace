@@ -9,11 +9,16 @@ from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, p
 from brain.agent.jev import JevVision
 from brain.agent.model import language_model
 from brain.agent.prompts import PLAN_SCHEMA
+from brain.agent.triage import GATE as ZOOM_GATE, refine
+from brain.imaging import shrink
 from brain.cancel import CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
 
 ACTION_SCHEMA=deepcopy(PLAN_SCHEMA['properties']['actions']['items'])
+# Jev sees screens up to 4K at full resolution, so its zoom crops keep real pixels on high-res
+# displays; Flash gets a MAX_SIDE copy (measured: a link Jev could not commit to at 1280 px it hit at 2880).
+FULL_SIDE=3840
 for axis in ('x','y','x2','y2'): ACTION_SCHEMA['properties'].pop(axis)
 ACTION_SCHEMA['properties']['type']['enum'].remove('swipe')
 ACTION_SCHEMA['properties']['type']['enum'].remove('done')
@@ -83,7 +88,7 @@ blocks the goal. Ask for missing information.
 Ask before irreversible actions unless specifically authorized. Never enter secrets.
 '''
 POINTER={'click','double_click','right_click','hover','drag','tap'}
-COMPLETION_GATE=0.3  # steps-aware check: finished tasks scored >= 0.55, traps <= 0.04 (bench/arch)
+COMPLETION_GATE=0.5  # steps-aware check: finished tasks scored >= 0.55, traps <= 0.04 (bench/arch); 0.3 passed a visible link (laptop suite)
 
 
 def validate_steps(data, allow_visual_fallback=False):
@@ -128,8 +133,13 @@ def validate_steps(data, allow_visual_fallback=False):
     return steps
 
 
+class PlanError(ValueError):
+    """Flash's plan stayed invalid after one correction."""
+
+
 class JevFlashExecutor:
     image_grid=False
+    image_side=FULL_SIDE
     verifies_stages=True
 
     def __init__(self,cfg:Config,cancel:CancelToken):
@@ -154,6 +164,7 @@ class JevFlashExecutor:
         self.completion=''
         self.last_reason=''
         self._fallback_image=None
+        self._plan_image=None  # the screenshot the current plan was made from
 
     def acknowledge(self,executed:bool):
         # Called only by the single-writer agent after actual execution. A stale
@@ -186,16 +197,19 @@ class JevFlashExecutor:
         else:
             prompt+='\nDo not provide fallback_x or fallback_y: Jev handles grounding for this plan.'
         for attempt in range(2):
-            data=self.model.generate(image,prompt,PROMPT,SCHEMA,role='flash',run_id=ctx.run_id,step=ctx.step)
+            data=self.model.generate(shrink(image),prompt,PROMPT,SCHEMA,role='flash',run_id=ctx.run_id,step=ctx.step)
             self.cancel.check()
             try:
                 self.stages=validate_steps(data,visual_fallback)
                 break
             except ValueError as exc:
-                if attempt: raise
+                if attempt and visual_fallback:  # an unusable fallback reply: plan normally instead
+                    return self._new_plan(image,ctx,reason)
+                if attempt: raise PlanError(f'Flash returned an invalid plan twice: {exc}') from exc
                 prompt+='\nCorrect this invalid plan structure: '+str(exc)
         self.completion=data['completion']
         self.last_reason=str(data.get('reasoning',''))
+        self._plan_image=image
         if self.stages and 'fallback_x' in self.stages[0]['actions'][0]:
             self._fallback_image=image
         ctx.memory.set_subtasks([stage['expected'] for stage in self.stages])
@@ -217,12 +231,21 @@ class JevFlashExecutor:
                     result.append(Action('swipe',x=point[0],y=point[1],x2=end[0],y2=end[1],ms=raw.get('ms',300)))
                     continue
                 raw['x'],raw['y']=point[0]*1000,point[1]*1000
+            if kind=='skill' and not raw.get('text') and raw.get('target'):
+                raw['text']=raw['target']  # Flash often names the app as the skill's target
             parsed=parse_plan({'actions':[raw]})
             if parsed.rejected: raise ValueError('Invalid grounded stage')
             result.extend(parsed.actions)
         return result
 
     def next_actions(self,image:bytes,ctx:StepContext)->Plan:
+        try:
+            return self._next_actions(image,ctx)
+        except PlanError as exc:  # an unusable plan is one failed step: the loop counts it and replans
+            self._reset()
+            return Plan('Plan could not be made',[],[str(exc)])
+
+    def _next_actions(self,image:bytes,ctx:StepContext)->Plan:
         key=(ctx.run_id,ctx.goal,ctx.profile.os,ctx.profile.connected_at)
         if self._key!=key:
             self._key=key
@@ -268,9 +291,15 @@ class JevFlashExecutor:
             if first['type'] in POINTER:
                 targets['target']=first['target']
                 if first['type']=='drag':targets['destination']=first['destination']
+            elif not self.pending and image==self._plan_image:
+                # Nothing to ground or verify yet, on the very screen Flash planned from: a Jev
+                # re-check of "ready" here only adds a flaky veto (0.55 vs 0.97 on one desktop).
+                self.cursor=next_cursor
+                return Plan(f'Stage {self.cursor+1}/{len(self.stages)}: '+stage['expected'],self._ground(stage,{}),[])
             values,points=self.jev.assess(image,checks,targets,run_id=ctx.run_id,step=ctx.step,
                                           proposal=stage['actions'])
             self.cancel.check()
+            points=self._zoom(image,targets,points,ctx)
             mismatch=[name for name,value in values.items() if value<self.jev.min_presence]
             if not mismatch and all(p is not None for p in points.values()):
                 self.pending=False
@@ -288,6 +317,28 @@ class JevFlashExecutor:
                 return Plan('Plan could not be grounded',[],[reason])
         raise AssertionError('unreachable')
 
+    def _zoom(self,image,targets,points,ctx):
+        """Re-aim each target in a zoomed crop, as the direct path does (planner clicks landed
+        inside the target 8/15 times without it, 12/15 with it). A target the full screen scored
+        between ZOOM_GATE and the presence gate gets that one zoomed look before any replan."""
+        scores=getattr(self.jev,'last_scores',None)
+        raw=getattr(self.jev,'last_points',None)
+        scores=scores if isinstance(scores,dict) else {}
+        raw=raw if isinstance(raw,dict) else {}
+        out={}
+        for key,target in targets.items():
+            point=points.get(key)
+            seen=scores.get(key) or {}
+            likely=min(float(seen.get('presence') or 0),float(seen.get('unique') or 0))>=ZOOM_GATE
+            start=point or (raw.get(key) if likely else None)
+            if start is None:
+                out[key]=None
+                continue
+            refined=refine(self.jev,image,target,start,run_id=ctx.run_id,step=ctx.step)
+            self.cancel.check()
+            out[key]=refined or point
+        return out
+
     def classify_os(self,image:bytes)->OSName:
         return detect_os(self.model,image)
 
@@ -298,7 +349,12 @@ class JevFlashExecutor:
 
 def _describe(action:dict)->str:
     """One executed semantic action, as the completion check reads it."""
-    detail=action.get('target') or action.get('text') or '+'.join(action.get('keys') or []) or action.get('name') or ''
+    text=str(action.get('text') or '')
+    if text.endswith('\n'):  # the typed newline presses Enter: say so, or it reads as "typed, not submitted"
+        text=text.rstrip('\n')+' then press Enter'
+    detail=action.get('target') or text or '+'.join(action.get('keys') or []) or action.get('name') or ''
     if action.get('destination'):
         detail+=' -> '+action['destination']
+    if action.get('type')=='scroll':
+        detail=f"{'down' if (action.get('dy') or 0)>0 else 'up'} {abs(action.get('dy') or 0)} notches"
     return f"{action.get('type')} {detail}".strip()

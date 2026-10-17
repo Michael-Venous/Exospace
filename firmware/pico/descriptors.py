@@ -4,6 +4,7 @@ import usb_hid
 
 MOUSE_REPORT_ID = 2
 TOUCH_REPORT_ID = 3
+CERTIFICATION_REPORT_ID = 4
 
 _MOUSE_DESCRIPTOR = bytes((
     0x05, 0x01,        # Usage Page (Generic Desktop)
@@ -78,6 +79,17 @@ _TOUCH_DESCRIPTOR = bytes((
     0x75, 0x08,        #   Report Size (8)
     0x95, 0x01,        #   Report Count (1)
     0x81, 0x02,        #   Input (Data, Variable, Absolute)
+    # Windows touch certification blob (feature only, never sent). Linux's hid-multitouch
+    # exposes the other devices on this interface only for such "Windows 8" touchscreens;
+    # without it the absolute mouse is dropped on Linux and ChromeOS targets.
+    0x06, 0x00, 0xFF,  #   Usage Page (Vendor 0xFF00)
+    0x09, 0xC5,        #   Usage (0xC5)
+    0x85, CERTIFICATION_REPORT_ID,
+    0x15, 0x00,        #   Logical Minimum (0)
+    0x26, 0xFF, 0x00,  #   Logical Maximum (255)
+    0x75, 0x08,        #   Report Size (8)
+    0x96, 0x00, 0x01,  #   Report Count (256)
+    0xB1, 0x02,        #   Feature (Data, Variable, Absolute)
     0xC0,              # End Collection
 ))
 

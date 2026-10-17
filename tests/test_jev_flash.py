@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from pathlib import Path
 import tempfile
 
@@ -28,6 +28,10 @@ class SemanticTests(unittest.TestCase):
         self.executor.model.generate.return_value=self.plan
         self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: ({k:.99 for k in checks},{k:(.25,.75) for k in targets})
         self.executor.jev.completion.return_value=.99
+        self.executor.jev.last_scores={}
+        self.executor.jev.last_points={}
+        zoom=patch('brain.agent.jev_flash.refine',return_value=None)  # zoom keeps each point
+        self.refine=zoom.start();self.addCleanup(zoom.stop)
 
     def test_cached_sequence_calls_flash_once(self):
         for expected in ('click','click','done'):
@@ -155,5 +159,17 @@ class SemanticTests(unittest.TestCase):
         with self.assertRaises(ValueError):validate_steps(fallback)
         validate_steps(fallback,True)
 
+
+    def test_zoom_reaims_targets_and_rescues_near_misses(self):
+        self.refine.return_value=(.3,.7)
+        plan=self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual((plan.actions[0].x,plan.actions[0].y),(.3,.7))
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: ({k:.99 for k in checks},{k:None for k in targets})
+        self.executor.jev.last_scores={'target':{'presence':.6,'unique':.7}}
+        self.executor.jev.last_points={'target':(.4,.4)}
+        self.executor._key=None
+        plan=self.executor.next_actions(b'other',self.ctx)
+        self.assertEqual((plan.actions[0].x,plan.actions[0].y),(.3,.7))
+        self.assertEqual(self.refine.call_args.args[3],(.4,.4))
 
 if __name__=='__main__':unittest.main()

@@ -15,7 +15,7 @@ from brain.capture import active_rect, frame_change, is_blank, thumbnail
 from brain.controller import Controller
 from brain.errors import describe
 from brain.events import EventBus
-from brain.imaging import prepare
+from brain.imaging import MAX_SIDE, prepare
 from brain.telemetry import Telemetry
 from brain.types import Action, ActionError, DeviceProfile, Frame, POINTER_ACTIONS, TERMINAL_ACTIONS
 from brain.verification import visibly_changed
@@ -60,6 +60,7 @@ class Agent:
         unchanged_steps = 0  # consecutive steps whose input left the screen as it was
         recovery_used = False
         attempts: dict[tuple[str, ...], list[np.ndarray]] = {}  # each batch's starting screens
+        settled_s: float | None = None  # how long the last action's settle took; None = settle first
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
         self.on_status("Working on your request…")
@@ -68,11 +69,13 @@ class Agent:
             for step in range(1, self.max_steps + 1):
                 times = dict(t_capture=0.0, t_upload=0.0, t_model=0.0, t_execute=0.0, t_settle=0.0)
                 try:
-                    settled_s = ctl.wait_settled()
-                    times["t_settle"] += settled_s
+                    if settled_s is None:  # otherwise the previous step's last action already settled
+                        settled_s = ctl.wait_settled()
+                        times["t_settle"] += settled_s
                     # A screen still moving at the settle timeout (a live camera preview, a video) differs at
                     # every grab: judging it stale discarded nearly every plan (measured on Android's camera).
                     moving = settled_s >= ctl.settle.timeout_s
+                    settled_s = None
                     stamp = time.monotonic()
                     frame = ctl.capture.grab()
                     if frame is None or is_blank(frame):
@@ -82,7 +85,9 @@ class Agent:
                     times["t_capture"] = time.monotonic() - stamp
                     profile = replace(profile, rect=active_rect(frame))
                     stamp = time.monotonic()
-                    jpeg = prepare(frame, profile.rect, grid=getattr(self.executor, "image_grid", True))
+                    side = getattr(self.executor, "image_side", MAX_SIDE)
+                    jpeg = prepare(frame, profile.rect, grid=getattr(self.executor, "image_grid", True),
+                                   max_side=side if isinstance(side, int) else MAX_SIDE)
                     times["t_upload"] = time.monotonic() - stamp
                     self._show(frame, profile, jpeg)
                     ctx = StepContext(goal, profile, self.memory, history, step,
@@ -150,7 +155,8 @@ class Agent:
                             finally:
                                 times["t_execute"] += time.monotonic() - stamp
                             history.append(action.brief())  # before settling: a restart lands there
-                            times["t_settle"] += ctl.wait_settled()
+                            settled_s = ctl.wait_settled()
+                            times["t_settle"] += settled_s
                     if pending_done is not None:
                         # Check the claim on the new screen now: replanning on a screen that looks unchanged
                         # (a camera shutter) repeated the action (measured: 20+ photos for one).
@@ -216,6 +222,7 @@ class Agent:
                     self.on_status(f"{exc.reason.capitalize()}; waiting for it to come back…")
                     if found := self.reconnect(exc.reason):
                         profile = found
+                    settled_s = None
                     note = "The target restarted, reconnected or blanked; continue from this screen."
                 finally:
                     self.telemetry.step(run_id, profile.os, task_id, step, **times)

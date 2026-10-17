@@ -15,7 +15,7 @@ from brain.agent.factory import build_executor
 from brain.agent.loop import RESUMABLE, Agent
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled, CancelToken
-from brain.capture import Capture, ScreenCapture, V4L2Capture, active_rect
+from brain.capture import Capture, CommandCapture, ScreenCapture, V4L2Capture, active_rect
 from brain.config import Config
 from brain.controller import Controller
 from brain.device import detect_profile
@@ -66,9 +66,12 @@ def main(argv: list[str] | None = None) -> int:
                     parser.error("--backend browser requires --url")
                 capture = hid = BrowserTarget(args.url, headed=args.headed)
             else:
-                capture = ScreenCapture()
+                capture = CommandCapture(cfg.local_capture) if cfg.local_capture else ScreenCapture()
                 cleanup.callback(capture.close)
-                hid = LocalHID(PicoHID(cfg.local_keyboard, cfg.pico_baud) if cfg.local_keyboard else None)
+                if cfg.local_pico:  # the Pico plugged into this machine is all of its input
+                    hid = PicoHID(cfg.local_pico, cfg.pico_baud)
+                else:
+                    hid = LocalHID(PicoHID(cfg.local_keyboard, cfg.pico_baud) if cfg.local_keyboard else None)
             cleanup.callback(hid.close)
             controller = Controller(hid, capture, token)
             cleanup.callback(controller.release_all)

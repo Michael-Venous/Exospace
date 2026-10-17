@@ -13,7 +13,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
 from brain.agent.executor import Plan, StepContext
-from brain.agent.jev_flash import JevFlashExecutor
+from brain.agent.jev_flash import COMPLETION_GATE, JevFlashExecutor
 from brain.agent.triage import answer_to_pending, triage
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
@@ -31,6 +31,7 @@ class _Pending:
 
 class RaceExecutor:
     image_grid = False
+    image_side = JevFlashExecutor.image_side
 
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
         self.planner = JevFlashExecutor(cfg, cancel)
@@ -71,9 +72,9 @@ class RaceExecutor:
                 return self._route(image, ctx, self._utterance, confirmed=True)
             if not self._clicked:
                 return self._direct()
-            if "unchanged" not in (ctx.note or ""):
+            if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):
                 return Plan("Jev direct action done", [Action("done", summary="Done.")], [])
-            self.mode = "plan"  # the click had no visible effect: let the planner recover
+            self.mode = "plan"  # no visible effect, or not the goal (a neighbouring button): the planner recovers
         self._settle_speculation()
         return self.planner.next_actions(image, self._planner_ctx(ctx))
 
@@ -116,6 +117,14 @@ class RaceExecutor:
         if self.mode == "act":
             return self._direct()
         return self.cancel.run(self._plan.result)
+
+    def _goal_met(self, image: bytes, ctx: StepContext) -> bool:
+        """One Jev completion call on the new screen: a changed screen alone is no proof
+        (measured: "close the calculator" minimized it and reported done)."""
+        executed = [f"{self._gesture} on the control for: {self._utterance}"]
+        score = self.cancel.run(lambda: self.jev.completion(image, ctx.goal, executed, run_id=ctx.run_id,
+                                                            step=ctx.step))
+        return score >= COMPLETION_GATE
 
     def _planner_ctx(self, ctx: StepContext) -> StepContext:
         return replace(ctx, goal=self._approved_goal) if self._approved_goal else ctx

@@ -1,7 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from bench.experiments.recipe_experiment import RecipeExecutor, clauses, compile_recipe
 from brain.agent.executor import StepContext
@@ -30,7 +30,8 @@ class RecipeTests(unittest.TestCase):
     def executor(self):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
         ex=object.__new__(RecipeExecutor);ex.cancel=CancelToken();ex.model=Mock();ex.jev=Mock()
-        ex.jev.min_presence=.85;ex.jev.last_scores={};ex.jev.completion.return_value=.99;ex._key=None;ex._hover_context=None;ex._menu_click=False;ex.executed=[];ex._reset()
+        zoom=patch('brain.agent.jev_flash.refine',return_value=None);zoom.start();self.addCleanup(zoom.stop)
+        ex.jev.min_presence=.85;ex.jev.last_scores={};ex.jev.last_points={};ex.jev.completion.return_value=.99;ex._key=None;ex._hover_context=None;ex._menu_click=False;ex.executed=[];ex._reset()
         ex.forbid_llm=True;ex.recipe_admitted=False;ex.recipe_attempted=False
         ex.jev.evaluate.return_value=({'eligibility':{'choice':'literal'}},(100,100),(100,100))
         ex.jev.assess.side_effect=lambda image,checks,targets,**kw:({k:1. for k in checks},{k:(.5,.5) for k in targets})

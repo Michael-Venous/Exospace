@@ -1,7 +1,9 @@
 """Runs once at power-up, before USB starts (boot.py only runs on a hard reset or replug).
 
 Default (GP22 not connected): maintenance mode. The CIRCUITPY drive and serial console
-stay visible so files can be edited, and HID uses report protocol. With the drive and
+stay visible so files can be edited, a second USB serial port takes the same commands as the
+UART (so the computer it is plugged into can drive itself for testing), and HID uses report
+protocol. With the drive and
 console enabled, CircuitPython refuses a boot-protocol keyboard ("Boot device must be
 first"), so maintenance mode never asks for one.
 
@@ -34,4 +36,5 @@ if DEMO_MODE:
         pass
     usb_hid.enable((KEYBOARD, MOUSE, TOUCH), boot_device=1)
 else:
+    usb_cdc.enable(console=True, data=True)  # data: the computer it is plugged into can send commands
     usb_hid.enable((KEYBOARD, MOUSE, TOUCH))

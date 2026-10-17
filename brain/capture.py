@@ -1,14 +1,18 @@
 """Seeing the target: frame sources and frame analysis.
 
-`V4L2Capture` reads the HDMI capture card on the Pi. `ScreenCapture` is the
-development stand-in that captures the machine you're on. Both keep only the
-latest frame in memory, so callers always see a fresh screen.
+`V4L2Capture` reads the HDMI capture card on the Pi. `ScreenCapture` and
+`CommandCapture` are development stand-ins that capture the machine you're on;
+`CommandCapture` runs a screenshot tool, for desktops (Wayland) that mss cannot read.
 """
 
 from __future__ import annotations
 
+import shlex
+import subprocess
+import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Protocol
 
 import cv2
@@ -109,6 +113,33 @@ class ScreenCapture:
 
     def close(self) -> None:
         pass
+
+
+class CommandCapture:
+    """Development stand-in: runs `command` (with `{path}` for the output image) per frame,
+    e.g. `spectacle -b -n -f -o {path}` on KDE Wayland."""
+
+    def __init__(self, command: str) -> None:
+        if "{path}" not in command:
+            raise ValueError("LOCAL_CAPTURE needs {path} where the screenshot is written")
+        self._command = command
+        self._dir = tempfile.TemporaryDirectory(prefix="exospace-capture-")
+        self._lock = threading.Lock()  # one screenshot tool run at a time
+
+    def grab(self) -> Frame | None:
+        path = Path(self._dir.name) / "screen.png"
+        with self._lock:
+            args = [part.replace("{path}", str(path)) for part in shlex.split(self._command)]
+            subprocess.run(args, capture_output=True, timeout=10, check=False)
+            frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            path.unlink(missing_ok=True)
+        return frame
+
+    def signal_present(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        self._dir.cleanup()
 
 
 def is_blank(frame: Frame) -> bool:
