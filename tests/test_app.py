@@ -25,7 +25,7 @@ class RedetectTests(unittest.TestCase):
                     seen.append(self.reconnect("target disconnected").connected_at)
                 return Mock(status="done", message="ok")
 
-        with patch.object(app.Config, "load", return_value=Mock(executor="direct")), \
+        with patch.object(app.Config, "load", return_value=Mock(executor="direct", target_os="")), \
                 patch.object(app, "build_executor"), patch("brain.qemu.QemuTarget"), \
                 patch.object(app, "Controller") as controller, \
                 patch.object(app, "ConnectionMonitor", return_value=monitor), \

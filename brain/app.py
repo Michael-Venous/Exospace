@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+from typing import cast
 from dataclasses import replace
 
 from brain.agent.factory import build_executor
@@ -17,7 +18,7 @@ from brain.device import detect_profile
 from brain.hid import LocalHID, PicoHID
 from brain.monitor import ConnectionMonitor
 from brain.telemetry import Telemetry
-from brain.types import OS_NAMES, DeviceProfile
+from brain.types import OS_NAMES, DeviceProfile, OSName
 
 RECONNECT_S = 180.0  # restarting a PC into firmware setup can take minutes
 
@@ -37,6 +38,9 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.load()
     token = CancelToken()
     status = lambda message: print(message, flush=True)
+    home_os = cast(OSName | None, cfg.target_os or None)
+    if home_os not in (None, *OS_NAMES) or home_os in ("unknown", "bios"):
+        parser.error("TARGET_OS must be one of windows, macos, linux, chromeos, android, ios")
     if not (cfg.zai_api_key or cfg.gemini_api_key):
         status("Set ZAI_API_KEY or GEMINI_API_KEY in the project .env (see .env.example).")
         return 1
@@ -75,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
                 connection keeps its connected_at, which keys executor state (PLAN.md §5.4)."""
                 nonlocal profile
                 try:
-                    found = detect_profile(capture, executor, args.os, cancel=token)
+                    found = detect_profile(capture, executor, args.os, home_os=home_os, cancel=token)
                 except (RuntimeError, ValueError):  # e.g. an unclassifiable boot logo
                     return None  # the model still sees the new screen
                 if profile and not new_connection:
@@ -135,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
                     if not monitor.connected:
                         continue
                     if profile is None or current != generation:
-                        profile = detect_profile(capture, executor, args.os, cancel=token)
+                        profile = detect_profile(capture, executor, args.os, home_os=home_os, cancel=token)
                         if not monitor.connected or monitor.generation != current:
                             profile = None
                             continue

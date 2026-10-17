@@ -21,6 +21,8 @@ class QuickActionTests(unittest.TestCase):
             "launch VS Code": ["skill(open_app {'name': 'VS Code'})"],
             "open settings, then turn on wifi": ["skill(open_app {'name': 'settings'})"],
             "open calculator and type 2+2": ["skill(open_app {'name': 'calculator'})"],
+            "Open a spreadsheet, enter 12 in A1": ["skill(open_app {'name': 'spreadsheet'})"],
+            "open a text editor and type hi": ["skill(open_app {'name': 'text editor'})"],
             "press ctrl c": ["hotkey(CTRL+C)"],
             "press ctrl-shift+t": ["hotkey(CTRL+SHIFT+T)"],
             "press page down": ["hotkey(PAGEDOWN)"],
@@ -37,7 +39,7 @@ class QuickActionTests(unittest.TestCase):
                 self.assertEqual(briefs(goal), expected)
 
     def test_vague_or_compound_goals_go_to_the_model(self):
-        for goal in ("open a new tab", "open up spotify", "open file.txt", "open youtube.com",
+        for goal in ("open a new tab", "open a document", "open an email", "open up spotify", "open file.txt", "open youtube.com",
                      "open the file menu", "open my documents", "open it", "press enter twice",
                      "press the button", "press enter to submit", "press and hold power",
                      "press a b", "type hello", "scroll down to the bottom", "Create the event",

@@ -125,6 +125,19 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "ask_user")
         self.assertIn("fresh screen", self.fast.next_actions.call_args.args[1].note)
 
+    def test_done_after_an_action_is_checked_on_the_new_screen(self):
+        shutter = Plan("shutter", [Action("click", x=0.5, y=0.9), Action("done", summary="Took a photo")], [])
+        self.fast.next_actions.side_effect = [shutter, Plan("ask", [Action("ask_user", question="Again?")], [])]
+        self.fast.missing.return_value = ""
+        self.assertEqual(self.agent(self.fast).run("Take a picture", self.profile).status, "done")
+        self.assertEqual(self.fast.next_actions.call_count, 1)
+        self.assertEqual(self.fast.missing.call_args.args[1].history, ["click(500,900)"])
+
+        self.fast.next_actions.side_effect = [shutter, Plan("ask", [Action("ask_user", question="Again?")], [])]
+        self.fast.missing.return_value = "no photo"
+        self.assertEqual(self.agent(self.fast).run("Take a picture", self.profile).status, "ask_user")
+        self.assertIn("no photo", self.fast.next_actions.call_args.args[1].note)
+
     def test_firmware_profile_is_redetected_once_the_screen_changes_a_lot(self):
         bios = DeviceProfile("bios", Rect(0, 0, 160, 100), "mouse", 1)
         redetect = Mock(return_value=DeviceProfile("windows", Rect(0, 0, 160, 100), "mouse", 2))
@@ -236,6 +249,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(profile.input, "touch")
         self.fast.classify_os.assert_not_called()
 
+    def test_home_os_replaces_every_guess_but_firmware(self):
+        for guess, expected in (("windows", "linux"), ("chromeos", "linux"), ("bios", "bios")):
+            with self.subTest(guess=guess):
+                self.fast.classify_os.return_value = guess
+                self.assertEqual(detect_profile(self.capture, self.fast, home_os="linux", cancel=self.cancel).os,
+                                 expected)
+
     def test_invalid_batch_is_dropped(self):
         for value in (float("nan"), float("inf"), True, -1, 1001, "5"):
             with self.subTest(value=value):
@@ -274,6 +294,14 @@ class RuntimeTests(unittest.TestCase):
         result = self.agent().run("Click the field", self.profile)
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(self.hid.commands, [{"op": "release_all"}])
+
+    def test_a_screen_that_never_settles_still_runs_the_plan(self):
+        frames = iter(range(10**6))  # a live camera preview: every grab differs
+        self.capture.grab = lambda: np.full((100, 160, 3), 60 + next(frames) % 2 * 40, dtype=np.uint8)
+        self.fast.next_actions.side_effect = [Plan("shutter", [Action("click", x=.5, y=.9)], []),
+                                              Plan("ask", [Action("ask_user", question="Again?")], [])]
+        self.assertEqual(self.agent(self.fast).run("Take a picture", self.profile).status, "ask_user")
+        self.assertIn("click", [command["op"] for command in self.hid.commands])
 
     def test_restart_resumes_on_the_new_screen(self):
         def send(command):

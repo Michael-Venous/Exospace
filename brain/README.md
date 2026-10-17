@@ -38,7 +38,7 @@ this prompt yet. `--max-steps` defaults to 30.
 | `monitor.py` | Connection generation and disconnect cancellation |
 | `imaging.py` | Active-screen crops and JPEG preparation |
 | `telemetry.py` | Existing benchmark CSV contract |
-| `device.py` | Screenshot-based OS identification, or explicit `--os` |
+| `device.py` | Screenshot-based OS identification, or explicit `--os` / `TARGET_OS` |
 | `app.py` | Typed requests, corrections, lifecycle cleanup |
 | `agent/model.py` | Bounded Gemini requests and per-model timing log |
 | `agent/jev_flash.py` | Flash semantic actions + Jev visual grounding |

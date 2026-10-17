@@ -71,7 +71,11 @@ class Agent:
             for step in range(1, self.max_steps + 1):
                 times = dict(t_capture=0.0, t_upload=0.0, t_model=0.0, t_execute=0.0, t_settle=0.0)
                 try:
-                    times["t_settle"] += ctl.wait_settled()
+                    settled_s = ctl.wait_settled()
+                    times["t_settle"] += settled_s
+                    # A screen still moving at the settle timeout (a live camera preview, a video) differs at
+                    # every grab: judging it stale discarded nearly every plan (measured on Android's camera).
+                    moving = settled_s >= ctl.settle.timeout_s
                     stamp = time.monotonic()
                     frame = ctl.capture.grab()
                     if frame is None or is_blank(frame):
@@ -106,13 +110,13 @@ class Agent:
                         if latest is None or is_blank(latest):
                             token.cancel("video lost")
                             token.check()
-                        if frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                        if not moving and frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
                             continue
                     notes = list(plan.rejected)
                     acted = sent_input = False
                     action_failed = bool(plan.rejected)
-                    terminal = None
+                    terminal = pending_done = None
                     for action in plan.actions:
                         token.check()
                         if action.type == "remember":
@@ -120,12 +124,12 @@ class Agent:
                             history.append(action.brief())
                         elif action.type in TERMINAL_ACTIONS:
                             if action.type == "done" and acted:
-                                notes.append("Verify the result on a fresh screen before returning done.")
+                                pending_done = action
                             else:
                                 terminal = action
                             break
                         else:
-                            if acted and action.x is not None:  # aimed at the screen the batch was planned on
+                            if acted and action.x is not None and not moving:  # aimed at the screen the batch was planned on
                                 latest = ctl.capture.grab()  # e.g. a tapped field opened the keyboard over it
                                 if latest is None or frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
                                     notes.append("The screen changed mid-batch, so the rest was skipped. "
@@ -145,6 +149,23 @@ class Agent:
                                 times["t_execute"] += time.monotonic() - stamp
                             history.append(action.brief())  # before settling: a restart lands there
                             times["t_settle"] += ctl.wait_settled()
+                    if pending_done is not None:
+                        # Check the claim on the new screen now: replanning on a screen that looks unchanged
+                        # (a camera shutter) repeated the action (measured: 20+ photos for one).
+                        check = getattr(self.executor, "missing", None)
+                        latest = ctl.capture.grab()
+                        if callable(check) and latest is not None and not is_blank(latest):
+                            stamp = time.monotonic()
+                            shown = prepare(latest, profile.rect, grid=getattr(self.executor, "image_grid", True))
+                            missing = check(shown, ctx, pending_done.summary)
+                            times["t_model"] += time.monotonic() - stamp
+                            if missing:
+                                notes.append(f"Not confirmed done: {missing}. Finish it; never repeat a send, "
+                                             "purchase, deletion or photo.")
+                            else:
+                                terminal = pending_done
+                        else:
+                            notes.append("Verify the result on a fresh screen before returning done.")
                     if terminal is not None:
                         status = terminal.type
                         message = terminal.summary or terminal.question or terminal.reason or status

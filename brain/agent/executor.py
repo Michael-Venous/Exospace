@@ -84,17 +84,18 @@ class ModelExecutor:
         first = next((action for action in plan.actions if action.type != "remember"), None)
         # GLM claims done from its own history; once it has acted, the screen must show it.
         if first is not None and first.type == "done" and ctx.history:
-            missing = self._missing(image_jpeg, ctx, first.summary)
+            missing = self.missing(image_jpeg, ctx, first.summary)
             if missing:
                 return replace(plan, actions=[a for a in plan.actions if a.type == "remember"], rejected=[
                     f"Not confirmed done: {missing}. Finish it or bring the result into view; "
                     "never repeat a send, purchase or deletion."])
         return plan
 
-    def _missing(self, image_jpeg: bytes, ctx: StepContext, claim: str) -> str:
+    def missing(self, image_jpeg: bytes, ctx: StepContext, claim: str) -> str:
+        """What the screen does not yet show of the goal, or "" when the claim holds."""
         prompt = DONE_TEMPLATE.format(goal=ctx.goal, os=ctx.profile.os, os_hint=OS_HINTS.get(ctx.profile.os, ""),
                                       facts=json.dumps(ctx.memory.facts) if ctx.memory.facts else "(none)",
-                                      claim=claim)
+                                      history=_lines(ctx.history[-5:]), claim=claim)
         data = self.model.generate(image_jpeg, prompt, DONE_PROMPT, DONE_SCHEMA,
                                    role="check", run_id=ctx.run_id, step=ctx.step)
         return "" if data.get("complete") is True else str(data.get("missing") or "not shown on screen")

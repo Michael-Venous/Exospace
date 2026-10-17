@@ -40,7 +40,8 @@ ACTIONS
 types or changes the screen.
 - done: message. Only when the current screenshot itself shows the whole goal achieved \
 (e.g. every field visibly holds its value); include any requested information. A question \
-about the screen can be answered at once.
+about the screen can be answered at once. An action whose effect leaves the screen as it was \
+(a camera shutter) is done once performed: never repeat it; return it and done in one batch.
 - ask_user: message. You need information or confirmation. Always ask before deleting, \
 purchasing, sending messages, or anything irreversible.
 - fail: message. The goal is impossible or blocked.
@@ -77,9 +78,12 @@ Your recent actions:
 {history}
 Note: {note}"""
 
-# Without this, GLM clicked dock icons and on-screen calculator keys (measured on a Linux desktop).
+# Without this, GLM clicked dock icons and on-screen calculator keys, and clicked between cells mid-entry
+# (measured on a Linux desktop: A1 held "1230").
 _COMPUTER = (" Start apps with open_app and the goal's words for the app (e.g. \"text editor\"), never by "
-             "icons. In apps type rather than click keys: a whole sum at once, e.g. [type 12*34, ENTER].")
+             "icons. In apps type rather than click keys: a whole sum at once, e.g. [type 12*34, ENTER]. "
+             "Spreadsheets: end every cell entry with ENTER, which moves down a cell (a click while typing "
+             "puts the text in the wrong cell), e.g. [click A1, type 12, ENTER, type 30, ENTER].")
 # Keyboard conventions for the Device line; GUI is the Windows/Command/Search key.
 OS_HINTS = {
     "windows": "CTRL shortcuts; GUI opens Start search." + _COMPUTER,
@@ -115,12 +119,16 @@ OS_PROMPT = (
 DONE_PROMPT = """You check another agent's claim that it finished a goal on a device. Judge \
 from the screenshot, not the claim: is every part of the goal visibly achieved and kept (saved, \
 applied or sent; each value as requested)? A notice of unsaved changes, such as 'Configuration \
-changed' or a '*' by a document name, means it is not kept. Stored facts count as remembered. If not, say \
+changed' or a '*' by a document name, means it is not kept; an error value (Err:522, #REF!) or a missing value means not done. Stored facts count as remembered. A step \
+whose effect leaves no visible trace (a camera shutter) counts as done only if the recent actions include \
+the tap or key that performs it, after the app opened; opening the app performs nothing. If not, say \
 briefly what is missing."""
 
 DONE_TEMPLATE = """Goal: {goal}
 Device: {os}. {os_hint}
 Stored facts: {facts}
+Recent actions:
+{history}
 Claim: {claim}"""
 
 DONE_SCHEMA = {

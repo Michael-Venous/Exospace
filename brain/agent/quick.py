@@ -26,6 +26,9 @@ _NOT_APP = frozenset(
     "latest one them his her their your our another from with in on to for of at by menu tab window "
     "folder file page dialog link email message document url website site result results "
     "attachment history profile".split())
+# "open a/an X" names a kind of app only for these; "open a new tab" stays with the model.
+_APP_KINDS = frozenset({"spreadsheet", "text editor", "word processor", "calculator", "camera", "browser",
+                        "web browser", "terminal", "file manager"})
 
 
 def quick_actions(goal: str, os: OSName) -> list[Action]:
@@ -53,6 +56,8 @@ def quick_actions(goal: str, os: OSName) -> list[Action]:
 def _clause(text: str, os: OSName) -> tuple[Action | None, int]:
     if match := _OPEN.match(text):
         words = match[1].split()
+        if words[0].lower() in ("a", "an") and " ".join(words[1:]).lower() in _APP_KINDS:
+            words = words[1:]
         if os in OPEN_APP_KEYS and len(words) <= 3 and not _NOT_APP & {w.lower() for w in words}:
             return Action("skill", name="open_app", args={"name": " ".join(words)}), match.end()
     elif match := _PRESS.match(text):
