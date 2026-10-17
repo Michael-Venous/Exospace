@@ -94,6 +94,25 @@ can't break the agent.
 {"ev":"device","profile":{"os":"macos","rect":[0,0,1920,1080],"input":"mouse","connected_at":0}}
 ```
 
+## 5b. Touch display (Pi Touch Display 2, 10.1")
+**Main screen:** live capture image, recent history (action + result), a big STOP (same cancel as barge-in),
+saved-task buttons and the listening orb (`brain/voice/`). **Debug drawer:** Jev's action plus
+present / unique / clear / box confidence against the pass marks.
+
+**A tap is a point on the target's screen:** subtract letterboxing, divide by the image size → 0–1 coordinates
+(§5.2), the same format as Jev's box.
+- **"Click this" / "open this":** goes straight to the Pico at the point. No model call.
+- **Point and speak ("delete this"):** the tap says *which object*, not *how*. The loop draws a marker at the tap
+  and sends the screenshot + device to Flash, which picks the method for this app (Finder `Cmd+Backspace`, a row's
+  ✕, Android swipe, right-click → Delete) and plans stages as usual. Jev still grounds each stage ("the ✕ in the
+  row at the marker") and verifies it. Confirm dialogs are just another stage, and destructive steps ask the user
+  first.
+- **Unsure how this app does it:** reveal before committing. Right-click, hover and long-press only show options;
+  Jev checks for a Delete option, then the plan clicks it or presses Escape and tries the next method.
+- **Remember what worked** per app and device ("Finder delete = Cmd+Backspace") and replay it next time with no
+  Flash call.
+- **Teach by dragging:** if Jev's box is wrong, dragging it to the right control saves that point for this screen.
+
 ## 6. Orchestration (built: see PLAN.md §13 and HANDOFF.md)
 **Jev 1.14 + Gemini 3.8 Flash, hosted APIs, B200 deferred.** In `brain/agent/jev_flash.py`:
 - Flash plans **cached stages** from the screenshot. Each stage has a `ready` condition, an `expected` result and
