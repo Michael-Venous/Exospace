@@ -38,7 +38,8 @@ class HID(Protocol):
 
 class PicoHID:
     def __init__(self, port: str, baud: int) -> None:
-        self._serial = serial.Serial(port, baud, timeout=0.1)
+        # A second opener (e.g. a voice demo) would steal replies and break both; make it fail clearly.
+        self._serial = serial.Serial(port, baud, timeout=0.1, exclusive=True)
         self._ids = itertools.count(1)
         self._write_lock = threading.Lock()
         self._pending: dict[int, tuple[threading.Event, dict[str, Any]]] = {}
