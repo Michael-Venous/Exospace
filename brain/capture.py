@@ -57,7 +57,13 @@ class V4L2Capture:
 
     def _read_loop(self) -> None:
         while self._running:
-            ok, frame = self._cap.read()
+            try:
+                ok, frame = self._cap.read()
+            except cv2.error:
+                # Some cards (the Monster/UltraSemi one: 3 of 40 frames right after opening) send an
+                # empty MJPG frame, which OpenCV raises on instead of returning False. Uncaught, it
+                # would end this thread and leave the agent with no video for the rest of the run.
+                ok, frame = False, None
             if not ok:
                 time.sleep(0.01)
                 continue
