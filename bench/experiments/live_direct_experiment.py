@@ -2,7 +2,7 @@
 from copy import deepcopy
 from brain.agent.executor import Plan, context_prompt, parse_plan
 from brain.agent.prompts import SYSTEM_PROMPT, PLAN_SCHEMA
-from brain.agent.live_experiment import LiveJSON
+from bench.experiments.live_experiment import LiveJSON
 from brain.types import Action
 
 SCHEMA=deepcopy(PLAN_SCHEMA)

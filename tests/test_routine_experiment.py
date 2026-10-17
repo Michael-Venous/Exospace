@@ -1,5 +1,5 @@
 import unittest
-from brain.agent.routine_experiment import RoutineExecutor
+from bench.experiments.routine_experiment import RoutineExecutor
 import tests.test_recipe_experiment as recipe_tests
 
 

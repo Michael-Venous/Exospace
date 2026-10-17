@@ -16,8 +16,8 @@ from brain.agent.jev import JevVision, probability
 from brain.browser import BrowserTarget
 from brain.cancel import CancelToken
 from brain.config import Config
-from brain.routing_benchmark import LEVELS, questions
-from brain.routing_cases import screen
+from bench.experiments.routing_benchmark import LEVELS, questions
+from bench.experiments.routing_cases import screen
 
 GATE={'max_complexity_exclusive':1.5,'min_complexity_confidence':.95,
       'min_basic_probability':.98,'min_basic_confidence':.95}

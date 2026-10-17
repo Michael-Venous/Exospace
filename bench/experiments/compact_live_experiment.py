@@ -2,9 +2,9 @@
 import json
 from brain.agent.executor import Plan, context_prompt
 from brain.agent.jev import probability
-from brain.agent.live_experiment import LiveJSON
-from brain.agent.recipe_experiment import compile_recipe
-from brain.agent.routine_experiment import RoutineExecutor
+from bench.experiments.live_experiment import LiveJSON
+from bench.experiments.recipe_experiment import compile_recipe
+from bench.experiments.routine_experiment import RoutineExecutor
 from brain.types import Action
 
 SCHEMA={'type':'object','properties':{

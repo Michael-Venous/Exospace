@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
-from brain.agent.refined_routine_experiment import RefinedRoutineExecutor
+from bench.experiments.refined_routine_experiment import RefinedRoutineExecutor
 
 
 class RefineTests(unittest.TestCase):

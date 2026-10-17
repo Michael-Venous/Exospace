@@ -1,6 +1,6 @@
 """Experimental stepwise Jev routines with a verified execution ledger."""
 from brain.agent.executor import Plan
-from brain.agent.recipe_experiment import RecipeExecutor, compile_recipe
+from bench.experiments.recipe_experiment import RecipeExecutor, compile_recipe
 from brain.types import Action
 
 

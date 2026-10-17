@@ -20,7 +20,7 @@ from brain.agent.model import GeminiJSON
 from brain.browser import BrowserTarget
 from brain.cancel import CancelToken
 from brain.config import Config
-from brain.routing_cases import make_cases
+from bench.experiments.routing_cases import make_cases
 
 MODELS = {"lite": ("gemini-3.5-flash-lite", "low"),
           "flash": ("gemini-3.8-flash", "low"),

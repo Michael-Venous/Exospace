@@ -2,8 +2,8 @@ import unittest
 from concurrent.futures import Future
 from unittest.mock import Mock, patch
 
-from brain.agent.live_direct_experiment import LiveDirectExecutor
-from brain.agent.prefix_experiment import PrefixExecutor
+from bench.experiments.live_direct_experiment import LiveDirectExecutor
+from bench.experiments.prefix_experiment import PrefixExecutor
 from brain.agent.jev_flash import JevFlashExecutor
 import tests.test_recipe_experiment as fixtures
 
@@ -37,7 +37,7 @@ class ProtocolTests(unittest.TestCase):
         source,ctx=self.context();ex=object.__new__(PrefixExecutor);ex.__dict__.update(source.__dict__)
         ex.future_key=('old goal',);ex.future=Future();future=ex.future
         # Prevent starting a new background request; only test old plan invalidation.
-        with patch('brain.agent.prefix_experiment.clauses',return_value=None),patch.object(JevFlashExecutor,'next_actions',return_value='fresh'):
+        with patch('bench.experiments.prefix_experiment.clauses',return_value=None),patch.object(JevFlashExecutor,'next_actions',return_value='fresh'):
             self.assertEqual(ex.next_actions(b'image',ctx),'fresh')
         self.assertTrue(future.cancelled());self.assertIsNone(ex.future)
 

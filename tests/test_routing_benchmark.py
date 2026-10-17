@@ -9,8 +9,8 @@ import re
 import tempfile
 import unittest
 
-from brain.routing_benchmark import correct, freeze, route
-from brain.routing_cases import make_cases
+from bench.experiments.routing_benchmark import correct, freeze, route
+from bench.experiments.routing_cases import make_cases
 
 
 class Table(HTMLParser):

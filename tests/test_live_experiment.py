@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from brain.agent.live_experiment import LiveJSON
+from bench.experiments.live_experiment import LiveJSON
 
 
 class Session:

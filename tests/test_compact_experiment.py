@@ -1,5 +1,5 @@
 import unittest
-from brain.agent.compact_live_experiment import command_recipe
+from bench.experiments.compact_live_experiment import command_recipe
 
 
 class CompactTests(unittest.TestCase):

@@ -4,7 +4,7 @@ import threading
 import time
 import unittest
 
-from bench.arch.arbiter import Arbiter, Proposal, Verdict
+from brain.arbiter import Arbiter, Proposal, Verdict
 from brain.types import Action
 
 CLICK = (Action("click", x=0.5, y=0.5),)

@@ -25,7 +25,7 @@ from google import genai
 from google.genai import types
 import httpx
 
-from brain.agent.live_experiment import LiveJSON
+from bench.experiments.live_experiment import LiveJSON
 from brain.cancel import CancelToken
 from brain.config import Config
 

@@ -176,12 +176,12 @@ for generated plans, then native/device validation. The 90% request-coverage goa
 has not been established.
 
 Implementation/evidence:
-- `brain/execution_benchmark.py`: opt-in variants; sources/manifests frozen per study;
+- `bench/experiments/execution_benchmark.py`: opt-in variants; sources/manifests frozen per study;
   `--only-pending-from` preserves completed rows after harness repair.
-- `brain/agent/*_experiment.py`: literal compiler, routine/target refinement,
+- `bench/experiments/*_experiment.py`: literal compiler, routine/target refinement,
   Live session transport, direct/compact Live, narrow coordinate recovery, prefix
   overlap. `brain/agent/factory.py` and `.env` were not changed.
-- `brain/execution_report.py`: independent-oracle summaries and hover-compliance
+- `bench/experiments/execution_report.py`: independent-oracle summaries and hover-compliance
   adjudication. `bench/results.csv` has shared-schema timing rows; its success
   column retains runtime semantics, while exported JSON/CSV use the independent oracle.
 - `work/execution-comparison-v1/`, `work/execution-comparison-v2/` plus
@@ -291,7 +291,7 @@ this session; preserve it and other contributors' work.
 
 ### Measured model/routing comparison
 
-`brain/routing_benchmark.py` freezes a hashed 36-case manifest, with different
+`bench/experiments/routing_benchmark.py` freezes a hashed 36-case manifest, with different
 calibration and held-out task families. Calibration used one call/model/case;
 held-out used two repeats. Models saw screenshots and requests only. Exact
 oracles were independently checked with dynamic programming, Decimal, and datetime.
@@ -320,7 +320,7 @@ No confidence/localization threshold or shared §5 contract was relaxed.
 
 ### Full short workflows and fixes
 
-`brain/sequence_benchmark.py` runs real Jev + Gemini plans through screenshot-only
+`bench/experiments/sequence_benchmark.py` runs real Jev + Gemini plans through screenshot-only
 browser input. Post-run DOM checks are independent. The URL fixture is a local
 form; it is NOT Chrome's native address bar or the actual YouTube site.
 
@@ -360,7 +360,7 @@ https://ai.google.dev/gemini-api/docs/live-api/capabilities . It accepts images,
 text/audio/video and supports function calls; strict structured outputs are not
 supported. Response modality is audio; text is available via transcription.
 
-`brain/live_probe.py` now tests an inert screenshot-reading function, without a
+`bench/experiments/live_probe.py` now tests an inert screenshot-reading function, without a
 microphone, audio playback or HID. Initial separate video-frame + immediate text
 turn approach failed 3/3 (`work/live-probe-v1/`); do not attribute that alone to
 model vision capability. Sending image + text in ONE client-content turn passed
@@ -431,8 +431,8 @@ No broad production success-rate or speed comparison against KaiVM is establishe
 
 Run locally:
 ```sh
-BROWSER_EXECUTABLE=/opt/google/chrome/chrome .venv/bin/python -m brain.local_scenarios --case all
-BROWSER_EXECUTABLE=/opt/google/chrome/chrome .venv/bin/python -m brain.local_benchmark --runs 3
+BROWSER_EXECUTABLE=/opt/google/chrome/chrome .venv/bin/python -m bench.experiments.local_scenarios --case all
+BROWSER_EXECUTABLE=/opt/google/chrome/chrome .venv/bin/python -m bench.experiments.local_benchmark --runs 3
 ```
 Playwright Chromium is also installed, so the executable override is optional.
 `python -m brain --backend browser --url URL --os linux --headed` provides typed
@@ -493,7 +493,7 @@ Jev weights, and its vision backend is on its roadmap.
   returned after input in the same batch is deferred until a fresh-screen verification.
 - `brain/app.py`, `brain/__main__.py`: typed-goal REPL, local/Pi backends, OS override,
   Ctrl+C interruption, correction continuation, `/new GOAL`, target re-detection.
-- `brain/probe.py`: opt-in synthetic-image model-access/complete-response latency
+- `bench/experiments/probe.py`: opt-in synthetic-image model-access/complete-response latency
   probe. No desktop capture or HID. No live probe has been run.
 - Fixed `CancelToken.run` swallowing worker TimeoutError indefinitely. Queued
   abandoned calls are canceled; already-running requests may finish remotely.
@@ -526,7 +526,7 @@ no request. Tests use synthetic video/recording HID/mocked model calls, not hard
 1. **Credentials:** no GEMINI_API_KEY in the local environment or project .env,
    and none in the inspected Pi login environment. Asked user for the path to an
    existing key file, not the secret itself; no response yet. Configure privately,
-   then run `.venv/bin/python -m brain.probe --runs 3` on Pi. Compare with
+   then run `.venv/bin/python -m bench.experiments.probe --runs 3` on Pi. Compare with
    `FAST_MODEL=gemini-3.8-flash` and representative GUI tasks; synthetic probes
    measure request latency only.
 2. **Hardware:** no capture card/Pico observed. Pi `/dev/video19`–`35` names are
@@ -624,7 +624,7 @@ All 77 tests pass (`.venv/bin/python -m unittest discover -s tests`). No secrets
 2. ✅ **Fixed.** **Animated screens can stall the agent** (`brain/agent/loop.py:83`). If the screen changes while the model is thinking, the actions are discarded and the step restarts. On a screen that never stops changing (a playing video, a spinner, an animated ad), every step is discarded until `max_steps` runs out, at roughly 2.5 s of settle timeout plus a model call each time. Fix: after 1–2 discards in a row, act anyway, or compare only the region around the target.
 3. ✅ **Fixed.** **A typed goal can be silently dropped** (`brain/app.py:88-94`). If the target disconnects during `detect_profile`, the code calls `continue`, which discards the goal and goes back to the prompt. Fix: keep the goal and retry once the target reconnects.
 4. ✅ **Fixed.** **Errors are unreadable when debugging.** `loop.py:154` and `app.py:109` replace every exception with a generic message, and no traceback is logged anywhere. Hardware errors (`HIDError`, a capture card that won't open, a bad serial port) contain no secrets but are hidden too. Fix: print `str(exc)` for local errors (HID, capture, serial, `OSError`), and write tracebacks to a log file under `work/`.
-5. **Experiment code is mixed into the runtime package.** `brain/agent/*_experiment.py` and `brain/*_benchmark.py` sit in the shipped package. CLAUDE.md says code quality is judged and to avoid dead code. Move experiments to `bench/` or delete them before submission, so `brain/` holds only the runtime.
+5. **Experiment code is mixed into the runtime package.** `bench/experiments/*_experiment.py` and `brain/*_benchmark.py` sit in the shipped package. CLAUDE.md says code quality is judged and to avoid dead code. Move experiments to `bench/` or delete them before submission, so `brain/` holds only the runtime.
 6. **`jev_flash.py` style doesn't match the rest of the codebase.** It uses dense one-liners, no spaces after commas, missing type hints, and imports inside functions. The AI-track judges read the code, so run `ruff format` and add types.
 7. **Most work is uncommitted.** The only commit is `f45eeb2`; many modified and untracked files exist only on this laptop. Commit to a branch (e.g. `agent/prototype`) so work isn't lost and teammates can pull it.
 8. **Low priority:** `jev_flash.py:249` checks whether the fallback screenshot changed by comparing JPEG bytes for exact equality. Real capture-card frames are never byte-identical, so the check always reports "changed." That currently only triggers after a discarded step, where replanning is correct anyway, but compare thumbnails if it's ever used elsewhere.

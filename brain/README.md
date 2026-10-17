@@ -40,14 +40,22 @@ resume on reconnect are not implemented yet. `--max-steps` defaults to 30.
 | `device.py` | Screenshot-based OS identification, or explicit `--os` |
 | `app.py` | Typed requests, corrections, lifecycle cleanup |
 | `agent/model.py` | Bounded Gemini requests and per-model timing log |
-| `agent/jev_flash.py` | Flash semantic actions + Jev visual grounding |
+| `agent/race.py` | Default executor: Jev triage races the planner; irreversible requests need approval |
+| `agent/triage.py` | One Jev call: act / plan / no action, target box, irreversible flag; zoom refinement |
+| `agent/jev_flash.py` | Planner: Flash semantic stages + Jev grounding; steps-aware completion check |
+| `arbiter.py` | Commit gate for the pipelined voice layer (PLAN.md §14) |
 | `agent/jev.py` | Image normalization, bounded HTTP transport, presence/uniqueness gates |
 | `browser.py` | Isolated screenshot/input development backend |
 | `agent/loop.py` | Single HID writer, verification, recovery and memory |
 
 ## Models and latency
 
-Current default: **Jev 1.14 + Gemini 3.8 Flash**, selected by `EXECUTOR=jev-flash`.
+Current default: **race** (`EXECUTOR=race`): Jev triage and the Jev + Flash planner start
+together on every request; a confident Jev click or "no action" wins, otherwise the planner's result is
+used. Completion is one Jev call on goal + executed steps + screen. Evidence and numbers:
+[`bench/arch/README.md`](../bench/arch/README.md). `EXECUTOR=jev-flash` runs the planner alone.
+
+Planner details (the race executor's plan path):
 Set `GEMINI_API_KEY` and `TYPESAFE_API_KEY` in the ignored `.env`. Flash chooses
 semantic actions and writes content; Jev supplies pointer locations from the
 same screenshot. There is no separate fast/slow language-model routing in this
@@ -92,8 +100,8 @@ this Wayland laptop without controlling the user's desktop or logged-in browser.
 ```sh
 .venv/bin/python -m pip install -e '.[browser]'
 .venv/bin/python -m playwright install chromium
-.venv/bin/python -m brain.local_benchmark --runs 3
-.venv/bin/python -m brain.local_scenarios --case all
+.venv/bin/python -m bench.experiments.local_benchmark --runs 3
+.venv/bin/python -m bench.experiments.local_scenarios --case all
 .venv/bin/python -m brain --backend browser --url file:///absolute/path/to/test.html --os linux --headed
 ```
 
@@ -118,22 +126,22 @@ A small opt-in probe sends only a synthetic image and measures complete JSON
 response latency, not GUI task success or time to first token:
 
 ```sh
-.venv/bin/python -m brain.probe --runs 3
-FAST_MODEL=gemini-3.8-flash .venv/bin/python -m brain.probe --runs 3
+.venv/bin/python -m bench.experiments.probe --runs 3
+FAST_MODEL=gemini-3.8-flash .venv/bin/python -m bench.experiments.probe --runs 3
 ```
 
 Two opt-in comparisons use real API calls and independent exact-answer oracles:
 
 ```sh
 # Separate task families for calibration and held-out evaluation. Preserve this order.
-.venv/bin/python -m brain.routing_benchmark prepare
-.venv/bin/python -m brain.routing_benchmark jev
-.venv/bin/python -m brain.routing_benchmark calibration
-.venv/bin/python -m brain.routing_benchmark freeze
-.venv/bin/python -m brain.routing_benchmark heldout
-.venv/bin/python -m brain.routing_benchmark report
+.venv/bin/python -m bench.experiments.routing_benchmark prepare
+.venv/bin/python -m bench.experiments.routing_benchmark jev
+.venv/bin/python -m bench.experiments.routing_benchmark calibration
+.venv/bin/python -m bench.experiments.routing_benchmark freeze
+.venv/bin/python -m bench.experiments.routing_benchmark heldout
+.venv/bin/python -m bench.experiments.routing_benchmark report
 # Full short workflows: successive clicks, literal URL typing, and three fields.
-.venv/bin/python -m brain.sequence_benchmark --repeats 3 --output work/sequence-comparison-v2
+.venv/bin/python -m bench.experiments.sequence_benchmark --repeats 3 --output work/sequence-comparison-v2
 ```
 
 The routing study freezes a hashed 36-task manifest before API calls and fits
@@ -158,7 +166,7 @@ typed request, then validates an inert function call. It does not control the
 device, record a microphone, or play audio:
 
 ```sh
-.venv/bin/python -m brain.live_probe --runs 3 --output work/live-probe-new
+.venv/bin/python -m bench.experiments.live_probe --runs 3 --output work/live-probe-new
 ```
 
 Verified on 2026-10-17: `gemini-3.8-live` returned the exact code in 3/3 function
@@ -262,7 +270,7 @@ Sources:
 
 ### Execution architecture experiments (2026-10-17)
 
-`brain.execution_benchmark` compares isolated screenshot-only browser workflows
+`bench.experiments.execution_benchmark` compares isolated screenshot-only browser workflows
 with exact post-run DOM oracles. Experimental executors do not change the active
 factory or `.env`. The same controller, settling and cancellation path are used.
 All API inputs are synthetic screenshots and task text. Direct Live uses the
@@ -270,10 +278,10 @@ existing coordinate grid; Jev variants ground semantic targets without it.
 
 ```bash
 # Prove supported routines finish without any LLM fallback:
-.venv/bin/python -m brain.execution_benchmark --output work/my-no-llm-test --repeats 2 --modes routine-refined --cases two_clicks type_url three_fields double_click hover_menu drag --no-llm
+.venv/bin/python -m bench.experiments.execution_benchmark --output work/my-no-llm-test --repeats 2 --modes routine-refined --cases two_clicks type_url three_fields double_click hover_menu drag --no-llm
 
 # Compare direct Live, compact Live commands and Jev with narrow Live grounding:
-.venv/bin/python -m brain.execution_benchmark --output work/my-executor-test --repeats 2 --modes live-direct-v2 live-compact jev-live-ground --cases two_clicks type_url three_fields hover_menu drag ambiguous
+.venv/bin/python -m bench.experiments.execution_benchmark --output work/my-executor-test --repeats 2 --modes live-direct-v2 live-compact jev-live-ground --cases two_clicks type_url three_fields hover_menu drag ambiguous
 ```
 
 Every study freezes source files and a manifest. Use a fresh output directory for

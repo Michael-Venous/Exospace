@@ -2,8 +2,8 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import Mock,patch
-from brain.agent.live_grounding_experiment import LiveGroundedRoutine
-from brain.agent.refined_routine_experiment import RefinedRoutineExecutor
+from bench.experiments.live_grounding_experiment import LiveGroundedRoutine
+from bench.experiments.refined_routine_experiment import RefinedRoutineExecutor
 from brain.cancel import CancelToken
 
 

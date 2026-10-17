@@ -1,8 +1,8 @@
 """Narrow Live coordinate fallback for otherwise unambiguous Jev routines."""
 import json
 import math
-from brain.agent.live_experiment import LiveJSON
-from brain.agent.refined_routine_experiment import RefinedRoutineExecutor
+from bench.experiments.live_experiment import LiveJSON
+from bench.experiments.refined_routine_experiment import RefinedRoutineExecutor
 
 SCHEMA={'type':'object','properties':{axis:{'type':'number','minimum':0,'maximum':1000} for axis in ['target_x','target_y','destination_x','destination_y']},'required':['target_x','target_y']}
 PROMPT='''Locate only the named targets on the supplied screenshot. Return their CENTER coordinates from 0 to 1000, top-left origin, via propose.

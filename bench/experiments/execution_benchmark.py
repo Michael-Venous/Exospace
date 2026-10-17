@@ -12,14 +12,14 @@ import time
 
 from brain.agent.executor import GeminiExecutor
 from brain.agent.jev_flash import JevFlashExecutor, PROMPT, SCHEMA
-from brain.agent.live_experiment import LiveJSON
-from brain.agent.recipe_experiment import RecipeExecutor
-from brain.agent.routine_experiment import RoutineExecutor
-from brain.agent.refined_routine_experiment import RefinedRoutineExecutor
-from brain.agent.live_grounding_experiment import LiveGroundedRoutine
-from brain.agent.prefix_experiment import PrefixExecutor, RefinedPrefixExecutor
-from brain.agent.live_direct_experiment import LiveDirectExecutor
-from brain.agent.compact_live_experiment import CompactLiveExecutor
+from bench.experiments.live_experiment import LiveJSON
+from bench.experiments.recipe_experiment import RecipeExecutor
+from bench.experiments.routine_experiment import RoutineExecutor
+from bench.experiments.refined_routine_experiment import RefinedRoutineExecutor
+from bench.experiments.live_grounding_experiment import LiveGroundedRoutine
+from bench.experiments.prefix_experiment import PrefixExecutor, RefinedPrefixExecutor
+from bench.experiments.live_direct_experiment import LiveDirectExecutor
+from bench.experiments.compact_live_experiment import CompactLiveExecutor
 from brain.agent.prompts import SYSTEM_PROMPT, PLAN_SCHEMA
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
@@ -28,8 +28,8 @@ from brain.cancel import CancelToken
 from brain.capture import active_rect
 from brain.config import Config
 from brain.controller import Controller
-from brain.sequence_benchmark import CASES as OLD, STYLE
-from brain.local_benchmark import HTML as CALENDAR_HTML, GOAL as CALENDAR_GOAL, EXPECTED as CALENDAR_EXPECTED
+from bench.experiments.sequence_benchmark import CASES as OLD, STYLE
+from bench.experiments.local_benchmark import HTML as CALENDAR_HTML, GOAL as CALENDAR_GOAL, EXPECTED as CALENDAR_EXPECTED
 from brain.telemetry import Telemetry
 from brain.types import DeviceProfile
 

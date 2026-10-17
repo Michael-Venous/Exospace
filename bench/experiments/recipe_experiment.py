@@ -4,7 +4,20 @@ from __future__ import annotations
 import json
 import re
 
-from brain.agent.jev_flash import JevFlashExecutor, direct_command, validate_steps
+from brain.agent.jev_flash import JevFlashExecutor, validate_steps
+
+
+# Retired from the runtime (PLAN.md §13: no hard-coded phrase rules); kept for this experiment.
+def direct_command(goal: str):
+    """Only explicit single pointer commands bypass language-model planning."""
+    match=re.fullmatch(r'\s*(double[- ]click|right[- ]click|click|tap|hover(?: over)?)\s+(?:on\s+)?(.+?)\s*[.!]?\s*',goal,re.I)
+    if not match: return None
+    target=match[2].strip()
+    if re.search(r'\b(and|then|after|before)\b|[;\n]',target,re.I): return None
+    kind=match[1].lower().replace('-','_').replace(' ','_')
+    if kind.startswith('hover'): kind='hover'
+    return {'type':kind,'target':target}
+
 
 
 def clauses(goal: str) -> list[str] | None:

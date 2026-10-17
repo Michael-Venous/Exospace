@@ -1,7 +1,7 @@
 """One bounded Jev-only target refinement before considering an LLM fallback."""
 import json
 from brain.agent.jev import probability
-from brain.agent.routine_experiment import RoutineExecutor
+from bench.experiments.routine_experiment import RoutineExecutor
 
 
 class RefinedRoutineExecutor(RoutineExecutor):

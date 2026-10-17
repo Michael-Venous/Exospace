@@ -4,8 +4,9 @@ import json
 import re
 
 from brain.agent.executor import Plan, context_prompt
-from brain.agent.jev_flash import JevFlashExecutor, PROMPT, SCHEMA, validate_steps, direct_command
-from brain.agent.recipe_experiment import clauses, compile_recipe
+from brain.agent.jev_flash import JevFlashExecutor, PROMPT, SCHEMA, validate_steps
+from bench.experiments.recipe_experiment import direct_command
+from bench.experiments.recipe_experiment import clauses, compile_recipe
 
 
 class PrefixExecutor(JevFlashExecutor):
@@ -78,7 +79,7 @@ class RefinedPrefixExecutor(PrefixExecutor):
     """Same overlap algorithm, adding the already-tested Jev control-type retry."""
     def __init__(self,cfg,token):
         super().__init__(cfg,token)
-        from brain.agent.refined_routine_experiment import RefinedRoutineExecutor
+        from bench.experiments.refined_routine_experiment import RefinedRoutineExecutor
         self.original_assess=self.jev.assess
         self.refinement_log=cfg.model_log.parent/'refinement.jsonl'
         self.jev.assess=lambda *args,**kwargs: RefinedRoutineExecutor.refined_assess(self,*args,**kwargs)

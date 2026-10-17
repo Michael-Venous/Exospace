@@ -26,7 +26,7 @@ class Config:
     model_timeout_s: float = 30.0
     planner_timeout_s: float = 120.0
     model_log: Path = Path("bench/model_calls.jsonl")
-    executor: str = "jev-flash"
+    executor: str = "race"
     typesafe_api_key: str = ""
     jev_model: str = "jev-1.14.0"
     jev_timeout_s: float = 20.0
@@ -53,7 +53,7 @@ class Config:
             model_timeout_s=float(env("MODEL_TIMEOUT_S", "30")),
             planner_timeout_s=float(env("PLANNER_TIMEOUT_S", "120")),
             model_log=Path(env("MODEL_LOG", "bench/model_calls.jsonl")),
-            executor=env("EXECUTOR", "jev-flash"),
+            executor=env("EXECUTOR", "race"),
             typesafe_api_key=env("TYPESAFE_API_KEY", ""),
             jev_model=env("JEV_MODEL", "jev-1.14.0"),
             jev_timeout_s=float(env("JEV_TIMEOUT_S", "20")),
