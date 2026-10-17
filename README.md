@@ -15,7 +15,8 @@ Built at SwampHacks XII (October 16–18, 2026).
 
 - **Pi 5 (brain):** captures the screen, listens to the user, keeps memory, runs the agent loop and controller. It has its own power, so swapping targets never reboots it.
 - **Pico (hands):** shows up on the target as a keyboard, absolute mouse and touchscreen, and runs commands from the Pi.
-- **Models:** Jev 1.14 grounds screen targets; Gemini 3.8 Flash chooses actions, writes content and handles recovery. Both use hosted APIs. No separate slow planner or B200 is required. An isolated local-browser backend supports testing before the hardware adapter is available.
+- **Models (race architecture):** for every spoken request, Jev 1.14 and Gemini 3.8 Flash start at once. If Jev confidently sees one control to click, it acts in about a second and Flash's plan is thrown away; remarks are remembered without touching anything; everything else uses Flash's plan, grounded and checked step by step by Jev. Anything irreversible (send, delete, pay, BIOS changes) waits for a spoken "yes". Measured: 89% task success vs 53% for a Flash-planner-only agent, with 0 unsafe actions ([bench/arch/README.md](bench/arch/README.md)).
+- **Voice:** a push-to-talk page (one button or the Space bar, so a single accessibility switch works) sends what you say to the agent and speaks back its questions and results.
 
 See [PLAN.md](PLAN.md) for the full architecture, shared contracts, owners and checkpoints.
 
@@ -27,18 +28,28 @@ See [PLAN.md](PLAN.md) for the full architecture, shared contracts, owners and c
 | `brain/` | Pi-side runtime: capture, HID client, controller | Hardware / Agent |
 | `brain/agent/` | Planner, executor loop, memory, verification, recovery | Agent |
 | `brain/skills/` | Per-OS keyboard-shortcut skills | Agent |
-| `brain/voice/` | Push-to-talk, speech-to-text, spoken status | Demo |
-| `server/` | Model serving on the B200s | Models |
-| `bench/` | Benchmark tasks, runner and results | Models |
+| `brain/voice/` | Voice layer (push-to-talk, narration) and the laptop voice demo | Demo |
+| `server/` | Model serving on the B200s (deferred) | Models |
+| `bench/arch/` | Architecture studies behind every design decision | Models |
+| `bench/experiments/` | Earlier executor experiments and benchmarks | Models |
+| `scripts/pi/` | Deploy to the Pi, user services, setup checklist | Hardware |
+| `docs/` | Hardware bring-up, demo script, Devpost draft | Demo |
 | `demo/` | Projector view and demo script | Demo |
 
 ## Setup
 
-1. Copy `.env.example` to `.env` and fill in the values.
-2. Python 3.11+: `python3 -m venv .venv`, then `.venv/bin/python -m pip install -e .`.
-3. Run `.venv/bin/python -m brain --backend pi` once capture and Pico are connected.
-   See [brain/README.md](brain/README.md) for local development, model configuration,
-   cancellation, offline tests and the live latency probe.
+1. Copy `.env.example` to `.env` and fill in the keys (Gemini, TypeSafe/Jev, Deepgram for voice).
+2. Python 3.11+: `python3 -m venv .venv`, then `.venv/bin/python -m pip install -e '.[voice,browser]'`.
+3. Try it without hardware, on a web page in an isolated browser:
+   ```sh
+   .venv/bin/python -m brain --backend browser --url https://example.com --os linux --display 8770
+   .venv/bin/python -m brain.voice.layer --agent http://127.0.0.1:8770   # then open :8780
+   ```
+4. On the Pi: `scripts/pi/deploy.sh` from the laptop, then `.venv/bin/python -m brain.doctor`
+   on the Pi once the capture card and Pico are plugged in ([docs/hardware-bringup.md](docs/hardware-bringup.md)).
+5. Tests: `.venv/bin/python -m unittest discover -s tests` (offline, no API calls).
+
+See [brain/README.md](brain/README.md) for the runtime and [docs/demo.md](docs/demo.md) for the demo.
 
 ## Prior work
 

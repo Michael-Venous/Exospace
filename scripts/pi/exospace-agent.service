@@ -1,0 +1,12 @@
+[Unit]
+Description=Exospace agent (capture card + Pico, display server on :8770)
+After=network-online.target
+
+[Service]
+WorkingDirectory=@ROOT@
+ExecStart=@ROOT@/.venv/bin/python -m brain --backend pi --display 8770
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

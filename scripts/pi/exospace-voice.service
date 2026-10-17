@@ -1,0 +1,13 @@
+[Unit]
+Description=Exospace voice layer (push-to-talk page on :8780)
+After=exospace-agent.service
+Wants=exospace-agent.service
+
+[Service]
+WorkingDirectory=@ROOT@
+ExecStart=@ROOT@/.venv/bin/python -m brain.voice.layer --agent http://127.0.0.1:8770
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
