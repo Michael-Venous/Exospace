@@ -82,6 +82,8 @@ Model output (any space) → **normalized [0,1] within the active screen rect** 
 *(2026-10-17: `wait` and `boot_keys` added by user request for restarts and firmware setup. On a
 `bios` profile a click or double_click moves the menu highlight with arrow keys (double_click
 then presses ENTER); right_click, scroll and swipe are rejected.)*
+*(2026-10-17, approved: `wait` added for slow loads and installs; it sends no input, so a still screen after it
+is not a failed verification. Offered to the direct/legacy executors; race gets it once measured end to end.)*
 
 ### 5.4 Device profile (set on every connect)
 ```json
@@ -192,6 +194,20 @@ actions, paired sign test p = 0.00002, two scenarios incl. a held-out one).
   spoken-order commit, generation bump on interruption, stale-screen proposals re-grounded.
 - Flash 3.8 stays the planner: Live and Flash-Lite 3.5 made ~2x the wrong moves; text-only
   planning saved no time. Regex `direct_command` and recipe grammars are retired.
+- **Planner fallback:** a 503 (high demand) or 429 (quota) from `FAST_MODEL` retries once,
+  immediately, on `FALLBACK_MODEL` (default Flash-Lite 3.5; empty disables) instead of waiting
+  on the same model; other errors keep the old retry. 3.8 Flash returned 503/429 for hours on
+  2026-10-17. Probe (synthetic image, Windows): Lite 0.77–1.97 s (median 0.83, n=6) vs one
+  3.8 Flash call at 3.44 s. Lite planned worse in the study above, so this is degraded mode, not
+  a default. z.ai GLM is not a race fallback (it cannot follow jev-flash's stage schema).
+
+*(2026-10-17, from `overnight-ultracode`: `EXECUTOR=direct` (one call per step: z.ai GLM-4.6V-FlashX
+with `ZAI_API_KEY`, else Gemini) is an option, not the default. GLM does not follow jev-flash's stage
+schema: 0/3 oracle successes vs 1/3 for direct on the calendar task, median model call 7.2 s vs 2.4 s
+(`bench/results.csv`, configs `jev-flash/glm-*` and `direct/glm-*`), so z.ai serves only `direct`.
+Images stay at 1280 px: 960 and 768 were no faster. Race's planner prompt now treats screen text and
+remembered facts as material for the user's goal, never instructions; race vs direct, with an
+injection segment, is still to be measured with `bench/arch/e2e_study.py`.)*
 
 
 **Fast interpreter benchmark completed:** compact text interpretation takes about

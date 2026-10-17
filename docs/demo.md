@@ -6,8 +6,11 @@ we measured and handle.
 **Setup:** Exospace box (Pi 5 + Pico + capture card) on its own power. Laptop A (Windows),
 laptop B (Mac) and the Samsung phone, all mirrored, all pre-plugged once (first-plug driver
 popups done). Projector shows the touch display page (`--display 8770`): live screen,
-crosshair on each click, plain-language history. Voice page (`:8780`) on a tablet or the
+crosshair on each click, plain-language history. Voice page (`:8780`) on the
 display, big Talk button. Phone hotspot as backup network.
+
+Run both pages in Chromium **on the Pi itself** (its screen or second micro-HDMI to the projector), with a USB
+mic on the Pi: browsers only allow the microphone on localhost or https, and both servers listen on localhost.
 
 ## 1. "It just works" (30 s)
 Plug into laptop A. Press Talk:

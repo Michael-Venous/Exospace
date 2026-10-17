@@ -133,6 +133,7 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
                     text = str(body.get("text", "")).strip()
                     if not 0 < len(text) <= 500:
                         return self._reply(400, b'{"error":"text must be 1-500 characters"}')
+                    agent.interrupt()  # speaking while it works ("stop", a correction) barges in
                     agent.submit(text)
                 else:
                     return self._reply(404, b'{"error":"not found"}')

@@ -1,0 +1,6 @@
+# Keep line endings stable across Windows and Linux teammates.
+*.csv text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.service text eol=lf

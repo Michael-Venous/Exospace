@@ -21,6 +21,7 @@ class Config:
     capture_height: int
     session_path: Path
     bench_csv: Path
+    fallback_model: str = "gemini-3.5-flash-lite"
     planner_model: str = "gemini-4-argon"
     planner_thinking: str | None = "medium"
     model_timeout_s: float = 30.0
@@ -40,14 +41,22 @@ class Config:
     local_keyboard: str = ""
 
     @property
+    def uses_zai(self) -> bool:
+        """z.ai serves direct and legacy-dual; GLM cannot follow jev-flash's stage schema, which race plans with."""
+        return bool(self.zai_api_key) and self.executor in ("direct", "legacy-dual")
+
+    @property
     def model_name(self) -> str:
-        """The language model actually in use (z.ai wins when its key is set)."""
-        return self.zai_model if self.zai_api_key else self.gemini_model
+        """The language model the executor's own calls use (see `language_model`)."""
+        return self.zai_model if self.uses_zai else self.gemini_model
 
     @classmethod
     def load(cls) -> Config:
         load_dotenv()
         env = os.environ.get
+        # GLM cannot follow jev-flash's stage schema, which race plans with (bench/results.csv), so z.ai runs direct.
+        executor = env("EXECUTOR") or ("direct" if env("ZAI_API_KEY") else "race")
+        zai = bool(env("ZAI_API_KEY")) and executor in ("direct", "legacy-dual")
         return cls(
             gemini_api_key=env("GEMINI_API_KEY", ""),
             gemini_model=env("FAST_MODEL", env("GEMINI_MODEL", "gemini-3.8-flash")),
@@ -59,15 +68,15 @@ class Config:
             capture_height=int(env("CAPTURE_HEIGHT", "1080")),
             session_path=Path(env("SESSION_PATH", "session.json")),
             bench_csv=Path(env("BENCH_CSV", "bench/results.csv")),
+            fallback_model=env("FALLBACK_MODEL", "gemini-3.5-flash-lite"),
             planner_model=env("PLANNER_MODEL", "gemini-4-argon"),
             planner_thinking=env("PLANNER_THINKING", "medium") or None,
-            # z.ai flashx, 1,299 calls: p99 14 s, and a hung call runs to the timeout. Cut at 12 s, 1.9% retry
-            # and a hang costs 12 s, not 30.
-            model_timeout_s=float(env("MODEL_TIMEOUT_S") or ("12" if env("ZAI_API_KEY") else "30")),
+            # z.ai flashx, 1,299 calls: p99 14 s, and a hung call runs to the timeout. At 12 s
+            # 1.9% retry and a hang costs 12 s, not 30.
+            model_timeout_s=float(env("MODEL_TIMEOUT_S") or ("12" if zai else "30")),
             planner_timeout_s=float(env("PLANNER_TIMEOUT_S", "120")),
             model_log=Path(env("MODEL_LOG", "bench/model_calls.jsonl")),
-            # GLM cannot follow jev-flash's stage schema, which race plans with (bench/results.csv), so z.ai runs direct.
-            executor=env("EXECUTOR") or ("direct" if env("ZAI_API_KEY") else "race"),
+            executor=executor,
             typesafe_api_key=env("TYPESAFE_API_KEY", ""),
             jev_model=env("JEV_MODEL", "jev-1.14.0"),
             jev_timeout_s=float(env("JEV_TIMEOUT_S", "20")),

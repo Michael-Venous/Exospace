@@ -2,6 +2,7 @@
 
 import time
 
+import supervisor
 import usb_hid
 from adafruit_hid.keyboard import Keyboard as HidKeyboard
 from adafruit_hid.keyboard_layout_us import KeyboardLayoutUS
@@ -24,22 +25,36 @@ def _find(usage_page: int, usage: int):
 
 
 class Keyboard:
+    """Created lazily: adafruit_hid's Keyboard waits for a USB host, and the UART must
+    answer the Pi before any target is plugged in."""
+
     def __init__(self):
-        self._keyboard = HidKeyboard(usb_hid.devices)
-        self._layout = KeyboardLayoutUS(self._keyboard)
+        self._keyboard = None
+        self._layout = None
+
+    def _ready(self):
+        if not supervisor.runtime.usb_connected:
+            raise OSError("no USB host")
+        if self._keyboard is None:
+            self._keyboard = HidKeyboard(usb_hid.devices)
+            self._layout = KeyboardLayoutUS(self._keyboard)
+        return self._keyboard
 
     def press_keys(self, names: list) -> None:
         codes = [keys.resolve(name, Keycode) for name in names]
+        keyboard = self._ready()
         try:
-            self._keyboard.press(*codes)
+            keyboard.press(*codes)
         finally:
-            self._keyboard.release_all()
+            keyboard.release_all()
 
     def type_text(self, text: str) -> None:
+        self._ready()
         self._layout.write(text)
 
     def release_all(self) -> None:
-        self._keyboard.release_all()
+        if self._keyboard is not None and supervisor.runtime.usb_connected:
+            self._keyboard.release_all()
 
 
 class AbsMouse:

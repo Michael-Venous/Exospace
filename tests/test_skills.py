@@ -35,6 +35,10 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(self.controller.method_calls[-2:], [
             unittest.mock.call.hotkey(["DOWN"]), unittest.mock.call.hotkey(["ENTER"])])
 
+    def test_wait_only_watches_the_screen(self):
+        run_skill("wait", {}, self.profile("windows"), self.controller)
+        self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change()])
+
     def test_unsupported_has_no_input(self):
         for os in ("bios", "unknown"):
             with self.assertRaises(SkillUnavailable):

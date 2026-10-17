@@ -11,6 +11,7 @@ import json
 import platform
 import subprocess
 import threading
+import time
 from typing import Any, Callable, Protocol
 
 import serial
@@ -19,6 +20,7 @@ from brain.types import ActionError
 
 HID_MAX = 32767
 ACK_TIMEOUT_S = 2.0
+PING_ATTEMPTS = 3
 
 EventCallback = Callable[[str], None]  # receives "mounted" / "unmounted"
 VOICE_WINDOW = "Exospace Voice"  # brain/voice/layer.html's title
@@ -42,8 +44,12 @@ class HID(Protocol):
 
 class PicoHID:
     def __init__(self, port: str, baud: int) -> None:
-        # A second opener (e.g. a voice demo) would steal replies and break both; make it fail clearly.
-        self._serial = serial.Serial(port, baud, timeout=0.1, exclusive=True)
+        try:
+            # Exclusive: a second opener (doctor while the service runs) gets a clear error
+            # instead of silently stealing the replies and killing this link.
+            self._serial = serial.Serial(port, baud, timeout=0.1, exclusive=True)
+        except serial.SerialException as exc:
+            raise HIDError(f"cannot open {port}: {exc} (is exospace-agent already using it?)") from exc
         self._ids = itertools.count(1)
         self._write_lock = threading.Lock()
         self._pending: dict[int, tuple[threading.Event, dict[str, Any]]] = {}
@@ -52,10 +58,15 @@ class PicoHID:
         self._running = True
         self._reader = threading.Thread(target=self._read_loop, name="pico-uart", daemon=True)
         self._reader.start()
-        try:
-            reply = self._request({"op": "ping"})
-        except HIDError as exc:
-            raise HIDError(f"no reply from Pico on {port}; check wiring and firmware") from exc
+        self._serial.write(b"\n")  # end any stray partial line from power-up noise
+        for attempt in range(PING_ATTEMPTS):
+            try:
+                reply = self._request({"op": "ping"})
+                break
+            except HIDError as exc:
+                if attempt == PING_ATTEMPTS - 1:
+                    self.close()
+                    raise HIDError(f"no reply from Pico on {port}; check wiring and firmware") from exc
         self._mounted = bool(reply.get("mounted"))
 
     def send(self, cmd: dict[str, Any]) -> None:
@@ -91,13 +102,21 @@ class PicoHID:
 
     def _read_loop(self) -> None:
         while self._running:
-            raw = self._serial.readline()
+            try:
+                raw = self._serial.readline()
+            except (serial.SerialException, OSError):
+                if not self._running:
+                    return
+                time.sleep(0.2)  # transient UART error: keep the link alive
+                continue
             if not raw:
                 continue
             try:
                 msg = json.loads(raw)
             except ValueError:
                 continue  # partial or garbled line
+            if not isinstance(msg, dict):
+                continue
             if "ev" in msg:
                 self._handle_event(str(msg["ev"]))
             elif (entry := self._pending.get(msg.get("id", -1))) is not None:

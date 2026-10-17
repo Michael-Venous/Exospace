@@ -7,6 +7,11 @@ where the two conflicted, overnight's behavior won, and where this section and t
 differ, this one holds there. After the merge, 197 unit tests pass on the laptop
 (`.venv/bin/python -m unittest discover -s tests`).
 
+Merged with `main` again at `46088d1` (PR #17). z.ai now serves only `direct` and `legacy-dual`;
+race and jev-flash always use Gemini, with the Flash-Lite fallback on 503/429. OS hints reach only
+the one-call executor. The 180 s reconnect covers main's blank-screen resume, so its 10 s
+`_await_video` is gone. 227 tests pass.
+
 **Defaults and latency.** With `ZAI_API_KEY` in `.env`, `EXECUTOR=direct` runs
 `glm-4.6v-flashx`: one call per step returns the actions and their coordinates. Measured
 over 1,299 logged calls: p50 2.5 s, p90 4.3 s, p99 14 s per call. Each call has a 12 s
@@ -69,6 +74,42 @@ with the alarm already set, so it is left out).
   has once given an empty `done` message. One call hung for the full 12 s before its retry.
 - **Self-reported success.** The success column in `bench/results.csv` is the agent's own
   claim. Only the oracles above are independent checks.
+
+## Integrated from `overnight-ultracode` — 2026-10-17
+`overnight-ultracode` was built unattended on an old `main`. Its useful parts were ported one
+commit at a time on `integrate/ultracode`; `fallback-v1` tags `main` from before this.
+
+Came over:
+- `EXECUTOR=direct`: one call per step; z.ai GLM with `ZAI_API_KEY`, else Gemini. A `done`
+  claim after input is checked on screen.
+- The mid-batch guard (1.2 ms per check on the laptop; still to measure on the Pi).
+- Resume when the screen blanks with the Pico still mounted (PLAN.md §5.6).
+- The `wait` skill (§5.3).
+- Action history in 0–1000.
+- The screen-content guardrail, in both the direct and the race planner prompts.
+
+Left on the branch, with the reason:
+- Firmware mode (`boot_keys`, arrow-key menus, BIOS re-detection): 4/21 in QEMU only.
+- QEMU and Android-emulator backends: test harnesses, not the demo path.
+- The `quick.py` regex fast path: race triage covers it, and main retired phrase parsers.
+- The chromeos/ios OS names: untested.
+- Upscaling small frames: firmware-only.
+
+Overnight end-to-end results (live GLM; each oracle checked outside the agent):
+
+| Goal | Target | Result |
+|---|---|---|
+| Text editor: type a line, save `~/hello.txt` | nested XFCE desktop | PASS, 36.5 s |
+| 1234*5678 in the calculator | nested XFCE desktop | PASS, 24.2 s |
+| Turn on dark theme | Android emulator | 2 of 3 |
+| Set an alarm for 6:45 AM | Android emulator | 1 of 3 |
+| Add contact Ada Lovelace, 555 123 4567 | Android emulator | 0 of 9 |
+| Restart into firmware setup, set boot time-out to 7 s | QEMU/OVMF | 4 of 21 |
+
+Still to do:
+- Race vs direct in `bench/arch/e2e_study.py`, with an injection segment.
+- Run `bench/guard_cost.py` on the Pi.
+- Run the full suite on the Pi; 6 tests need Unix.
 
 ## Status 2026-10-17 (Claude): read this first
 **`main` is the source of truth.** All branches are merged into it (PR #9); `agent/prototype` is

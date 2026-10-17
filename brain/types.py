@@ -138,7 +138,7 @@ class Action:
 
     def brief(self) -> str:
         """Short human-readable form for logs and model history."""
-        # 0-1000 like the model's own output, so it never copies a different scale.
+        # 0-1000 like the models' own output, so they never copy a different scale back.
         if self.type in POINTER_ACTIONS:
             return f"{self.type}({self.x * 1000:.0f},{self.y * 1000:.0f})"
         if self.type == "swipe":

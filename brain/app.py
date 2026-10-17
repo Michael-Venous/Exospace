@@ -23,7 +23,7 @@ from brain.device import detect_profile
 from brain.errors import describe
 from brain.display.server import Command, DisplayServer
 from brain.events import EventBus
-from brain.hid import HIDError, LocalHID, PicoHID
+from brain.hid import HID, HIDError, LocalHID, PicoHID
 from brain.imaging import prepare
 from brain.monitor import ConnectionMonitor
 from brain.telemetry import Telemetry
@@ -54,8 +54,8 @@ def main(argv: list[str] | None = None) -> int:
     home_os = cast(OSName | None, cfg.target_os or None)
     if home_os not in (None, *OS_NAMES) or home_os in ("unknown", "bios"):
         parser.error("TARGET_OS must be one of windows, macos, linux, chromeos, android, ios")
-    if not (cfg.zai_api_key or cfg.gemini_api_key):
-        status("Set ZAI_API_KEY or GEMINI_API_KEY in the project .env (see .env.example).")
+    if not (cfg.gemini_api_key or cfg.uses_zai):
+        status("Set ZAI_API_KEY or GEMINI_API_KEY in the project .env (see .env.example); race and jev-flash need Gemini.")
         return 1
     try:
         with ExitStack() as cleanup:
@@ -141,8 +141,6 @@ def main(argv: list[str] | None = None) -> int:
             pointed: tuple[float, float] | None = None
 
             status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
-            if cfg.executor == "jev-flash" and cfg.zai_api_key:
-                status("EXECUTOR=jev-flash makes GLM follow Jev's stages, slower and less reliable; clear it for direct.")
             while True:
                 try:
                     if bus is None:
@@ -165,16 +163,20 @@ def main(argv: list[str] | None = None) -> int:
                             bus.publish("tap", x=command.x, y=command.y)
                             if args.backend != "pi":
                                 _show_screen(capture, bus)
-                    except (Cancelled, ActionError, HIDError) as exc:
+                    except (Cancelled, KeyboardInterrupt, ActionError, HIDError) as exc:
                         controller.release_all()
                         status(f"Tap not sent ({type(exc).__name__}).")
+                    except Exception as exc:  # noqa: BLE001 - keep serving; report it
+                        _report_failure(status, bus, describe(exc, "tap"))
                     continue
                 line = command.text.strip()
                 if not line:
                     continue
                 if pointed is not None:
-                    line += (f"\nThe user tapped the screen to mean 'this': x={pointed[0]:.3f}, y={pointed[1]:.3f} "
-                             "(0-1 within the screen, origin top-left).")
+                    # The note goes first: the user's own words stay the last line, which
+                    # is what triage and its irreversible check read.
+                    line = (f"The user tapped the screen to mean 'this': x={pointed[0]:.3f}, y={pointed[1]:.3f} "
+                            f"(0-1 within the screen, origin top-left).\n{line}")
                     pointed = None
                 if line.startswith("/new "):
                     goal = line[5:].strip()
@@ -202,9 +204,19 @@ def main(argv: list[str] | None = None) -> int:
                     controller.release_all()
                     previous_goal, correction = goal, bus is None
                     status("Interrupted. Enter a correction or /new GOAL.")
+                except Exception as exc:  # noqa: BLE001 - one bad request must not stop the device
+                    controller.release_all()
+                    _report_failure(status, bus, describe(exc, "request"))
     except Exception as exc:
         status(f"Setup failed: {describe(exc, 'setup')}")
         return 1
+
+
+def _report_failure(status: Callable[[str], None], bus: EventBus | None, message: str) -> None:
+    """Tell the console and the display/voice layer (as a failed result) and keep running."""
+    status(f"fail: {message}")
+    if bus is not None:
+        bus.publish("result", status="fail", message=message, steps=0, total_s=0)
 
 
 def _next_command(commands: queue.Queue[Command]) -> Command:

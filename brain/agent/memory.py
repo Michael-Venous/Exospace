@@ -4,6 +4,9 @@ target swap, and is saved to disk after each change."""
 from __future__ import annotations
 
 import json
+import os
+import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -18,6 +21,8 @@ class Memory:
     facts: dict[str, Any] = field(default_factory=dict)
     task: dict[str, Any] = field(default_factory=dict)
     prefs: dict[str, Any] = field(default_factory=dict)
+    # The race executor's speculative planner thread also writes (set_subtasks).
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     @classmethod
     def load(cls, path: Path) -> Memory:
@@ -33,32 +38,38 @@ class Memory:
         )
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        data = {"transcript": self.transcript, "facts": self.facts, "task": self.task, "prefs": self.prefs}
-        tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        tmp.replace(self.path)
+        with self._lock:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            data = {"transcript": self.transcript, "facts": self.facts, "task": self.task, "prefs": self.prefs}
+            fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name, suffix=".tmp")
+            with os.fdopen(fd, "w") as out:
+                out.write(json.dumps(data, indent=2))
+            os.replace(tmp, self.path)
 
     def add_turn(self, role: str, text: str) -> None:
-        self.transcript.append({"role": role, "text": text})
-        del self.transcript[:-TRANSCRIPT_LIMIT]
-        self.save()
+        with self._lock:
+            self.transcript.append({"role": role, "text": text})
+            del self.transcript[:-TRANSCRIPT_LIMIT]
+            self.save()
 
     def remember(self, key: str, value: Any) -> None:
-        self.facts[key] = _maybe_json(value)
-        self.save()
+        with self._lock:
+            self.facts[key] = _maybe_json(value)
+            self.save()
 
     def set_task(self, goal: str, status: str) -> None:
-        if self.task.get("goal") != goal:
-            self.task = {"goal": goal, "subtasks": [], "done": []}
-        self.task.update(status=status)
-        self.task.setdefault("subtasks", [])
-        self.task.setdefault("done", [])
-        self.save()
+        with self._lock:
+            if self.task.get("goal") != goal:
+                self.task = {"goal": goal, "subtasks": [], "done": []}
+            self.task.update(status=status)
+            self.task.setdefault("subtasks", [])
+            self.task.setdefault("done", [])
+            self.save()
 
     def set_subtasks(self, subtasks: list[str]) -> None:
-        self.task["subtasks"] = subtasks
-        self.save()
+        with self._lock:
+            self.task["subtasks"] = subtasks
+            self.save()
 
     def recent_turns(self, n: int = 6) -> list[dict[str, str]]:
         return self.transcript[-n:]
