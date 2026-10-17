@@ -50,7 +50,7 @@ BIOS repair, scheduling, a large dashboard, fine-tuning (unless the benchmark sh
 
 | op | fields | notes |
 |---|---|---|
-| `ping` | — | health check |
+| `ping` | — | health check; reply also carries `"mounted": bool` (USB host attached) |
 | `key` | `keys: ["CTRL","L"]` | press together, then release |
 | `type` | `text` (≤32 chars) | controller chunks long text so cancel is responsive |
 | `move` | `x,y` (0–32767) | absolute mouse |
