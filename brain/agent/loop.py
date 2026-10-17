@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, replace
 from typing import Callable
@@ -41,18 +42,20 @@ class Agent:
                  on_status: Callable[[str], None] = lambda message: None,
                  events: EventBus | None = None,
                  reconnect: Callable[[str], DeviceProfile | None] | None = None,
-                 redetect: Callable[[], DeviceProfile | None] | None = None) -> None:
+                 redetect: Callable[[], DeviceProfile | None] | None = None,
+                 deadline_s: float | None = None) -> None:
         """`reconnect(reason)` waits for the target to return and gives its new profile
         (None if unchanged), or raises Cancelled; without it a disconnect ends the run.
         `redetect()` classifies the screen again (None if it cannot tell): a boot logo read
-        as firmware becomes a desktop without any reconnect."""
+        as firmware becomes a desktop without any reconnect. `deadline_s` cancels a run
+        still going after that many seconds."""
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
         self.events = events
         self._shown_scores: object = None
-        self.reconnect, self.redetect = reconnect, redetect
+        self.reconnect, self.redetect, self.deadline_s = reconnect, redetect, deadline_s
         # (connected_at, thumbnail) of the screen the OS was classified on, kept between goals
         self._classified: tuple[float, np.ndarray | None] = (0.0, None)
 
@@ -74,6 +77,11 @@ class Agent:
         self.memory.add_turn("user", goal)
         self.on_status("Working on your request…")
         self._emit("run", goal=goal, run_id=run_id)
+        timer = None
+        if self.deadline_s is not None:
+            timer = threading.Timer(self.deadline_s, token.cancel, (f"not done within {self.deadline_s:g} s",))
+            timer.daemon = True
+            timer.start()
         try:
             for step in range(1, self.max_steps + 1):
                 times = dict(t_capture=0.0, t_upload=0.0, t_model=0.0, t_execute=0.0, t_settle=0.0)
@@ -231,6 +239,8 @@ class Agent:
                     self.on_status(f"{exc.reason.capitalize()}; waiting for it to come back…")
                     if found := self.reconnect(exc.reason):
                         profile, basis = found, None
+                    if timer and not timer.is_alive():  # the deadline passed while waiting; the reset dropped it
+                        raise Cancelled(f"not done within {self.deadline_s:g} s") from exc
                     note = "The target restarted, reconnected or blanked; continue from this screen."
                 finally:
                     self.telemetry.step(run_id, profile.os, task_id, step, **times)
@@ -242,6 +252,8 @@ class Agent:
         except Exception as exc:
             status, message = "fail", describe(exc, "task")
         finally:
+            if timer:
+                timer.cancel()
             self._classified = (profile.connected_at, basis)
             ctl.release_all()
             self.telemetry.finish(run_id, profile.os, task_id, step, status == "done",

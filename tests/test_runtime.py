@@ -203,6 +203,21 @@ class RuntimeTests(unittest.TestCase):
         self.planner.plan.assert_called_once()
         self.assertEqual(sum(c["op"] == "key" for c in self.hid.commands), 3)
 
+    def test_deadline_cancels_a_slow_run(self):
+        slow = Mock()
+        slow.next_actions.side_effect = lambda *_: self.cancel.sleep(5)  # a model call that hangs
+        agent = Agent(slow, self.controller, self.memory, self.telemetry, deadline_s=.05)
+        result = agent.run("Open thing", self.profile)
+        self.assertEqual((result.status, result.message), ("cancelled", "not done within 0.05 s"))
+
+    def test_deadline_passed_while_reconnecting_ends_the_run(self):
+        slow = Mock()
+        slow.next_actions.side_effect = [Cancelled("target disconnected"), Plan("back", [Action("done")], [])]
+        reconnect = Mock(side_effect=lambda reason: time.sleep(.1) or self.cancel.reset())  # clears the deadline's cancel
+        agent = Agent(slow, self.controller, self.memory, self.telemetry, reconnect=reconnect, deadline_s=.05)
+        result = agent.run("Open thing", self.profile)
+        self.assertEqual((result.status, result.message), ("cancelled", "not done within 0.05 s"))
+
     def test_same_batch_from_same_screen_stops_at_third_try(self):
         self.hid.change = False
         self.fast.next_actions.return_value = Plan("launch", [Action("skill", name="open_app",

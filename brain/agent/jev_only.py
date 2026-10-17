@@ -53,6 +53,7 @@ TEXT_QUESTION = ("Which text does the next step type? It must be copied word for
 REPLACE_QUESTION = ("Is the input the next step types into a single-line box, such as a search, address or form "
                     "field, that already holds text?")
 MAX_SPANS = 250  # Jev's choice budget (bench/interpreter_screen.py)
+DEADLINE_S = 5.0  # user decision: a request Jev alone can't finish in 5 s isn't reliable enough
 
 
 class JevOnlyPlanner:

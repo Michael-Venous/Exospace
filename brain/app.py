@@ -13,6 +13,7 @@ from typing import Callable, cast
 
 from brain.agent.executor import Executor
 from brain.agent.factory import build_executor
+from brain.agent.jev_only import DEADLINE_S
 from brain.agent.loop import RESUMABLE, Agent
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled, CancelToken
@@ -135,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
 
             agent = Agent(executor, controller, Memory.load(cfg.session_path),
                           Telemetry(cfg.bench_csv, args.config_name or cfg.executor), args.max_steps, status,
-                          bus, reconnect, redetect)
+                          bus, reconnect, redetect, deadline_s=DEADLINE_S if cfg.executor == "jev" else None)
             previous_goal = ""
             correction = False
             pointed: tuple[float, float] | None = None

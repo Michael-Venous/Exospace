@@ -108,6 +108,9 @@ Effect: Pico `release_all` → drop action queue → (if disconnect) wait for ne
 *(2026-10-17: resume implemented. After a disconnect or lost video the run waits up to 180 s for
 live video, tapping armed `boot_keys` once the Pico has unmounted (the restart), re-detects the
 profile if the connection changed and continues the same goal on the new screen.)*
+*(2026-10-17, user decision: with `EXECUTOR=jev` a run not done within 5 s is also cancelled
+this way (`DEADLINE_S`, brain/agent/jev_only.py): a request Jev alone can't finish that fast
+isn't reliable enough. A deadline that passes while waiting for a reconnect still ends the run.)*
 
 ### 5.7 Benchmark log (`bench/results.csv`)
 `run_id, config, device, task_id, step, t_capture, t_upload, t_model, t_execute, t_settle, success, total_s`

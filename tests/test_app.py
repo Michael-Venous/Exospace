@@ -15,7 +15,7 @@ class RedetectTests(unittest.TestCase):
         monitor.wait_connected.side_effect = lambda: monitor.generation
 
         class FakeAgent:
-            def __init__(self, *args):
+            def __init__(self, *args, deadline_s=None):
                 self.reconnect, self.redetect = args[-2:]
 
             def run(self, goal, profile, task_id):
@@ -45,7 +45,7 @@ class DisplayGoalTests(unittest.TestCase):
         goals = []
 
         class FakeAgent:
-            def __init__(self, *args):
+            def __init__(self, *args, deadline_s=None):
                 pass
 
             def run(self, goal, profile, task_id):
