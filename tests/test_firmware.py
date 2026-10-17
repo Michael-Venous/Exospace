@@ -131,9 +131,9 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(mouse_report(0, 0, 0, 500)[-1], 127)
 
     def test_touch_report_layout(self):
-        self.assertEqual(struct.unpack("<BHH", touch_report(True, 4, 5)), (3, 4, 5))
-        self.assertEqual(struct.unpack("<BHH", touch_report(False, 4, 5)), (0, 4, 5))
-        self.assertEqual(len(touch_report(True, 0, 0)), 5)
+        self.assertEqual(struct.unpack("<BBHHB", touch_report(True, 4, 5)), (3, 0, 4, 5, 1))
+        self.assertEqual(struct.unpack("<BBHHB", touch_report(False, 4, 5)), (0, 0, 4, 5, 1))
+        self.assertEqual(len(touch_report(True, 0, 0)), 7)
 
 
 if __name__ == "__main__":

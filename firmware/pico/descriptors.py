@@ -47,7 +47,7 @@ _TOUCH_DESCRIPTOR = bytes((
     0xA1, 0x01,        # Collection (Application)
     0x85, TOUCH_REPORT_ID,
     0x09, 0x22,        #   Usage (Finger)
-    0xA1, 0x00,        #   Collection (Physical)
+    0xA1, 0x02,        #   Collection (Logical)
     0x09, 0x42,        #     Usage (Tip Switch)
     0x09, 0x32,        #     Usage (In Range)
     0x15, 0x00,        #     Logical Minimum (0)
@@ -57,6 +57,11 @@ _TOUCH_DESCRIPTOR = bytes((
     0x81, 0x02,        #     Input (Data, Variable, Absolute)
     0x95, 0x06,        #     Report Count (6): padding
     0x81, 0x03,        #     Input (Constant)
+    0x09, 0x51,        #     Usage (Contact Identifier): makes hosts bind multitouch
+    0x25, 0x7F,        #     Logical Maximum (127)
+    0x75, 0x08,        #     Report Size (8)
+    0x95, 0x01,        #     Report Count (1)
+    0x81, 0x02,        #     Input (Data, Variable, Absolute)
     0x05, 0x01,        #     Usage Page (Generic Desktop)
     0x09, 0x30,        #     Usage (X)
     0x09, 0x31,        #     Usage (Y)
@@ -65,7 +70,14 @@ _TOUCH_DESCRIPTOR = bytes((
     0x75, 0x10,        #     Report Size (16)
     0x95, 0x02,        #     Report Count (2)
     0x81, 0x02,        #     Input (Data, Variable, Absolute)
-    0xC0,              #   End Collection
+    0xC0,              #   End Collection (Logical)
+    0x05, 0x0D,        #   Usage Page (Digitizers)
+    0x09, 0x54,        #   Usage (Contact Count)
+    0x15, 0x00,        #   Logical Minimum (0)
+    0x25, 0x01,        #   Logical Maximum (1)
+    0x75, 0x08,        #   Report Size (8)
+    0x95, 0x01,        #   Report Count (1)
+    0x81, 0x02,        #   Input (Data, Variable, Absolute)
     0xC0,              # End Collection
 ))
 
@@ -85,6 +97,6 @@ TOUCH = usb_hid.Device(
     usage_page=0x0D,
     usage=0x04,
     report_ids=(TOUCH_REPORT_ID,),
-    in_report_lengths=(5,),
+    in_report_lengths=(7,),
     out_report_lengths=(0,),
 )

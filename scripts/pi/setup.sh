@@ -16,13 +16,24 @@ for unit in exospace-agent exospace-voice; do
   sed "s#@ROOT@#$ROOT#g" "scripts/pi/$unit.service" > "$UNITS/$unit.service"
 done
 systemctl --user daemon-reload 2>/dev/null || true
-echo "Installed user services: exospace-agent, exospace-voice (not started)."
+# Running services keep the old code (and hold the Pico UART) until restarted.
+ACTIVE=""
+for unit in exospace-agent exospace-voice; do
+  systemctl --user is-active --quiet "$unit" 2>/dev/null && ACTIVE="$ACTIVE $unit"
+done
+[ -n "$ACTIVE" ] && systemctl --user stop $ACTIVE
+echo "Installed user services: exospace-agent, exospace-voice."
 
 echo "Running offline tests"
 .venv/bin/python -m unittest discover -s tests 2>&1 | tail -n 3
 
 echo "Hardware check"
 .venv/bin/python -m brain.doctor || true
+
+if [ -n "$ACTIVE" ]; then
+  systemctl --user start $ACTIVE && echo "Restarted:$ACTIVE"
+fi
+echo "Logs: journalctl --user -u exospace-agent -u exospace-voice -f"
 
 cat <<'EOF'
 

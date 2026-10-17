@@ -116,16 +116,20 @@ def main(argv: list[str] | None = None) -> int:
                             bus.publish("tap", x=command.x, y=command.y)
                             if args.backend != "pi":
                                 _show_screen(capture, bus)
-                    except (Cancelled, ActionError, HIDError) as exc:
+                    except (Cancelled, KeyboardInterrupt, ActionError, HIDError) as exc:
                         controller.release_all()
                         status(f"Tap not sent ({type(exc).__name__}).")
+                    except Exception as exc:  # noqa: BLE001 - keep serving; report it
+                        _report_failure(status, bus, describe(exc, "tap"))
                     continue
                 line = command.text.strip()
                 if not line:
                     continue
                 if pointed is not None:
-                    line += (f"\nThe user tapped the screen to mean 'this': x={pointed[0]:.3f}, y={pointed[1]:.3f} "
-                             "(0-1 within the screen, origin top-left).")
+                    # The note goes first: the user's own words stay the last line, which
+                    # is what triage and its irreversible check read.
+                    line = (f"The user tapped the screen to mean 'this': x={pointed[0]:.3f}, y={pointed[1]:.3f} "
+                            f"(0-1 within the screen, origin top-left).\n{line}")
                     pointed = None
                 if line.startswith("/new "):
                     goal = line[5:].strip()
@@ -150,9 +154,19 @@ def main(argv: list[str] | None = None) -> int:
                     controller.release_all()
                     previous_goal, correction = goal, True
                     status("Interrupted. Enter a correction or /new GOAL.")
+                except Exception as exc:  # noqa: BLE001 - one bad request must not stop the device
+                    controller.release_all()
+                    _report_failure(status, bus, describe(exc, "request"))
     except Exception as exc:
         status(f"Setup failed: {describe(exc, 'setup')}")
         return 1
+
+
+def _report_failure(status: Callable[[str], None], bus: EventBus | None, message: str) -> None:
+    """Tell the console and the display/voice layer (as a failed result) and keep running."""
+    status(f"fail: {message}")
+    if bus is not None:
+        bus.publish("result", status="fail", message=message, steps=0, total_s=0)
 
 
 def _next_command(commands: queue.Queue[Command]) -> Command:

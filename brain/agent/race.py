@@ -10,13 +10,23 @@ Measured in bench/arch: 89% end-to-end vs 53% for the planner alone, 0 unsafe ac
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
+from dataclasses import dataclass, replace
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_flash import JevFlashExecutor
-from brain.agent.triage import approves, triage
+from brain.agent.triage import answer_to_pending, triage
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """An irreversible request waiting for the user's answer, bound to the device that asked."""
+
+    utterance: str
+    goal: str
+    connected_at: float
 
 
 class RaceExecutor:
@@ -35,7 +45,10 @@ class RaceExecutor:
         self._point: tuple[float, float] | None = None
         self._gesture = "click"
         self._clicked = False
-        self._pending: str | None = None  # irreversible request awaiting the user's approval
+        self._utterance = ""
+        self._triage_step = 0
+        self._pending: _Pending | None = None
+        self._approved_goal: str | None = None  # an approved run plans only what was approved
 
     @property
     def verifies_stages(self) -> bool:
@@ -50,35 +63,52 @@ class RaceExecutor:
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
         key = (ctx.run_id, ctx.goal)
         if key != self._key:
-            self._key, self._clicked = key, False
+            self._key, self._clicked, self._approved_goal = key, False, None
             return self._start(image, ctx)
         if self.mode == "act":
+            if not self._clicked and ctx.step != self._triage_step:
+                # The loop discarded the click (the screen moved): aim again on this screen.
+                return self._route(image, ctx, self._utterance, confirmed=True)
             if not self._clicked:
                 return self._direct()
             if "unchanged" not in (ctx.note or ""):
                 return Plan("Jev direct action done", [Action("done", summary="Done.")], [])
             self.mode = "plan"  # the click had no visible effect: let the planner recover
         self._settle_speculation()
-        return self.planner.next_actions(image, ctx)
+        return self.planner.next_actions(image, self._planner_ctx(ctx))
 
     def _start(self, image: bytes, ctx: StepContext) -> Plan:
         utterance = ctx.goal.splitlines()[-1]
-        confirmed = False
-        if self._pending is not None:
-            pending, self._pending = self._pending, None
-            if not self.cancel.run(lambda: approves(self.jev, image, pending, utterance, run_id=ctx.run_id)):
-                self.mode = "none"
-                return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
-            utterance, confirmed = pending, True
+        pending, self._pending = self._pending, None
+        if pending is not None and pending.connected_at == ctx.profile.connected_at:
+            answer = self.cancel.run(lambda: answer_to_pending(self.jev, image, pending.utterance, utterance,
+                                                               run_id=ctx.run_id))
+            if answer == "decline":
+                # "No" alone is just a refusal; "no, open John's email instead" also asks for something.
+                self._approved_goal = None
+                return self._route(image, ctx, utterance, confirmed=False, declined=True)
+            if answer == "approve":
+                self._approved_goal = pending.goal + "\nThe user approved this request."
+                return self._route(image, ctx, pending.utterance, confirmed=True)
+            # Neither: a new command or a correction. Handle it as its own request.
+        self._approved_goal = None
+        return self._route(image, ctx, utterance, confirmed=False)
+
+    def _route(self, image: bytes, ctx: StepContext, utterance: str, *, confirmed: bool,
+               declined: bool = False) -> Plan:
+        self._utterance, self._triage_step = utterance, ctx.step
         # The single planner worker queues this behind any discarded speculation, so triage
         # (the fast path) never waits for an old plan to finish.
-        self._plan = self._pool.submit(self.planner.next_actions, image, ctx)
+        self._plan = self._pool.submit(self.planner.next_actions, image, self._planner_ctx(ctx))
         result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, run_id=ctx.run_id))
         if result.irreversible and not confirmed:
-            self.mode, self._pending = "none", utterance
+            self.mode = "none"
+            self._pending = _Pending(utterance, ctx.goal, ctx.profile.connected_at)
             return Plan("Irreversible request needs approval",
                         [Action("ask_user", question=f'This can\'t be undone: "{utterance}". Should I go ahead?')], [])
         self.mode, self._point, self._gesture = result.mode, result.point, result.gesture
+        if self.mode == "none" and declined:
+            return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
         if self.mode == "none":
             note = f"note_{len(ctx.memory.facts) + 1}"
             return Plan("Context noted", [Action("remember", key=note, value=utterance),
@@ -86,6 +116,9 @@ class RaceExecutor:
         if self.mode == "act":
             return self._direct()
         return self.cancel.run(self._plan.result)
+
+    def _planner_ctx(self, ctx: StepContext) -> StepContext:
+        return replace(ctx, goal=self._approved_goal) if self._approved_goal else ctx
 
     def _direct(self) -> Plan:
         return Plan("Jev direct action", [Action(self._gesture, x=self._point[0], y=self._point[1])], [])

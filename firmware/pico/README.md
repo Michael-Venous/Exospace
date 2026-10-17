@@ -42,3 +42,22 @@ The repo is the source of truth. Never edit files on the Pico directly.
 ## Sharing the Pico
 
 Whoever holds the Pico copies their own latest files onto it first. To recover a Pico that no longer mounts, hold BOOTSEL while plugging it in and reinstall CircuitPython.
+
+## Modes (boot.py)
+
+- **Maintenance (default, nothing on GP22):** the CIRCUITPY drive and serial console stay visible so you can
+  copy files; HID uses report protocol, which every OS and modern UEFI accepts.
+- **Demo (GP22 wired to GND at power-up):** HID only, so the target shows no drive or serial-port popups, and
+  the keyboard is boot-protocol for older BIOS menus. Remove the jumper and replug to edit files again.
+
+Copy **all** the `.py` files in this folder (`boot.py`, `code.py`, `commands.py`, `descriptors.py`,
+`devices.py`, `keys.py`, `link.py`, `reports.py`), then unplug and replug, since boot.py only runs on a hard reset.
+The UART answers the Pi even before any target is plugged in.
+
+## First check on the phone (30 s)
+
+The touchscreen is a one-contact multitouch device, so Android should treat it as a real touchscreen (no
+cursor). With the phone mirrored, ask Exospace to tap something near each corner. If taps land squeezed toward
+the middle or not at all, Android is mapping touch to the whole HDMI frame rather than the phone screen: tell
+the agent owner, since `brain/controller.py` then needs to map touch coordinates in frame space.
+

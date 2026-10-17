@@ -71,15 +71,15 @@ class RaceTests(unittest.TestCase):
         race.planner, race.jev, race.cancel = Mock(), Mock(), CancelToken()
         race._pool = ThreadPoolExecutor(max_workers=1)
         race._plan, race._key, race.mode, race._point, race._clicked, race._pending = None, None, "", None, False, None
-        race._gesture = "click"
+        race._gesture, race._utterance, race._triage_step, race._approved_goal = "click", "", 0, None
         self.addCleanup(race._pool.shutdown)
         race.planner.next_actions.return_value = Plan("planned", [Action("hotkey", keys=("ENTER",))], [])
         self.race = race
         self.memory = Memory(Path(self.temp.name) / "m.json")
 
-    def ctx(self, goal, run="a", note=""):
-        return StepContext(goal, DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1), self.memory, [], 1, 10,
-                           note=note, run_id=run)
+    def ctx(self, goal, run="a", note="", step=1, connected_at=1):
+        return StepContext(goal, DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", connected_at), self.memory,
+                           [], step, 10, note=note, run_id=run)
 
     def test_confident_jev_clicks_without_waiting_for_the_plan(self):
         with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
@@ -110,7 +110,7 @@ class RaceTests(unittest.TestCase):
         with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), True)):
             asked = self.race.next_actions(b"img", self.ctx("delete the downloads folder"))
         self.assertEqual(asked.actions[0].type, "ask_user")
-        with patch("brain.agent.race.approves", return_value=True), \
+        with patch("brain.agent.race.answer_to_pending", return_value="approve"), \
              patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), True)) as tri:
             go = self.race.next_actions(b"img", self.ctx("delete the downloads folder\nUser correction: yes", run="b"))
         self.assertEqual(go.actions[0].type, "click")
@@ -119,9 +119,64 @@ class RaceTests(unittest.TestCase):
     def test_declined_irreversible_request_does_nothing(self):
         with patch("brain.agent.race.triage", return_value=Triage("plan", None, True)):
             self.race.next_actions(b"img", self.ctx("send it"))
-        with patch("brain.agent.race.approves", return_value=False):
+        with patch("brain.agent.race.answer_to_pending", return_value="decline"), \
+             patch("brain.agent.race.triage", return_value=Triage("none", None, False)):
             result = self.race.next_actions(b"img", self.ctx("send it\nUser correction: no wait", run="b"))
         self.assertEqual([a.type for a in result.actions], ["done"])
+        self.assertIn("won't", result.actions[0].summary)
+
+    def test_decline_with_a_new_instruction_carries_it_out(self):
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, True)):
+            self.race.next_actions(b"img", self.ctx("delete all of these emails"))
+        with patch("brain.agent.race.answer_to_pending", return_value="decline"), \
+             patch("brain.agent.race.triage", return_value=Triage("act", (.4, .2), False)):
+            result = self.race.next_actions(b"img", self.ctx(
+                "delete all of these emails\nUser correction: no, open john's email instead", run="b"))
+        self.assertEqual(result.actions[0].type, "click")
+
+
+    def test_reply_that_is_neither_yes_nor_no_runs_as_a_new_request(self):
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, True)):
+            self.race.next_actions(b"img", self.ctx("delete all of these emails"))
+        with patch("brain.agent.race.answer_to_pending", return_value="other"), \
+             patch("brain.agent.race.triage", return_value=Triage("act", (.2, .2), False)) as tri:
+            result = self.race.next_actions(b"img", self.ctx("delete all of these emails\nUser correction: open "
+                                                             "calendar", run="b"))
+        self.assertEqual(result.actions[0].type, "click")
+        self.assertEqual(tri.call_args.args[2], "User correction: open calendar")
+
+    def test_pending_approval_is_dropped_after_a_device_swap(self):
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, True)):
+            self.race.next_actions(b"img", self.ctx("delete all of these emails"))
+        with patch("brain.agent.race.answer_to_pending") as answer, \
+             patch("brain.agent.race.triage", return_value=Triage("act", (.2, .2), False)):
+            self.race.next_actions(b"img", self.ctx("yes", run="b", connected_at=2))
+        answer.assert_not_called()
+
+    def test_approved_run_plans_only_the_approved_request(self):
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, True)):
+            self.race.next_actions(b"img", self.ctx("delete this email"))
+        with patch("brain.agent.race.answer_to_pending", return_value="approve"), \
+             patch("brain.agent.race.triage", return_value=Triage("plan", None, True)):
+            self.race.next_actions(b"img", self.ctx("delete this email\nUser correction: yes and empty the trash",
+                                                    run="b"))
+        planned_goal = self.race.planner.next_actions.call_args.args[1].goal
+        self.assertNotIn("empty the trash", planned_goal)
+        self.assertIn("delete this email", planned_goal)
+
+    def test_discarded_click_is_aimed_again_on_the_new_screen(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
+            self.race.next_actions(b"img", self.ctx("open john's email", step=1))
+        # No acknowledgement: the loop discarded the click because the screen moved.
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.6, .7), False)) as tri:
+            again = self.race.next_actions(b"moved", self.ctx("open john's email", step=2))
+        tri.assert_called_once()
+        self.assertEqual((again.actions[0].x, again.actions[0].y), (.6, .7))
+
+    def test_gesture_from_triage_is_used(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False, "double_click")):
+            result = self.race.next_actions(b"img", self.ctx("open up chrome"))
+        self.assertEqual(result.actions[0].type, "double_click")
 
 
 if __name__ == "__main__":

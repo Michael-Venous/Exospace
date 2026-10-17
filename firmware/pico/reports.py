@@ -17,6 +17,8 @@ def mouse_report(buttons: int, x: int, y: int, wheel: int) -> bytes:
 
 
 def touch_report(touching: bool, x: int, y: int) -> bytes:
-    """Single-touch digitizer: a finger pressed at X, Y, or lifted (out of range)."""
+    """One-contact multitouch report: flags, contact id 0, X, Y, contact count 1.
+    The contact id makes Linux/Android bind hid-multitouch, which marks the device as a
+    direct touchscreen; without it Android treats it as a touchpad with a cursor."""
     flags = (TOUCH_TIP | TOUCH_IN_RANGE) if touching else 0
-    return struct.pack("<BHH", flags, x, y)
+    return struct.pack("<BBHHB", flags, 0, x, y, 1)

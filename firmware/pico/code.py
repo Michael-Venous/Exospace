@@ -16,11 +16,8 @@ was_mounted = None
 while True:
     mounted = supervisor.runtime.usb_connected
     if mounted != was_mounted:
-        if was_mounted and not mounted:
-            try:
-                commands.release_all()
-            except OSError:
-                pass  # the host is gone, so there is nothing left to release
+        # Report first. On unplug there is no host to release keys toward (a new host
+        # starts with nothing pressed), and sending reports to a missing host stalls.
         link.send({"ev": "mounted" if mounted else "unmounted"})
         was_mounted = mounted
     for cmd in link.poll():

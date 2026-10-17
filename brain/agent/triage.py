@@ -104,12 +104,25 @@ def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float],
     return x0 + local[0] * (x1 - x0), y0 + local[1] * (y1 - y0)
 
 
-def approves(jev: JevVision, jpeg: bytes, pending: str, reply: str, *, run_id: str = "", step: int = 0) -> bool:
-    """Whether the user's reply approves a pending irreversible request."""
-    answers, _, _ = jev.evaluate(jpeg, {"approve": {"type": "noul", "instructions":
-                                 "Does the user's `reply` clearly approve carrying out the `pending_request`?"}},
-                                 run_id=run_id, step=step, state={"pending_request": pending, "reply": reply})
-    return probability(answers["approve"].get("noul")) >= GATE
+Reply = Literal["approve", "decline", "other"]
+
+
+def answer_to_pending(jev: JevVision, jpeg: bytes, pending: str, reply: str, *,
+                      run_id: str = "", step: int = 0) -> Reply:
+    """How the user's reply answers a pending irreversible request: approve, decline, or
+    neither (a new command or a correction, which is then handled as its own request)."""
+    state = {"pending_request": pending, "reply": reply}
+    answers, _, _ = jev.evaluate(jpeg, {
+        "approve": {"type": "noul", "instructions":
+                    "Does the user's `reply` clearly approve carrying out the `pending_request`?"},
+        "decline": {"type": "noul", "instructions":
+                    "Does the user's `reply` refuse, cancel or say no to the `pending_request`?"},
+    }, run_id=run_id, step=step, state=state)
+    if probability(answers["approve"].get("noul")) >= GATE:
+        return "approve"
+    if probability(answers["decline"].get("noul")) >= GATE:
+        return "decline"
+    return "other"
 
 
 def _box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float] | None:

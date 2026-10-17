@@ -12,7 +12,7 @@ class DoctorTests(unittest.TestCase):
         checks = {c.name: c for c in check_keys({"GEMINI_API_KEY": "secret-value"})}
         self.assertTrue(checks["GEMINI_API_KEY"].ok)
         self.assertFalse(checks["TYPESAFE_API_KEY"].ok)
-        self.assertTrue(checks["DEEPGRAM_API_KEY"].ok)  # optional
+        self.assertFalse(checks["DEEPGRAM_API_KEY"].ok)  # the voice service needs it
         self.assertNotIn("secret-value", " ".join(c.detail for c in checks.values()))
 
     def test_groups(self):
