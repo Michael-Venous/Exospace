@@ -15,6 +15,7 @@ echo "Syncing code"
 rsync -az --delete \
   --exclude .git --exclude .venv --exclude .env --exclude work --exclude session.json \
   --exclude __pycache__ --exclude '*.egg-info' --exclude firmware/pico/lib \
+  --exclude bench/results.csv --exclude bench/model_calls.jsonl \
   ./ "$PI:$DEST/"
 
 ssh "$PI" "cd '$DEST' && sh scripts/pi/setup.sh"

@@ -20,24 +20,32 @@ const post = (path, body = {}) => fetch(path, {method: "POST", headers: {"Conten
   body: JSON.stringify(body)}).then(r => r.json()).catch(err => ({error: err.message}));
 function showError(text) { said.className = "err"; said.textContent = text; }
 
-// Narration: speak the agent's questions and results, but never over the user.
+// Narration: speak the agent's questions and results, but never over the user. Lines that
+// arrive while the mic is open are held and spoken when the user stops, so a confirmation
+// question is never lost.
+let held = [];
+const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 new EventSource("/narration").onmessage = e => {
   const {say} = JSON.parse(e.data);
   says.textContent = say;
-  if (!stopListening) speechSynthesis.speak(new SpeechSynthesisUtterance(say));
+  if (stopListening) held.push(say); else speak(say);
 };
+function speakHeld() { if (held.length) { speak(held.at(-1)); held = []; } }
 
 async function send(text) {
   const r = await post("/segment", {text});
   if (r.error) showError(r.error);
 }
 
+let starting = false;
 async function start() {
+  if (starting) return;      // a double tap must not open a second mic session
+  starting = true;
   speechSynthesis.cancel();  // the user is talking: stop speaking at once
   post("/talk");             // barge in on whatever the agent is doing
   let mic;
   try { mic = await navigator.mediaDevices.getUserMedia({audio: true}); }
-  catch (err) { return showError("Microphone blocked: " + err.message); }
+  catch (err) { starting = false; return showError("Microphone blocked: " + err.message); }
   const rec = new MediaRecorder(mic), sock = new WebSocket(`ws://${location.hostname}:__WS_PORT__`);
   let done = "";
   const ctx = new AudioContext(), an = ctx.createAnalyser(), buf = new Uint8Array(512);
@@ -54,6 +62,7 @@ async function start() {
   rec.ondataavailable = e => { if (e.data.size && sock.readyState === 1) sock.send(e.data); };
   rec.onstop = () => { if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
   sock.onopen = () => {
+    starting = false;
     rec.start(100);
     document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.textContent = "Listening";
     said.className = ""; said.textContent = ""; live.textContent = "";
@@ -69,11 +78,13 @@ async function start() {
   };
   sock.onclose = e => {
     stopListening = null;
+    starting = false;
     if (rec.state !== "inactive") rec.stop();
     mic.getTracks().forEach(t => t.stop());
     ctx.close();
     document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.textContent = "Talk";
     live.textContent = "";
+    speakHeld();
     if (done) send(done);
     if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
   };

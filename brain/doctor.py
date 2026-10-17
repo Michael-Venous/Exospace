@@ -16,7 +16,7 @@ from pathlib import Path
 from brain.config import Config
 
 REQUIRED_KEYS = ("GEMINI_API_KEY", "TYPESAFE_API_KEY")
-OPTIONAL_KEYS = ("DEEPGRAM_API_KEY",)  # voice layer only
+OPTIONAL_KEYS = ("DEEPGRAM_API_KEY",)  # voice layer
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,8 @@ class Check:
 def check_keys(env: dict[str, str]) -> list[Check]:
     checks = [Check(key, bool(env.get(key)), "set" if env.get(key) else "missing: add it to .env")
               for key in REQUIRED_KEYS]
-    checks += [Check(key, True, "set" if env.get(key) else "not set (only the voice layer needs it)")
+    checks += [Check(key, bool(env.get(key)), "set" if env.get(key) else
+                     "missing: the voice service (exospace-voice) won't start without it")
                for key in OPTIONAL_KEYS]
     return checks
 

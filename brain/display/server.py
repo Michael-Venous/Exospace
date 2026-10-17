@@ -119,6 +119,12 @@ class _Handler(BaseHTTPRequestHandler):
                     raise ValueError("mode must be click or point")
                 self.commands.put(Command(mode, x=_unit(body.get("x")), y=_unit(body.get("y"))))
             elif self.path == "/stop":
+                # Drop queued goals and taps too: a stale tap would click a changed screen.
+                while True:
+                    try:
+                        self.commands.get_nowait()
+                    except queue.Empty:
+                        break
                 self.stop("barge-in")
                 self.bus.publish("stopped")
             else:
