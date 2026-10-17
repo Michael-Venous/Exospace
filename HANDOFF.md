@@ -1,43 +1,216 @@
 # Exospace prototype handoff
 
-## Execution architecture benchmark in progress — 2026-10-17
+## Fast interpreter and direct messy-request Jev benchmark — 2026-10-17
 
-User requested benchmarking all practical avenues after the architecture reassessment.
-Experimental code only; active `.env` and executor factory are unchanged. Added a
-literal recipe compiler, stagewise Jev routine executor, persistent Gemini Live
-function-call adapter, direct Live executor with hover/drag, compact semantic Live
-commands, and explicit-prefix/background-Flash prototype. Shared contracts unchanged.
-`brain/execution_benchmark.py` runs isolated screenshot-only browser fixtures with
-independent DOM end-state checks; `brain/execution_report.py` aggregates successes,
-failures, timing and instruction-compliance adjudication. No microphone/audio,
-physical target/HID, native browser address bar, B200, or deployment used.
+**Completed:** model-driven interpretation, compact output, raw-screen Jev,
+whole-span Jev binding, screenshot-aware proposals, and fresh wording/labels.
+No task/phrase/site regex parser was added. No runtime defaults, shared contracts,
+physical HID, mic/speaker, Pi deployment, or B200 work changed.
 
-Initial smoke evidence: `work/execution-smoke-v1`, `work/recipe-diagnostic-v1`,
-`work/execution-smoke-v2`. Retained failures exposed vague field targets and a
-leftover Live turn-complete event; adapter now waits for the matching request ID.
-Main v1 study: `work/execution-comparison-v1`, 7 tasks × 4 modes × 2 repeats.
-Frozen original sources are saved under its `frozen_source/` before subsequent
-experimental changes. v1 Live-direct lacked explicit hover support and clicked
-Tools instead: end-state-only passes must be adjudicated as instruction failures.
-Later fixtures explicitly detect that error. Broad semantic Live plans also
-sometimes omitted field-focusing clicks; compact commands make those mechanical
-steps deterministic. Jev whole-goal checks often rejected correctly completed
-screens because earlier actions were no longer visible; stagewise routines retain
-verified transitions and require final-effect evidence instead of re-inferring
-history from the last image. No probability threshold was lowered.
+- Main language-only comparison: 24 requests x 2 repeats/model with the SAME
+  oracle element inventory. Lite minimal **44/48, median 0.807 s**; Flash low
+  **48/48, 1.353 s**; Flash 3.6 minimal **46/48, 1.044 s**; warm Live **42/48,
+  0.728 s**; factorized Jev **38/48, 0.171 s**. Inventory perception is excluded.
+  Lite's two other strict failures were safe clarification instead of planning;
+  its two wrong actions treated generated writing as literal text.
+- Short output development ablation: Lite **23/24, 0.751 s**. Fresh 12 requests
+  with renamed controls x2: Lite **22/24, 0.783 s**, Flash **24/24, 1.577 s**,
+  Flash 3.6 **22/24, 1.013 s**, status-gated Jev **18/24, 0.204 s**. Both smaller
+  Gemini models mishandled translation; this is not a proven reliable routing gate.
+- Raw request -> screenshot-aware interpreter -> Jev grounding, no supplied
+  inventory: Lite **21/24, 1.275 s** median total; Flash **23/24, 2.272 s**.
+  Interpretation alone **1.059 / 2.024 s**. Both declined a hover; Lite also
+  attempted generation/reasoning. Frozen-frame proposal checks, NOT execution.
+- Direct screenshot + messy request Jev: whole contiguous-span choices improve
+  literal text binding over independent start/end token indices. At **0.206 s**,
+  **31/48** strict decisions passed, including **24/36** action requests accepted
+  correctly with no wrong accepted actions in the development sample. Same-fixture
+  independent indices: **22/48**, seven wrong accepted actions.
+- That promising Jev result did NOT fully generalize: fresh requests **11/24**
+  strict at **0.211 s**; nine accepted actions, seven correct and two field clicks
+  substituted for clearing. Quoted text declined. Keep direct Jev experimental.
+- Lite first token median **0.741 s**, median tail after first token **0.087 s**.
+  Cutting output tokens alone has limited headroom; external inference comparisons
+  must measure first-token/full-valid-action latency, cold starts and p95.
 
-90 offline tests currently pass. A preliminary authored language-coverage probe
-compiled only 5/12 phrasings (`work/execution-language-coverage.json`); this narrow
-grammar is not evidence for 90% real-world coverage. v1 is complete; follow-up study `work/execution-comparison-v2` is running.
-Remaining queued studies: `execution-no-llm-v1`, `execution-heldout-v1`,
-`execution-overlap-v1`, `execution-cold-v1`, `execution-grounding-v1`, and
-`execution-calendar-v1` under work/. The last study reuses the six-field calendar
-with popup and time arithmetic. Grounding recovery uses Live only for missing
-coordinates after Jev confirms presence, uniqueness and stage readiness; ambiguous
-targets cannot use it. A bounded Jev control-type refinement is tested first.
-All test versions freeze source and manifests. Report failures and bounded
-recommendations after these finish. Do not switch defaults on these exploratory results.
+Evidence: `bench/interpreter_{study,optimized,screen,freeform,heldout,screen_heldout,report}.py`;
+`work/interpreter-*/` frozen sources/manifests/rows; `bench/results.csv` explicitly
+labels these as laptop microbenchmarks. Early screen fixtures rendered some roles
+as buttons; repaired fixture comparisons preserve both versions. Raw no-inventory
+text interpretation sometimes invented Notes-app navigation. Live uses a warm
+persistent session; initial setup 0.370 s excluded from request timings. Whole-span
+candidate budget is bounded; candidate enumeration is generic, not phrase matching.
+95 existing unit tests passed, new scripts compile, parser boundary checks passed.
 
+Report: `/home/mike/Documents/Codex/2026-10-17/con/outputs/exospace-interpreter-summary.txt`
+with JSON and CSV alongside. Outside-Gemini candidates researched but NOT measured:
+Cerebras GPT-OSS-120B/Qwen 3.8 27B, Groq GPT-OSS-20B, GPT-6 Luna none/low reasoning.
+Only Gemini/Jev credentials configured. Official sources are in the report.
+
+**Next action:** retain current defaults; evaluate a general typed interpreter
+through the actual executor/ledger, with screenshot context or measured screen
+inventory construction. Preserve Jev whole-span as an opt-in fast-path candidate;
+test unknown/ambiguous/empty/quoted literals and sequential progress before enabling.
+External API comparison can use the same frozen cases once credentials exist.
+
+## General architecture review: no hardcoded workflows — 2026-10-17
+
+**User constraint:** no hardcoding. The earlier regex/literal recipe experiments
+remain benchmark ablations, not the proposed general command interface. Their
+0.5-second first-input result excludes the unsolved general language/argument
+binding problem; only 5/12 authored phrasings compiled. Do not expand phrase,
+website, or task-specific recipes as the product architecture.
+
+**Review recommendation (planned, not implemented):** retain capture + HID,
+device continuity, interruptibility, and deterministic input primitives. Use a
+learned semantic proposer to produce short, typed, screen-conditioned actions;
+ground and verify with Jev or a specialist; execute until new observation or
+missing reasoning requires another proposal. Generic fill/click/hover/drag
+semantics are controller behavior, not hardcoded task solutions. Maintain verified
+transition history so completion does not infer every past step from the last
+frame. Distinguish input acknowledgement from observed effect. Resolve hidden
+targets on fresh frames, and revalidate proposals after intervening actions.
+
+Jev selects supplied candidates; it does not supply arbitrary plans or free text
+through the documented Choice/Score/Noul interface. Dynamic screen elements plus
+learned text-span/argument binding may permit a general Jev next-action loop, but
+candidate generation/recall and binding cost must be included in benchmarks.
+Do not hide that cost in preprocessing or assume independent Jev answers form a
+coherent joint action. Keep explicit abstain/clarify/planner options. Escalate on
+missing capability/evidence, not number of steps or a single complexity score.
+
+Near-term comparison: Flash-generated typed actions with repaired verification;
+bounded Gemini 3.8 Live semantic proposals with the same executor; dynamic
+screen-candidate Jev control if a measured general candidate source is available.
+Live should emit typed commands directly, not serialize them to regex-parsed
+English. Compare with/without redundant Jev guards to measure their net value.
+Use unseen apps/layouts/ordinary paraphrases, arbitrary text, ambiguity, hidden
+menus, task corrections and interruptions. Report first *correct* action, full
+verified success, false completion/wrong actions, fallback rate, p50/p95 latency,
+and all parsing/grounding/verification/connection costs. No new inference trial
+was performed in this review; prior results retain their original scope.
+
+Primary-source candidate review (read 2026-10-17; no performance measured here):
+- GUI-Actor 2B/3B: action-attention grounding specialist and grounding verifier;
+  promising Jev Box comparison, not a language planner:
+  https://github.com/microsoft/GUI-Actor
+- OmniParser V2: screenshot-to-elements candidate source; preserve full-screen
+  fallback for omitted controls and measure detector/OCR/captioning overhead:
+  https://github.com/microsoft/OmniParser
+- ShowUI-2B: learned GUI action/grounding baseline;
+  https://github.com/showlab/ShowUI . ShowUI-pi is a separate flow-based drag
+  specialist, useful later for continuous paths:
+  https://github.com/showlab/showui-pi
+- FunctionGemma 270M: text-only function/argument binding research candidate;
+  Google explicitly positions it for task-specific fine-tuning, not a ready
+  general GUI controller: https://huggingface.co/google/functiongemma-270m-it
+- GPT-6 Luna with none/low reasoning: hosted structured-action comparison,
+  documented image input/function calling/structured outputs, untested latency
+  and account access: https://developers.openai.com/api/docs/models/gpt-6-luna
+- UI-TARS repo announces UI-TARS-2, while the reviewed deployment path explicitly
+  supplies 1.5-7B; do not confuse publication with available weights/endpoints:
+  https://github.com/bytedance/UI-TARS
+- Jev primitive semantics: https://docs.typesafe.ai/primitives ; Live capabilities:
+  https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live
+
+Keep B200/training deferred and native accessibility optional: mandatory target
+software would compromise the no-install target design. Small parameter count
+does not establish fast laptop/Pi screenshot inference. Active model configuration,
+runtime, shared contracts, and other ongoing bench/arch work were not changed.
+
+## Execution architecture benchmark completed — 2026-10-17
+
+**Outcome:** keep the active factory and `.env` unchanged. The best tested candidate
+is Jev + deterministic verified routines, with a narrow Live coordinate fallback
+when Jev confirms presence/uniqueness/readiness but cannot ground a box. Flash
+remains available for unsupported requests and reasoning. Do not enable unrestricted
+Live control or claim broad natural-language coverage from this sample.
+
+Completed **158 main trials plus 13 smoke/diagnostic attempts**, over 13 synthetic
+task templates. Screenshot-only model inputs; real local browser mouse/keyboard
+through the existing controller; independent DOM result oracle after execution.
+These are repeated/development trials, not 171 independent user tasks. No mic,
+audio playback, physical HID, native address bar, device swap, B200 or deployment.
+
+Measured results:
+- Jev-only, LLM fallback disabled: **10/12**. Both runs of two clicks, URL form,
+  three-field typing/save, double-click, and hover/menu passed without any LLM.
+  Median totals: **2.05 / 3.09 / 5.01 / 1.39 / 2.08 s** respectively. Median first
+  input **0.51 s**. Both drag trials declined before input due to uncertain destination.
+- Narrow hybrid (`jev-live-ground`): **14/14**. Ten routine runs used only Jev,
+  two drags used one Live coordinate call each (**2.61 / 2.86 s** total), and two
+  ambiguous requests used Flash to ask without clicking. Median first input **0.57 s**.
+- Corrected direct Live: **15/16** on v2; it clicked an ambiguous Continue request
+  in one trial. On four held-out tasks it passed **3/4**: an ordinary URL paraphrase
+  omitted the field-focus click, submitted an empty destination and falsely said done.
+  The five literal task types alone passed 10/10 at median **4.13 s**, first input
+  **1.69 s**. Direct Live v1 additionally clicked instead of hovering in two trials;
+  report adjudicates those nominal end-state successes as failures.
+- Calendar (six fields, popup, time arithmetic): Flash **2/2, 22.05 s** median;
+  direct Live **2/2, 16.29 s** (about 26% lower elapsed time on this tiny sample).
+- Full Live semantic plans: **9/14** in v1. Compact Live commands: **8/16** in v2,
+  including one connection-setup timeout. Missing steps, conservative coverage gates,
+  and grounding recovery kept invoking Flash. No broad fast-LLM default is justified.
+- Cold direct Live: one **25 s timeout**, one **4.58 s** success; separate compact
+  Live cold runs both passed but required Flash recovery. Long-session resilience
+  and voice performance remain untested.
+- Explicit-prefix overlap after target refinement: repaired runs issued the first
+  useful click at **0.89–0.98 s** while Flash planned, vs **4.01–4.24 s** sequential.
+  Both reached the right answer but failed final completion verification; median
+  total **23.80 s**, sequential **22.64 s**. Responsiveness improved, complete-task
+  speed/reliability did not. Do not promote overlap as a demonstrated overall win.
+
+Important interpretation: the v1 Flash baseline reached the correct independent
+end state in all 12 non-ambiguous trials; six failed because completion verification
+tried to infer the entire earlier sequence from the final image and repeatedly
+replanned completed work. This is an orchestration/verification defect. Stepwise
+routines retain acknowledged actions and verified transitions, then check the final
+visible effect. They do not accept a model's partial rewording as the whole goal.
+No shared evidence threshold or §5 contract was lowered or changed.
+
+Coverage remains narrow: only **5/12 authored phrasings** compiled directly. This
+is not a real-world coverage estimate. Two held-out literal tasks passed with Jev
+only (new labels/layout and command-like text inside quotes); two ordinary paraphrases
+fell back to Flash. Next work: intent/argument binding, execution-ledger verification
+for generated plans, then native/device validation. The 90% request-coverage goal
+has not been established.
+
+Implementation/evidence:
+- `brain/execution_benchmark.py`: opt-in variants; sources/manifests frozen per study;
+  `--only-pending-from` preserves completed rows after harness repair.
+- `brain/agent/*_experiment.py`: literal compiler, routine/target refinement,
+  Live session transport, direct/compact Live, narrow coordinate recovery, prefix
+  overlap. `brain/agent/factory.py` and `.env` were not changed.
+- `brain/execution_report.py`: independent-oracle summaries and hover-compliance
+  adjudication. `bench/results.csv` has shared-schema timing rows; its success
+  column retains runtime semantics, while exported JSON/CSV use the independent oracle.
+- `work/execution-comparison-v1/`, `work/execution-comparison-v2/` plus
+  `work/execution-comparison-v2-completion/` (41 + 7 = 48 rows),
+  `work/execution-no-llm-v1/`, `work/execution-heldout-v1/`,
+  `work/execution-grounding-v1/`, `work/execution-calendar-v1/`,
+  `work/execution-cold-v1/`, and the three `work/execution-overlap*-v1/` studies.
+  All smoke failures and diagnostics remain preserved too.
+- A Live session-close timeout interrupted v2 at 41/48 rows. Bounded cleanup now
+  cancels pending transport tasks and cannot abort the study; seven missing trials
+  were run separately. A malformed empty-action background plan now triggers a
+  fresh-screen replan after the already-executed prefix instead of a runtime abort.
+- **92 tests passed at benchmark completion; 95 pass in the current checkout**,
+  with compileall and git diff --check passing. Tests cover quoted
+  delimiters, unsupported grammar/Unicode, stage acknowledgements, failed evidence,
+  stale Live IDs, multiple proposals, cleanup, hover/drag constraints, missing/invalid
+  coordinates, ambiguity gates, stale background goals and unexecuted prefixes.
+
+Concurrent commit `61ab5ae` appeared after the final benchmark (reports finished
+06:06:33 UTC; loop.py modified at 06:07:42 UTC). It includes these experiments and
+other runtime changes, including stale-frame handling. This agent did not create
+that commit. Preserve it; do not attribute the newer runtime behavior to these
+measurements. The measured loop is recoverable as `f45eeb2:brain/agent/loop.py`.
+Current 95-test suite includes three added concurrent runtime tests.
+
+User-facing report: `/home/mike/Documents/Codex/2026-10-17/con/outputs/exospace-execution-summary.txt`.
+Full data and independent-oracle CSV are alongside it as `exospace-execution-results.json`
+and `exospace-execution-results.csv`. JSON includes merged v2 comparisons, all trial
+rows, source manifests, interpretation notes and the language-coverage probe.
 
 ## Execution architecture reassessment — 2026-10-17
 
@@ -455,3 +628,16 @@ All 77 tests pass (`.venv/bin/python -m unittest discover -s tests`). No secrets
 6. **`jev_flash.py` style doesn't match the rest of the codebase.** It uses dense one-liners, no spaces after commas, missing type hints, and imports inside functions. The AI-track judges read the code, so run `ruff format` and add types.
 7. **Most work is uncommitted.** The only commit is `f45eeb2`; many modified and untracked files exist only on this laptop. Commit to a branch (e.g. `agent/prototype`) so work isn't lost and teammates can pull it.
 8. **Low priority:** `jev_flash.py:249` checks whether the fallback screenshot changed by comparing JPEG bytes for exact equality. Real capture-card frames are never byte-identical, so the check always reports "changed." That currently only triggers after a discarded step, where replanning is correct anyway, but compare thumbnails if it's ever used elsewhere.
+
+## Claude architecture study (2026-10-17)
+Full results and recommendation: [bench/arch/README.md](bench/arch/README.md). Summary (updated after review + completion study): **race + steps-aware completion check** (Jev
+triage in parallel with Flash 3.8; a confident Jev act/no-action wins; completion = one Jev call judging
+goal + executed steps + screen). Steps-aware check: 12/12 finished tasks accepted, 0/18 traps (concrete-only
+accepted 12/18 traps). End-to-end it matched or beat the concrete variant head-to-head (17/20 vs 16/20,
+0 unsafe). The earlier race + concrete run scored 18/20 with 0 unsafe, 94 s total and 21 LLM calls.
+Held-out validation (second scenario, 3 repeats) and pooled analysis: race + steps-aware 47/53 = 89%
+(95% CI 77–95%), 0 unsafe; current runtime 28/53 = 53%, 5 unsafe, including **deleting a folder in 3/3
+runs** despite its prompt rule. Paired sign test vs current: 20–1, p = 0.00002. Add the irreversible-action
+Jev question (27/27 destructive caught, 0/33 false flags at gate 0.5) before shipping the fast path. The current runtime scored 8/20 with 2 unsafe actions, 322 s and 90 calls.
+Direct commands: first input 0.73 s, no LLM call. Keep the screenshot for Flash; drop Lite, Live, text-only,
+high thinking and relaxed planner gates. Port steps are listed in that README.
