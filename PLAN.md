@@ -154,6 +154,72 @@ AI judges read the repo: keep code clean, typed, small modules, a real README (a
 
 ## 13. Prototype model decision — 2026-10-17
 
+**Architecture decision (final, supersedes the entries below):** *race + steps-aware completion*,
+measured in `bench/arch/README.md` (89% end-to-end vs 53% for the previous runtime, 0 vs 5 unsafe
+actions, paired sign test p = 0.00002, two scenarios incl. a held-out one).
+- Every spoken segment starts **Jev triage** (one call: act_now / plan / no_action, target box,
+  irreversible?) and **Flash 3.8** (low thinking, with screenshot) at the same time.
+- Confident Jev act (presence/uniqueness ≥ 0.5, zoom-refined box) wins and Flash's answer is
+  discarded; no_action goes to memory with no input; otherwise Flash's plan is used.
+- **Irreversible** requests (Jev ≥ 0.5: send, delete, pay, submit, format, BIOS changes) never
+  execute without a spoken confirmation, on both paths. The previous prompt-only rule deleted a
+  folder in 3/3 runs.
+- **Completion** is one Jev call judging goal + executed steps + screen (gate 0.3); it alone decides.
+- **One commit gate** (`brain/arbiter.py`) is the only path to HID: one winner per segment,
+  spoken-order commit, generation bump on interruption, stale-screen proposals re-grounded.
+- Flash 3.8 stays the planner: Live and Flash-Lite 3.5 made ~2x the wrong moves; text-only
+  planning saved no time. Regex `direct_command` and recipe grammars are retired.
+
+
+**Fast interpreter benchmark completed:** compact text interpretation takes about
+0.75–0.81 s with 3.5 Flash-Lite, 1.35–1.58 s with 3.8 Flash on the measured sets.
+Fresh requests: Lite 22/24 vs Flash 24/24; smaller models mishandled translation.
+Screenshot-aware interpretation + Jev grounding: Lite 21/24 at 1.28 s, Flash 23/24
+at 2.27 s (proposal validation, not executed tasks). Direct Jev with generic whole
+text-span choices takes ~0.21 s and improves binding, but fresh tests still accepted
+two clicks instead of clearing a field. It is not ready as a universal interpreter.
+See HANDOFF.md and interpreter outputs for scoped results, failed variants and
+outside-Gemini candidates. No hardcoded workflows or default/contract changes.
+
+**Latest architecture constraint — no hardcoding:** the user rejects hardcoded
+task/phrase/site workflows. Earlier literal recipes are experimental latency
+ablations, not the general interface. Prioritize learned intent/argument binding,
+short typed action proposals, dynamic screen grounding, and execution-history
+verification. Keep deterministic input primitives; do not grow regex recipes.
+Evaluate bounded Live proposals and Flash through the same executor before
+choosing a default. GUI-Actor/OmniParser/ShowUI and a small function binder are
+research candidates, not measured replacements. See HANDOFF.md's general
+architecture review for sources and evaluation criteria. No runtime/default or
+shared contract changes; B200 remains deferred.
+
+**Execution benchmark completed:** 158 main trials + 13 diagnostics. Jev-only
+routines passed 10/12 (all five literal task types; drag declined). Narrow Live
+coordinate recovery brought the tested hybrid to 14/14, including two no-click
+clarification cases. First input was typically 0.5–0.6 s. Direct Live was faster
+on the calendar but made an ambiguous click and a held-out false completion.
+Overlap improved first input but did not establish complete-task improvement.
+See HANDOFF.md and exported reports for failures and exact scope. These remain
+opt-in experiments: active configuration and shared §5 contracts are unchanged.
+Next priorities are natural-language argument binding and execution-ledger
+verification for generated plans; 90% request coverage is not established.
+
+**Execution reassessment:** user requested a pause on model tuning to address
+unnecessary planner calls. Next priority is bounded Jev-controlled recipes for
+literal typing and explicit multi-step commands, with Flash reserved for missing
+reasoning, content generation and recovery. Explore concurrent execution of an
+explicit independent prefix with background planning only after recipe validation.
+This is a proposed direction, not implemented behavior or a measured speedup.
+See HANDOFF.md's execution reassessment for boundaries and evaluation criteria.
+Runtime remains Jev + 3.8 Flash; shared §5 contracts are unchanged.
+
+**Earlier model-routing comparison:** keep Jev + 3.8 Flash. The calibrated three-model
+router matched Flash's held-out accuracy but was about 12% slower on the sample;
+Lite also falsely declared completion on one basic workflow. Automatic Lite/Argon
+routing remains disabled. Completion now checks the original user goal as well
+as model-proposed evidence. Gemini 3.8 Live passed a small screenshot/function-call
+probe, but is not integrated. See HANDOFF.md for exact configurations, preserved
+failures, intervals and scope. Shared §5 contracts remain unchanged.
+
 **Current user-selected implementation:** Jev 1.14 + Gemini 3.8 Flash; no separate
 slow/fast LLM routing and no B200. Jev has an explicit `execute` / `ask_flash`
 choice. Explicit pointer requests can execute without Flash; predictable sequences
@@ -192,3 +258,22 @@ existing perception/grounding model and an open decision-model baseline. Conside
 training only after recorded failures reveal a specific deficit and a held-out
 evaluation can measure the improvement. User reports the B200 is at UF HiPerGator;
 their friend is arranging API access. No endpoint or GPU access is configured yet.
+
+## 14. Voice layer
+
+The voice layer sits **on top** of the pipeline: it decides *what* the user wants, never *how*.
+It never writes HID. Its only controls, all through the commit gate (§13):
+
+| Control | Meaning |
+|---|---|
+| `submit_segment(text)` | a finished clause, sent as soon as the speaker pauses |
+| `interrupt()` | barge-in / "stop" / correction: the §5.6 cancel path, bumps the generation |
+| `confirm(action_id, yes/no)` | answers an irreversible-action prompt; bound to that action and generation, so a late "yes" can't approve anything else |
+| `answer(question_id, text)` | replies to a planner `ask_user` |
+
+Output: it subscribes to the agent **event stream** (`brain/events.py`, shared with the touch
+display) and narrates intent and results ("Opening Janet's email… done"), not keystrokes.
+- Acknowledge within ~300 ms; speech never blocks execution; mute output when the user speaks.
+- Live (or the existing Deepgram demo) is fine as ears and mouth, but gets only the four
+  controls above: measured, it is not reliable at choosing actions.
+

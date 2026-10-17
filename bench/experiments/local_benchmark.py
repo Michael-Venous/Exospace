@@ -1,6 +1,6 @@
 """Live screenshot-only browser task with a separate DOM outcome oracle.
 
-Run: python -m brain.local_benchmark --runs 3
+Run: python -m bench.experiments.local_benchmark --runs 3
 The models see only screenshots and goal/history, never fixture HTML or DOM.
 All event data is synthetic and saved only in the isolated browser's local state.
 """

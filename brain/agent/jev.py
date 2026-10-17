@@ -43,6 +43,13 @@ def prepare_image(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]
     return encoded.tobytes(), (w, h), (pw, ph)
 
 
+COMPLETION_QUESTION = (
+    'Considering the `executed_steps` (what was actually done) together with the current `screen`, '
+    "has the user's ENTIRE `goal` been accomplished? Every part of the goal must be covered by an "
+    'executed step or be visibly true on the screen. A visible link, button or preview is not evidence '
+    'that it was used; text typed but not submitted is not a completed search or send.')
+
+
 class JevVision:
     def __init__(self, key: str, cancel: CancelToken, log_path: Path,
                  model: str = 'jev-1.14.0', timeout_s: float = 20,
@@ -55,10 +62,12 @@ class JevVision:
         self.client = httpx.Client(timeout=timeout_s, headers={
             'Authorization': f'Bearer {key}', 'TypeSafe-Danger-Zone-Images': 'true'})
 
-    def evaluate(self, jpeg: bytes, questions: dict, *, run_id: str = '', step: int = 0):
+    def evaluate(self, jpeg: bytes, questions: dict, *, run_id: str = '', step: int = 0,
+                 state: dict | None = None):
+        """Ask questions about `screen`; `state` adds named context (e.g. the utterance)."""
         encoded, size, padded = prepare_image(jpeg)
         ref = str(uuid.uuid4())
-        body = {'model': self.model, 'state': {'screen': ref},
+        body = {'model': self.model, 'state': {'screen': ref, **(state or {})},
                 'assets': {ref: {'type':'image','format':'jpg',
                                  'data_base64':base64.b64encode(encoded).decode()}},
                 'questions': questions}
@@ -109,6 +118,16 @@ class JevVision:
         if not 0 <= x <= 1 or not 0 <= y <= 1:
             return None  # padded region must never become a click
         return x,y
+
+    def completion(self, jpeg: bytes, goal: str, executed: list[str], *,
+                   run_id: str = '', step: int = 0) -> float:
+        """Probability the whole goal is done, judged from the executed steps AND the
+        screen. History-dependent goals ("the first video") are covered by the steps;
+        skipped or unsubmitted steps are caught because they are absent from them."""
+        answers, _, _ = self.evaluate(jpeg, {'complete': {'type': 'noul', 'instructions': COMPLETION_QUESTION}},
+                                      run_id=run_id, step=step,
+                                      state={'goal': goal, 'executed_steps': executed})
+        return probability(answers['complete'].get('noul'))
 
     def close(self):
         self.client.close()

@@ -4,7 +4,8 @@ import csv
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -12,9 +13,12 @@ from brain.agent.executor import Plan, StepContext, parse_plan
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
 from brain.agent.orchestrator import Guidance, Orchestrator
+from brain.app import _connected_profile
 from brain.cancel import Cancelled, CancelToken
 from brain.controller import Controller, SettleConfig
 from brain.device import detect_profile
+from brain.errors import describe
+from brain.hid import HIDError
 from brain.telemetry import Telemetry
 from brain.types import Action, DeviceProfile, Rect
 
@@ -194,6 +198,38 @@ class RuntimeTests(unittest.TestCase):
         result = self.agent().run("Click the field", self.profile)
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(self.hid.commands, [{"op": "release_all"}])
+
+    def test_moving_screen_acts_after_one_discard(self):
+        def next_actions(image, ctx):
+            if ctx.step <= 2:
+                self.capture.frame[:] = 210 if ctx.step == 1 else 40  # never stops moving
+                return Plan("target", [Action("click", x=.5, y=.5)], [])
+            return Plan("clarify", [Action("ask_user", question="Done?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        result = self.agent().run("Click the field", self.profile)
+        self.assertEqual(result.status, "ask_user")
+        self.assertEqual(sum(c["op"] == "click" for c in self.hid.commands), 1)
+
+    def test_disconnect_during_detection_keeps_pending_goal(self):
+        monitor = SimpleNamespace(connected=True, generation=1)
+        monitor.wait_connected = lambda: setattr(monitor, "connected", True) or monitor.generation
+        def detect(*args, **kwargs):
+            if monitor.generation == 1:
+                monitor.connected, monitor.generation = False, 2  # unplugged mid-detection
+                raise Cancelled("target disconnected")
+            return self.profile
+        with patch("brain.app.detect_profile", side_effect=detect):
+            profile, generation = _connected_profile(
+                monitor, self.capture, self.fast, None, self.cancel, None, -1, self.messages.append)
+        self.assertEqual((profile, generation), (self.profile, 2))
+
+    def test_errors_show_hardware_detail_but_hide_provider_detail(self):
+        with patch("brain.errors.ERROR_LOG", self.root / "errors.log"):
+            self.assertEqual(describe(HIDError("Pico did not acknowledge key"), "task"),
+                             "HIDError: Pico did not acknowledge key")
+            hidden = describe(ValueError("payload with request data"), "task")
+            self.assertNotIn("payload", hidden)
+            self.assertIn("payload with request data", (self.root / "errors.log").read_text())
 
     def test_semantic_executor_checks_covered_result_without_double_counting(self):
         self.hid.change=False

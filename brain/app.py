@@ -3,19 +3,31 @@
 from __future__ import annotations
 
 import argparse
+import queue
+import threading
+import time
 from contextlib import ExitStack
+from typing import Callable
 
+from brain.agent.executor import Executor
 from brain.agent.factory import build_executor
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled, CancelToken
-from brain.capture import ScreenCapture, V4L2Capture
+from brain.capture import Capture, ScreenCapture, V4L2Capture, active_rect
 from brain.config import Config
 from brain.controller import Controller
 from brain.device import detect_profile
-from brain.hid import LocalHID, PicoHID
+from brain.errors import describe
+from brain.display.server import Command, DisplayServer
+from brain.events import EventBus
+from brain.hid import HIDError, LocalHID, PicoHID
+from brain.imaging import prepare
 from brain.monitor import ConnectionMonitor
 from brain.telemetry import Telemetry
+from brain.types import Action, ActionError, DeviceProfile
+
+LIVE_FPS = 4  # capture-card frames pushed to the display between steps
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -27,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task-id", default="interactive")
     parser.add_argument("--config-name", default="jev-flash")
     parser.add_argument("--max-steps", type=int, default=30)
+    parser.add_argument("--display", type=int, metavar="PORT",
+                        help="Serve the touch display page on this port (e.g. 8770)")
+    parser.add_argument("--display-host", default="127.0.0.1")
     args = parser.parse_args(argv)
     if args.max_steps < 1:
         parser.error("--max-steps must be positive")
@@ -57,21 +72,61 @@ def main(argv: list[str] | None = None) -> int:
             cleanup.callback(controller.release_all)
             monitor = ConnectionMonitor(capture, hid, token.cancel)
             cleanup.callback(monitor.close)
+            bus = EventBus() if args.display else None
+            commands: queue.Queue[Command] = queue.Queue()
+            if bus is not None:
+                server = DisplayServer(bus, commands, token.cancel, args.display_host, args.display)
+                server.start()
+                cleanup.callback(server.close)
+                bus.publish("config", min_presence=cfg.jev_min_presence, min_confidence=cfg.jev_min_confidence)
+                if args.backend == "pi":
+                    _pump_live_frames(capture, bus)
+                else:
+                    _show_screen(capture, bus)
+                threading.Thread(target=_read_stdin, args=(commands,), name="stdin", daemon=True).start()
+                status(f"Display: {server.url}  (goals from the page or typed here)")
             agent = Agent(executor, controller, Memory.load(cfg.session_path),
-                          Telemetry(cfg.bench_csv, args.config_name), args.max_steps, status)
+                          Telemetry(cfg.bench_csv, args.config_name), args.max_steps, status, bus)
             profile = None
             generation = -1
             previous_goal = ""
             correction = False
+            pointed: tuple[float, float] | None = None
+
             status(f"Executor: {cfg.executor}; Gemini: {cfg.gemini_model}. Ctrl+C interrupts; idle Ctrl+C exits.")
             while True:
                 try:
-                    line = input("Correction (or /new GOAL)> " if correction else "Goal> ").strip()
+                    if bus is None:
+                        command = Command("goal", text=input("Correction (or /new GOAL)> " if correction else "Goal> "))
+                    else:
+                        command = _next_command(commands)
                 except (EOFError, KeyboardInterrupt):
                     status("Goodbye.")
                     return 0
+                if command.kind == "point":
+                    pointed = (command.x, command.y)
+                    continue
+                if command.kind == "click":
+                    try:
+                        profile, generation = _connected_profile(
+                            monitor, capture, executor, args.os, token, profile, generation, status)
+                        controller.execute(Action("click", x=command.x, y=command.y), profile)
+                        controller.wait_settled()
+                        if bus is not None:
+                            bus.publish("tap", x=command.x, y=command.y)
+                            if args.backend != "pi":
+                                _show_screen(capture, bus)
+                    except (Cancelled, ActionError, HIDError) as exc:
+                        controller.release_all()
+                        status(f"Tap not sent ({type(exc).__name__}).")
+                    continue
+                line = command.text.strip()
                 if not line:
                     continue
+                if pointed is not None:
+                    line += (f"\nThe user tapped the screen to mean 'this': x={pointed[0]:.3f}, y={pointed[1]:.3f} "
+                             "(0-1 within the screen, origin top-left).")
+                    pointed = None
                 if line.startswith("/new "):
                     goal = line[5:].strip()
                 elif correction:
@@ -81,19 +136,8 @@ def main(argv: list[str] | None = None) -> int:
                 if not goal:
                     continue
                 try:
-                    status("Waiting for target…")
-                    monitor.wait_connected()
-                    token.reset()
-                    current = monitor.generation
-                    if not monitor.connected:
-                        continue
-                    if profile is None or current != generation:
-                        profile = detect_profile(capture, executor, args.os, cancel=token)
-                        if not monitor.connected or monitor.generation != current:
-                            profile = None
-                            continue
-                        generation = current
-                        status(f"Target: {profile.os} ({profile.input})")
+                    profile, generation = _connected_profile(
+                        monitor, capture, executor, args.os, token, profile, generation, status)
                     if args.backend == "local":
                         status("Focus the target window; starting in 2 seconds.")
                         token.sleep(2)
@@ -107,9 +151,68 @@ def main(argv: list[str] | None = None) -> int:
                     previous_goal, correction = goal, True
                     status("Interrupted. Enter a correction or /new GOAL.")
     except Exception as exc:
-        # Do not echo API keys or raw provider request payloads.
-        status(f"Setup failed ({type(exc).__name__}). Check .env, model access, capture and UART settings.")
+        status(f"Setup failed: {describe(exc, 'setup')}")
         return 1
+
+
+def _next_command(commands: queue.Queue[Command]) -> Command:
+    """Block for the next goal or tap; the timeout keeps Ctrl+C responsive."""
+    while True:
+        try:
+            return commands.get(timeout=0.5)
+        except queue.Empty:
+            continue
+
+
+def _read_stdin(commands: queue.Queue[Command]) -> None:
+    """With a display, typed goals still work; they share the page's queue."""
+    while True:
+        try:
+            line = input()
+        except (EOFError, KeyboardInterrupt):
+            return
+        commands.put(Command("goal", text=line))
+
+
+def _show_screen(capture: Capture, bus: EventBus) -> None:
+    """Publish one frame. Call from the main thread: browser/mss backends aren't thread-safe."""
+    frame = capture.grab()
+    if frame is not None:
+        bus.set_frame(prepare(frame, active_rect(frame), grid=False))
+
+
+def _pump_live_frames(capture: Capture, bus: EventBus) -> None:
+    """The capture card is read on its own thread, so it can feed the display continuously."""
+    def pump() -> None:
+        while True:
+            _show_screen(capture, bus)
+            time.sleep(1 / LIVE_FPS)
+    threading.Thread(target=pump, name="display-frames", daemon=True).start()
+
+
+def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: Executor,
+                       os_override: str | None, token: CancelToken, profile: DeviceProfile | None,
+                       generation: int, status: Callable[[str], None]) -> tuple[DeviceProfile, int]:
+    """Wait for a target and re-detect it if it changed. A disconnect during
+    detection retries instead of dropping the user's pending goal."""
+    while True:
+        if not monitor.connected:
+            status("Waiting for target…")
+        current = monitor.wait_connected()
+        token.reset()
+        if profile is not None and current == generation:
+            return profile, generation
+        try:
+            detected = detect_profile(capture, executor, os_override, cancel=token)
+        except Cancelled:
+            if monitor.connected:
+                raise  # a real interruption, not an unplug
+            continue
+        if monitor.connected and monitor.generation == current:
+            status(f"Target: {detected.os} ({detected.input})")
+            return detected, current
+        status("Target changed during detection; retrying.")
+
 
 
 if __name__ == "__main__":

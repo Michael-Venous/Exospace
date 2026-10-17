@@ -6,6 +6,8 @@ CircuitPython firmware that presents as a composite HID device: a boot-protocol 
 
 The firmware holds no logic beyond the protocol. On USB `unmounted`, it must `release_all`.
 
+Wiring, Pi setup and the bring-up order: [docs/hardware-bringup.md](../../docs/hardware-bringup.md).
+
 ## Files
 
 | File | Role |
