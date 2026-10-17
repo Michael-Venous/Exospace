@@ -16,6 +16,7 @@ from brain.verification import highlight_rows, visibly_changed
 
 TYPE_CHUNK = 32  # chars per UART "type" command, so cancel lands quickly
 WAIT_S = 10.0  # longest block of the wait skill
+MAX_SCROLL = 15  # wheel notches per action; a pixel count (e.g. 800) would fling to the page end
 BOOT_KEY_TTL_S = 120.0  # armed firmware keys expire when no restart follows
 BOOT_TAP_S = 0.2  # firmware polls for its setup key; tap faster than that
 BOOT_TAP_AFTER_S = 5.0  # the boot logo shown once video returns is still the key window
@@ -80,7 +81,7 @@ class Controller:
             x2, y2 = _hid_xy(action.x2, action.y2)
             self._send({"op": "swipe", "x1": x1, "y1": y1, "x2": x2, "y2": y2, "ms": action.ms})
         elif kind == "scroll":
-            self._send({"op": "scroll", "dy": action.dy})
+            self._send({"op": "scroll", "dy": max(-MAX_SCROLL, min(MAX_SCROLL, action.dy))})
         elif kind == "type_text":
             self.type_text(action.text)
         elif kind == "hotkey":

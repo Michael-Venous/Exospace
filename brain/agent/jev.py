@@ -15,6 +15,11 @@ import numpy as np
 from brain.cancel import CancelToken
 
 
+ATTEMPTS = 2  # one retry: a single timeout ended 3 of 14 live runs
+RETRY_STATUS = {429, 500, 502, 503, 504}
+RETRY_DELAY_S = 0.5
+
+
 class JevError(RuntimeError):
     """Sanitized provider failure (never contains credentials or image payloads)."""
 
@@ -71,32 +76,44 @@ class JevVision:
                 'assets': {ref: {'type':'image','format':'jpg',
                                  'data_base64':base64.b64encode(encoded).decode()}},
                 'questions': questions}
-        started, success, error = time.monotonic(), False, ''
-        try:
-            self.cancel.check()
-            response = self.cancel.run(lambda: self.client.post(
-                'https://api.typesafe.ai/v1/systemone', json=body))
-            self.cancel.check()
-            if response.status_code != 200:
-                raise JevError(f'Jev HTTP {response.status_code}')
-            data = response.json()
-            answers = data.get('answers')
-            if not isinstance(answers, dict) or any(k not in answers for k in questions):
-                raise JevError('Jev returned incomplete answers')
-            success = True
-            return answers, size, padded
-        except httpx.HTTPError as exc:
-            error = type(exc).__name__
-            raise JevError(f'Jev transport failure ({error})') from None
-        except BaseException as exc:
-            error = type(exc).__name__
-            raise
-        finally:
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.log_path.open('a') as stream:
-                stream.write(json.dumps({'run_id':run_id,'step':step,'role':'jev',
-                    'model':self.model,'attempt':1,'elapsed_s':time.monotonic()-started,
-                    'success':success,'error':error})+'\n')
+        for attempt in range(1, ATTEMPTS + 1):
+            started, success, error = time.monotonic(), False, ''
+            try:
+                self.cancel.check()
+                response = self.cancel.run(lambda: self.client.post(
+                    'https://api.typesafe.ai/v1/systemone', json=body))
+                self.cancel.check()
+                if response.status_code != 200:
+                    error = f'HTTP {response.status_code}'
+                    if response.status_code not in RETRY_STATUS or attempt == ATTEMPTS:
+                        raise JevError(f'Jev HTTP {response.status_code}')
+                else:
+                    answers = response.json().get('answers')
+                    if not isinstance(answers, dict) or any(k not in answers for k in questions):
+                        raise JevError('Jev returned incomplete answers')
+                    success = True
+                    return answers, size, padded
+            except httpx.TransportError as exc:  # a timeout or dropped connection: one retry
+                error = type(exc).__name__
+                if attempt == ATTEMPTS:
+                    raise JevError(f'Jev transport failure ({error})') from None
+            except httpx.HTTPError as exc:
+                error = type(exc).__name__
+                raise JevError(f'Jev transport failure ({error})') from None
+            except BaseException as exc:
+                error = error or type(exc).__name__
+                raise
+            finally:
+                self._log(run_id, step, attempt, started, success, error)
+            self.cancel.sleep(RETRY_DELAY_S)
+        raise AssertionError('unreachable')
+
+    def _log(self, run_id: str, step: int, attempt: int, started: float, success: bool, error: str) -> None:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.log_path.open('a') as stream:
+            stream.write(json.dumps({'run_id':run_id,'step':step,'role':'jev',
+                'model':self.model,'attempt':attempt,'elapsed_s':time.monotonic()-started,
+                'success':success,'error':error})+'\n')
 
     def locate(self, jpeg: bytes, target: str, *, run_id: str = '', step: int = 0):
         questions = {

@@ -58,7 +58,8 @@ Jev supplies ALL coordinates. Only ONE pointer action, FIRST in each stage.
 Hover moves the pointer without holding a button: use it to reveal a submenu,
 then click the newly visible submenu item in a separate stage. Drag holds the
 button while moving to destination. These are different actions.
-Other actions: type_text(text), hotkey(keys), scroll(dy positive down),
+Other actions: type_text(text), hotkey(keys), scroll(dy: mouse-wheel notches,
+positive down, about 5 per screenful; never pixels),
 skill(name=open_app,text=app), skill(name=wait) while a device restarts or loads,
 skill(name=boot_keys,keys=firmware setup keys) right before restarting into setup,
 remember(key,text), ask_user(message), fail(message).

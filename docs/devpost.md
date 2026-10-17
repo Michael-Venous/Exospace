@@ -12,8 +12,8 @@ you: plug it into any computer or phone, say what you want, and it does the step
 ## What it does
 Exospace is a small box that plugs into a target over one USB-C hub. It **sees** the screen
 through HDMI capture and **acts** as a USB keyboard, mouse and touchscreen. Nothing is
-installed on the target, so it works on locked-down library computers, a friend's laptop,
-a phone, even BIOS screens. You press one button (or an accessibility switch) and talk.
+installed on the target, so it works on locked-down library computers, a friend's laptop
+or a phone. You press one button (or an accessibility switch) and talk.
 
 - Direct requests ("open WhatsApp", "go back") happen in about a second.
 - Multi-step requests ("reply to John saying I'll have it by five") are planned and checked

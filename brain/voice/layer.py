@@ -1,4 +1,4 @@
-"""Voice layer (PLAN.md §14): ears and mouth on top of the agent, never its hands.
+"""Voice layer (PLAN.md §11): ears and mouth on top of the agent, never its hands.
 
 Run the agent with a display server, then this:
     .venv/bin/python -m brain --display 8770
