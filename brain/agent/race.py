@@ -1,7 +1,7 @@
 """Race executor: Jev triage and the Flash planner start together on every segment.
 
   act   confident Jev target -> one zoom-refined click, no LLM wait; the plan is discarded
-  keys  (JEV_SOLO_SKILLS=1) open an app or go to a site by keyboard, no LLM wait
+  keys  (JEV_SOLO_SKILLS=1) easy tasks (open app/site, type, key, scroll, find), no LLM wait
   none  a remark or context -> remembered, no input
   plan  the planner's already-running result is used, so a Jev miss costs no extra time
 Irreversible requests never execute until the user approves them in the next turn.
@@ -122,7 +122,7 @@ class RaceExecutor:
         if self.mode == "act":
             return self._direct()
         if self.mode == "keys":
-            self._keys = solo_actions(result.skill, result.text, ctx.profile.os) or []
+            self._keys = solo_actions(result.skill, result.text, ctx.profile.os, result.point) or []
             if self._keys:
                 return self._solo(f"{result.skill} {result.text!r}")
             self.mode = "plan"  # this OS has no keyboard route for it

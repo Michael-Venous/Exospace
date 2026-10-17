@@ -24,12 +24,20 @@ def jpeg() -> bytes:
     return cv2.imencode(".jpg", np.full((300, 400, 3), 200, np.uint8))[1].tobytes()
 
 
-def answers(intent, intent_p=.95, span=None, span_p=.9, browser=.95, irreversible=.02):
-    return ({"intent": {"choice": intent, "probabilities": {intent: intent_p}},
-             "present": {"noul": .1}, "unique": {"noul": .1}, "gesture": {"choice": "click"},
-             "irreversible": {"noul": irreversible}, "target": {"box": {}},
-             "name_span": {"choice": span or "none_here", "probabilities": {span or "none_here": span_p}},
-             "browser_front": {"noul": browser}}, *SIZE)
+BOX = {"box": {"left": .2, "right": .4, "top": .2, "bottom": .4}, "confidence": .9}
+
+
+def choice(value, p=.9):
+    return {"choice": value, "probabilities": {value: p}}
+
+
+def answers(intent, intent_p=.95, span=None, span_p=.9, browser=.95, irreversible=.02, key="enter", key_p=.9,
+            direction="down", direction_p=.9, field=.1):
+    return ({"intent": choice(intent, intent_p), "present": {"noul": field}, "unique": {"noul": field},
+             "gesture": {"choice": "click"}, "irreversible": {"noul": irreversible},
+             "target": BOX if field > .5 else {"box": {}}, "value_span": choice(span or "none_here", span_p),
+             "browser_front": {"noul": browser}, "key": choice(key, key_p),
+             "scroll_direction": choice(direction, direction_p)}, *SIZE)
 
 
 def span_id(utterance, text):
@@ -47,7 +55,10 @@ class SpanTests(unittest.TestCase):
         self.assertIn("visual studio code", spans("open visual studio code").values())
 
     def test_long_utterances_offer_no_solo_skills(self):
-        self.assertEqual(spans("word " * 41), {})
+        self.assertEqual(spans("word " * 31), {})
+
+    def test_span_options_stay_under_jevs_option_limit(self):
+        self.assertLessEqual(len(spans("word " * 30)) + 1, 254)
 
 
 class TriageSoloTests(unittest.TestCase):
@@ -59,7 +70,7 @@ class TriageSoloTests(unittest.TestCase):
         triage(self.jev, jpeg(), "open spotify", CancelToken())
         questions = self.jev.evaluate.call_args.args[1]
         self.assertEqual(set(questions["intent"]["criteria"]), set(INTENT_CRITERIA))
-        self.assertNotIn("name_span", questions)
+        self.assertNotIn("value_span", questions)
 
     def test_confident_open_app_becomes_keys_with_the_users_words(self):
         utterance = "open spotify please"
@@ -81,6 +92,26 @@ class TriageSoloTests(unittest.TestCase):
         self.jev.evaluate.return_value = answers("go_to_site", span=span_id(utterance, "youtube"), browser=.2)
         self.assertEqual(triage(self.jev, jpeg(), utterance, CancelToken(), solo=True).mode, "plan")
 
+    def test_type_into_needs_one_visible_field_and_is_zoom_refined(self):
+        utterance = "type hello world in the search box"
+        zoom = ({"present": {"noul": .9}, "target": {"box": {"left": .4, "right": .6, "top": .4, "bottom": .6}}},
+                *SIZE)
+        self.jev.evaluate.side_effect = [answers("type_into", span=span_id(utterance, "hello world"), field=.95), zoom]
+        result = triage(self.jev, jpeg(), utterance, CancelToken(), solo=True)
+        self.assertEqual((result.mode, result.skill, result.text), ("keys", "type_into", "hello world"))
+        self.assertIsNotNone(result.point)
+        self.jev.evaluate.reset_mock(side_effect=True)
+        self.jev.evaluate.return_value = answers("type_into", span=span_id(utterance, "hello world"), field=.3)
+        self.assertEqual(triage(self.jev, jpeg(), utterance, CancelToken(), solo=True).mode, "plan")
+
+    def test_press_key_and_scroll_use_their_closed_choices(self):
+        self.jev.evaluate.return_value = answers("press_key", key="undo")
+        self.assertEqual(triage(self.jev, jpeg(), "undo that", CancelToken(), solo=True).text, "undo")
+        self.jev.evaluate.return_value = answers("scroll", direction="up")
+        self.assertEqual(triage(self.jev, jpeg(), "scroll up", CancelToken(), solo=True).text, "up")
+        self.jev.evaluate.return_value = answers("press_key", key="enter", key_p=.4)
+        self.assertEqual(triage(self.jev, jpeg(), "hit it", CancelToken(), solo=True).mode, "plan")
+
     def test_solo_questions_join_only_when_on(self):
         self.assertIn("go_to_site", triage_questions(spans("go to youtube"))["intent"]["criteria"])
         self.assertNotIn("go_to_site", triage_questions({})["intent"]["criteria"])
@@ -95,6 +126,19 @@ class SoloActionTests(unittest.TestCase):
         mac = solo_actions("go_to_site", "youtube", "macos")
         self.assertEqual([a.brief() for a in mac], ["hotkey(GUI+L)", "type_text('youtube')", "hotkey(ENTER)"])
         self.assertEqual(solo_actions("go_to_site", "youtube", "linux")[0].keys, ("CTRL", "L"))
+
+    def test_find_type_press_and_scroll_actions(self):
+        self.assertEqual([a.brief() for a in solo_actions("find_on_page", "pricing", "windows")],
+                         ["hotkey(CTRL+F)", "type_text('pricing')", "hotkey(ENTER)"])
+        typed = solo_actions("type_into", "hello", "windows", (.5, .25))
+        self.assertEqual([(a.type, a.x, a.text) for a in typed], [("click", .5, ""), ("type_text", None, "hello")])
+        self.assertIsNone(solo_actions("type_into", "hello", "windows"))  # no field point
+        self.assertEqual(solo_actions("press_key", "undo", "macos")[0].keys, ("GUI", "Z"))
+        self.assertEqual(solo_actions("press_key", "back", "windows")[0].keys, ("ALT", "LEFT"))
+        self.assertEqual(solo_actions("press_key", "enter", "android")[0].keys, ("ENTER",))
+        self.assertIsNone(solo_actions("press_key", "undo", "android"))
+        self.assertEqual(solo_actions("scroll", "down", "linux")[0].dy, 5)
+        self.assertEqual(solo_actions("scroll", "up", "macos")[0].dy, -5)
 
     def test_no_keyboard_route_or_unsafe_text_returns_none(self):
         self.assertIsNone(solo_actions("go_to_site", "youtube", "android"))

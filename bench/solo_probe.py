@@ -1,11 +1,12 @@
 """Probe Jev solo skills on a screenshot: what triage decides and what it would type. Sends
 no input, so it's safe on any machine. Needs TYPESAFE_API_KEY in .env.
 
-    python -m bench.solo_probe --image shot.png --os windows "open spotify" "go to youtube"
+    python -m bench.solo_probe --image shot.png --os windows "open spotify" "go to youtube" \
+        "type hello world in the search box" "press enter" "scroll down" "find pricing on this page"
     python -m bench.solo_probe --local --os macos "launch the text editor"   # this machine's screen
 
-Each line: the intent Jev chose with its probability, the words it picked, the decision
-(keys / act / plan / none), and the keyboard actions a "keys" decision would send.
+For each request: intent probabilities, the top words / key / scroll direction Jev picked, the
+decision (keys / act / plan / none), and the actions a "keys" decision would send.
 """
 
 from __future__ import annotations
@@ -75,16 +76,22 @@ def _report(utterance: str, answers: dict, options: dict, result, os: str, elaps
     probs = intent.get("probabilities") or {}
     print(f"\n“{utterance}”  ({elapsed:.2f} s, one Jev call)")
     print("  intent:  " + "  ".join(f"{k} {v:.2f}" for k, v in sorted(probs.items(), key=lambda kv: -kv[1])))
-    span = answers.get("name_span")
-    if span:
-        ranked = sorted((span.get("probabilities") or {}).items(), key=lambda kv: -kv[1])[:TOP_SPANS]
-        print("  words:   " + "  ".join(f"“{options.get(k, k)}” {v:.2f}" for k, v in ranked))
-        print(f"  browser in front: {answers['browser_front'].get('noul', 0):.2f}")
+    if "value_span" in answers:
+        print("  words:   " + _top(answers["value_span"], lambda k: f"“{options.get(k, k)}”"))
+        print("  key:     " + _top(answers["key"], str))
+        print("  scroll:  " + _top(answers["scroll_direction"], str))
+        print(f"  browser in front: {answers['browser_front'].get('noul', 0):.2f}"
+              f"   field present/unique: {answers['present'].get('noul', 0):.2f}/{answers['unique'].get('noul', 0):.2f}")
     print(f"  irreversible: {answers['irreversible'].get('noul', 0):.2f}")
     print(f"  decision: {result.mode}" + (f" → {result.skill} “{result.text}”" if result.mode == "keys" else ""))
     if result.mode == "keys":
-        actions = solo_actions(result.skill, result.text, os) or []
+        actions = solo_actions(result.skill, result.text, os, result.point) or []
         print("  would send: " + (", ".join(a.brief() for a in actions) or f"nothing (no keyboard route on {os})"))
+
+
+def _top(answer: dict, label) -> str:
+    ranked = sorted((answer.get("probabilities") or {}).items(), key=lambda kv: -kv[1])[:TOP_SPANS]
+    return "  ".join(f"{label(k)} {v:.2f}" for k, v in ranked)
 
 
 if __name__ == "__main__":

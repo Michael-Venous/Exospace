@@ -3,20 +3,22 @@
 One Jev call classifies the utterance against the current screen, locates the target
 it names, and flags irreversible requests. A second, zoomed call refines the target
 point (fixed every near miss on small targets in the study). No regex or phrase rules.
-With `solo` (JEV_SOLO_SKILLS=1, experimental), the same call can also route "open an app"
-and "go to a website" to keyboard skills with no LLM wait (brain/agent/solo.py).
+With `solo` (JEV_SOLO_SKILLS=1, experimental), the same call can also route easy tasks (open
+an app or site, type into a field, press a key, scroll, find on page) to skills with no LLM
+wait (brain/agent/solo.py).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 import cv2
 import numpy as np
 
 from brain.agent.jev import JevVision, probability
-from brain.agent.solo import INTENT_GATE, SOLO_CRITERIA, SPAN_GATE, Spans, solo_questions, spans
+from brain.agent.solo import (INTENT_GATE, KEY_CRITERIA, SCROLL_CRITERIA, SOLO_CRITERIA, SPAN_SKILLS, VALUE_GATE,
+                              Spans, solo_questions, spans)
 from brain.cancel import CancelToken
 
 Mode = Literal["act", "keys", "plan", "none"]
@@ -51,11 +53,11 @@ IRREVERSIBLE = ("Would carrying out the `utterance` on this screen do something 
 @dataclass(frozen=True)
 class Triage:
     mode: Mode
-    point: tuple[float, float] | None  # normalized, zoom-refined; only for mode "act"
+    point: tuple[float, float] | None  # normalized, zoom-refined; mode "act", or "keys" for type_into
     irreversible: bool
     gesture: Gesture = "click"
-    skill: str = ""  # mode "keys": "open_app" or "go_to_site"
-    text: str = ""  # mode "keys": the app or site, copied from the utterance
+    skill: str = ""  # mode "keys": a SOLO_CRITERIA intent
+    text: str = ""  # mode "keys": copied utterance words, a KEY_CRITERIA id, or a scroll direction
 
 
 def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
@@ -94,10 +96,17 @@ def decide(jev: JevVision, jpeg: bytes, utterance: str, answers: dict, size: tup
     choice = answers["intent"].get("choice")
     if choice == "no_action":
         return Triage("none", None, irreversible)
-    if options and choice in SOLO_CRITERIA:
-        return _solo(answers, choice, options, irreversible)
     present = min(probability(answers["present"].get("noul")), probability(answers["unique"].get("noul")))
     point = _box_center(answers["target"], size, padded)
+    if options and choice in SOLO_CRITERIA:
+        solo = _solo(answers, choice, options, irreversible)
+        if solo.skill != "type_into":
+            return solo
+        if present < GATE or point is None:  # typing needs exactly one visible field
+            return Triage("plan", None, irreversible)
+        cancel.check()
+        refined = refine(jev, jpeg, utterance, point, run_id=run_id, step=step)
+        return replace(solo, point=refined) if refined else Triage("plan", None, irreversible)
     if choice != "act_now" or present < GATE or point is None:
         return Triage("plan", None, irreversible)
     cancel.check()
@@ -108,14 +117,23 @@ def decide(jev: JevVision, jpeg: bytes, utterance: str, answers: dict, size: tup
 
 
 def _solo(answers: dict, choice: str, options: Spans, irreversible: bool) -> Triage:
-    """A keyboard skill only when Jev is sure of both the intent and the words; else the planner."""
-    span = answers.get("name_span", {})
-    if (_chosen_probability(answers["intent"]) < INTENT_GATE or span.get("choice") not in options
-            or _chosen_probability(span) < SPAN_GATE):
-        return Triage("plan", None, irreversible)
+    """A skill only when Jev is sure of both the intent and its value; else the planner.
+    type_into's field point is added by the caller after zoom refinement."""
+    plan = Triage("plan", None, irreversible)
+    if _chosen_probability(answers["intent"]) < INTENT_GATE:
+        return plan
+    if choice in SPAN_SKILLS:
+        value_answer, allowed = answers.get("value_span", {}), options
+    elif choice == "press_key":
+        value_answer, allowed = answers.get("key", {}), KEY_CRITERIA
+    else:
+        value_answer, allowed = answers.get("scroll_direction", {}), SCROLL_CRITERIA
+    value = value_answer.get("choice")
+    if value not in allowed or _chosen_probability(value_answer) < VALUE_GATE:
+        return plan
     if choice == "go_to_site" and probability(answers.get("browser_front", {}).get("noul", 0.0)) < GATE:
-        return Triage("plan", None, irreversible)  # no browser in front: the planner opens one first
-    return Triage("keys", None, irreversible, skill=choice, text=options[span["choice"]])
+        return plan  # no browser in front: the planner opens one first
+    return Triage("keys", None, irreversible, skill=choice, text=options[value] if choice in SPAN_SKILLS else value)
 
 
 def _chosen_probability(answer: dict) -> float:
