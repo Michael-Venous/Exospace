@@ -40,7 +40,8 @@ GESTURE_CRITERIA = {
 }
 IRREVERSIBLE = ("Would carrying out the `utterance` on this screen do something irreversible or high-impact: "
                 "sending or posting a message, deleting or emptying data, purchasing or paying, submitting a "
-                "form, formatting, or changing and saving firmware/BIOS settings? Opening, navigating, "
+                "form, formatting, changing and saving firmware/BIOS settings, or a public action on the user's "
+                "account (starring, liking, following, subscribing, voting, sharing)? Opening, navigating, "
                 "selecting, typing a draft, adding to or removing from a cart, and creating something new are not.")
 
 

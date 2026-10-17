@@ -60,6 +60,14 @@ class ModelTests(unittest.TestCase):
         self.assertEqual(json.loads(self.path.read_text())["error"], "TimeoutError")
 
 
+    def test_dropped_connection_is_retried_once(self):
+        with patch.object(self.client.client.models, "generate_content",
+                          side_effect=[httpx.WriteTimeout("slow"), SimpleNamespace(text="{}")]) as generate, \
+                patch.object(self.cancel, "sleep"):
+            self.assertEqual(self.client.generate(b"image", "goal", "system", {}, role="fast"), {})
+        self.assertEqual(generate.call_count, 2)
+
+
 class ZaiTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

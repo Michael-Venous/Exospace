@@ -72,6 +72,22 @@ class JevTests(unittest.TestCase):
         del self.answers['unique']
         with self.assertRaises(JevError): self.jev.locate(self.image,'button')
 
+    def test_one_retry_on_timeout_or_overload(self):
+        calls = []
+        def flaky(request):
+            calls.append(request)
+            if len(calls) == 1:
+                raise httpx.ReadTimeout('slow', request=request)
+            return httpx.Response(200, json={'answers': self.answers})
+        self.jev.client = httpx.Client(transport=httpx.MockTransport(flaky))
+        self.token.sleep = Mock()
+        self.assertIn('present', self.jev.evaluate(self.image, {'present': {}})[0])
+        self.assertEqual(len(calls), 2)
+        self.jev.client = httpx.Client(transport=httpx.MockTransport(
+            lambda request: calls.append(request) or httpx.Response(503)))
+        with self.assertRaisesRegex(JevError, '503'): self.jev.evaluate(self.image, {'present': {}})
+        self.assertEqual(len(calls), 4)
+
     def test_cancelled_request_does_not_hit_api(self):
         self.token.cancel('test')
         from brain.cancel import Cancelled

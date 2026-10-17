@@ -360,6 +360,19 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status,'done')
         self.assertEqual(executor.acknowledge.call_count,3)
 
+    def test_semantic_executor_stops_when_the_screen_never_changes(self):
+        self.hid.change = False
+        executor = Mock()
+        executor.verifies_stages = True
+        executor.next_actions.return_value = Plan("retry", [Action("hotkey", keys=("ALT", "LEFT"))], [])
+        result = self.agent(executor).run("Go back", self.profile)
+        self.assertEqual(result.status, "cancelled")
+        self.assertLess(executor.next_actions.call_count, 8)
+
+    def test_scroll_is_capped_at_wheel_notches(self):
+        self.controller.execute(Action("scroll", dy=800), self.profile)
+        self.assertEqual(self.hid.commands[-1], {"op": "scroll", "dy": 15})
+
 
 
 

@@ -54,6 +54,7 @@ class Agent:
         note = ""
         failures = 0
         stale_discards = 0
+        unchanged_steps = 0  # consecutive steps whose input left the screen as it was
         recovery_used = False
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
@@ -159,13 +160,14 @@ class Agent:
                             token.cancel("video lost")
                             token.check()
                         unchanged = not visibly_changed(frame, after)
+                        unchanged_steps = unchanged_steps + 1 if unchanged else 0
                         if unchanged:
                             notes.append("Screen unchanged; try something different.")
                         # A covered result can leave pixels unchanged. The Jev
-                        # executor checks its semantic postcondition next turn;
-                        # do not count the same pending result as a second failure.
-                        if getattr(self.executor, "verifies_stages", False) is not True:
-                            action_failed = action_failed or unchanged
+                        # executor checks its semantic postcondition next turn,
+                        # so one still screen is no failure; a second in a row is.
+                        semantic = getattr(self.executor, "verifies_stages", False) is True
+                        action_failed = action_failed or unchanged_steps > (1 if semantic else 0)
                     elif not plan.actions:
                         notes.append("No executable actions returned.")
                         action_failed = True

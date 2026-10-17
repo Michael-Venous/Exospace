@@ -59,7 +59,8 @@ Jev supplies ALL coordinates. Only ONE pointer action, FIRST in each stage.
 Hover moves the pointer without holding a button: use it to reveal a submenu,
 then click the newly visible submenu item in a separate stage. Drag holds the
 button while moving to destination. These are different actions.
-Other actions: type_text(text), hotkey(keys), scroll(dy positive down),
+Other actions: type_text(text), hotkey(keys), scroll(dy: mouse-wheel notches,
+positive down, about 5 per screenful; never pixels),
 skill(name=open_app,text=app), remember(key,text), ask_user(message), fail(message).
 No done action is needed: completion is checked after the last stage.
 Typing is literal. NEVER put tabs in text. Each hotkey is ONE simultaneous

@@ -86,6 +86,10 @@ class GeminiJSON:
                 error = type(exc).__name__
                 if attempt == 2:
                     raise
+            except httpx.TransportError as exc:  # a timeout or dropped connection (a WriteTimeout ended a live run)
+                error = type(exc).__name__
+                if attempt == 2:
+                    raise
             except BaseException as exc:
                 error = type(exc).__name__
                 raise

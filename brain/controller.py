@@ -15,6 +15,7 @@ from brain.types import Action, ActionError, DeviceProfile
 
 TYPE_CHUNK = 32  # chars per UART "type" command, so cancel lands quickly
 WAIT_S = 10.0  # longest block of the wait skill
+MAX_SCROLL = 15  # wheel notches per action; a pixel count (e.g. 800) would fling to the page end
 
 _ASCII_FIXES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."})
 
@@ -64,7 +65,7 @@ class Controller:
             x2, y2 = _hid_xy(action.x2, action.y2)
             self._send({"op": "swipe", "x1": x1, "y1": y1, "x2": x2, "y2": y2, "ms": action.ms})
         elif kind == "scroll":
-            self._send({"op": "scroll", "dy": action.dy})
+            self._send({"op": "scroll", "dy": max(-MAX_SCROLL, min(MAX_SCROLL, action.dy))})
         elif kind == "type_text":
             self.type_text(action.text)
         elif kind == "hotkey":
