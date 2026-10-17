@@ -1,23 +1,32 @@
 <!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Exospace Voice</title>
 <style>
-body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:100px;padding:16px;box-sizing:border-box;
-  background:#fff;color:#1d1d1f;font:500 22px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;text-align:center}
-#talk{width:150px;height:150px;border:0;border-radius:50%;cursor:pointer;
-  background:radial-gradient(circle at 34% 28%,#fff 0,#cfe0ff 18%,#7d93ff 52%,#b77bff 80%,#ff9ad5 100%);
-  box-shadow:0 18px 50px rgb(125 147 255/.35),0 0 0 calc(var(--lvl,0)*36px) rgb(125 147 255/.12);
-  transform:scale(calc(1 + var(--lvl,0)*.55));transition:transform 90ms ease-out,box-shadow 90ms ease-out;animation:breathe 4s ease-in-out infinite}
-#talk:focus-visible{outline:2px solid #7d93ff;outline-offset:8px}
-.on #talk{animation:breathe 4s ease-in-out infinite,drift 6s linear infinite}
-#heard{max-width:min(640px,90vw);min-height:2.8em;margin:0}
-#live,#says{color:#86868b}
-#said:empty~#live:empty::before{content:"Hold to talk";color:#a1a1a6}
-#says{font-size:18px;min-height:1.2em;max-width:min(640px,90vw)}
-.err{color:#d70015}
-#mics{position:fixed;bottom:16px;left:50%;translate:-50%;max-width:calc(100vw - 32px);
-  font:inherit;font-size:15px;color:#86868b;background:none;border:0;cursor:pointer}
-@keyframes breathe{50%{scale:1.04}}
-@keyframes drift{to{filter:hue-rotate(360deg)}}
+:root{--ink:#f5f5f7;--dim:#8e8e93;--orb:clamp(200px,30vmin,360px);--glow:.16}
+body{margin:0;min-height:100dvh;display:grid;place-content:center;justify-items:center;gap:clamp(40px,7vmin,96px);
+  padding:16px;box-sizing:border-box;overflow:hidden;background:#000;color:var(--ink);text-align:center;
+  font:500 clamp(26px,3.4vmin,42px)/1.35 -apple-system,"Ubuntu Sans",system-ui,sans-serif}
+/* The orb: a white sphere whose glow follows the voice (--lvl, smoothed in the script). */
+#talk{width:var(--orb);height:var(--orb);border:0;border-radius:50%;cursor:pointer;
+  background:radial-gradient(circle at 36% 30%,#fff 0,#f4f4f6 40%,#d6d7dd 100%);
+  box-shadow:0 0 70px rgb(255 255 255/var(--glow)),0 0 180px rgb(255 255 255/calc(var(--glow)/2)),
+    0 0 0 calc(var(--lvl,0)*44px) rgb(255 255 255/.08);
+  transform:scale(calc(1 + var(--lvl,0)*.08));transition:transform .18s ease-out,box-shadow .3s ease-out;
+  animation:breathe 4s ease-in-out infinite;-webkit-tap-highlight-color:transparent}
+#talk:focus-visible{outline:3px solid #fff;outline-offset:12px}
+.on{--glow:.3}
+/* Waiting on the speech service or the agent: the orb bounces gently. */
+.wait #talk{animation:bounce 1.1s cubic-bezier(.45,0,.55,1) infinite}
+#heard{max-width:min(1100px,88vw);min-height:2.7em;margin:0;text-wrap:balance}
+#live,#says{color:var(--dim)}
+#said:empty~#live:empty::before{content:"Hold to talk";color:var(--dim);letter-spacing:.01em}
+#says{font-size:.72em;min-height:1.35em;max-width:min(1000px,88vw);margin-top:-.5em}
+.err{color:#ff6961}
+#mics{position:fixed;bottom:18px;left:50%;translate:-50%;max-width:calc(100vw - 32px);
+  font:inherit;font-size:16px;color:var(--dim);background:rgb(255 255 255/.08);border:0;border-radius:999px;
+  padding:6px 14px;cursor:pointer}
+@keyframes breathe{50%{scale:1.03}}
+@keyframes bounce{0%,100%{translate:0 0;scale:1}40%{translate:0 -5%;scale:.98 1.02}
+  70%{translate:0 0;scale:1.03 .97}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
 <button id=talk aria-label="Hold to talk" aria-pressed=false></button>
@@ -28,7 +37,15 @@ body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:c
 let stopListening = null;
 const post = (path, body = {}) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
   body: JSON.stringify(body)}).then(r => r.json()).catch(err => ({error: err.message}));
-function showError(text) { said.className = "err"; said.textContent = text; }
+function showError(text) { waiting(false); said.className = "err"; said.textContent = text; }
+
+// Waiting on the speech service or the agent's reply: the orb bounces until it answers (at most 6 s).
+let waitTimer;
+function waiting(on) {
+  document.body.classList.toggle("wait", on);
+  clearTimeout(waitTimer);
+  if (on) waitTimer = setTimeout(() => waiting(false), 6000);
+}
 
 // Mic switcher. Chrome hides device names until the first mic grant, so the list is refilled after it.
 async function listMics() {
@@ -50,6 +67,7 @@ let unspoken = [];
 const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 new EventSource("/narration").onmessage = e => {
   const {say} = JSON.parse(e.data);
+  waiting(false);
   says.textContent = say;
   if (stopListening) unspoken.push(say); else speak(say);
 };
@@ -64,23 +82,26 @@ let starting = false;
 async function start() {
   if (starting) return;      // a double tap must not open a second mic session
   starting = true;
+  waiting(true);
   speechSynthesis.cancel();  // the user is talking: stop speaking at once
   post("/talk");             // barge in on whatever the agent is doing
   let mic;
   try { mic = await navigator.mediaDevices.getUserMedia({audio: mics.value ? {deviceId: {exact: mics.value}} : true}); }
   catch (err) { starting = false; return showError("Microphone blocked: " + err.message); }
-  if (!held) { starting = false; return mic.getTracks().forEach(t => t.stop()); }  // let go before the mic opened
+  if (!held) { starting = false; waiting(false); return mic.getTracks().forEach(t => t.stop()); }  // let go before the mic opened
   listMics();
   const rec = new MediaRecorder(mic), sock = new WebSocket(`ws://${location.hostname}:__WS_PORT__`);
-  let done = "";
+  let done = "", sent = false;
   const ctx = new AudioContext(), an = ctx.createAnalyser(), buf = new Uint8Array(512);
   an.fftSize = buf.length;
   ctx.createMediaStreamSource(mic).connect(an);
+  let level = 0;  // eased toward the mic's loudness, so the orb swells and settles instead of twitching
   (function tick() {
     if (ctx.state === "closed") return talk.style.removeProperty("--lvl");
     an.getByteTimeDomainData(buf);
     let sum = 0; for (const v of buf) sum += (v - 128) ** 2;
-    talk.style.setProperty("--lvl", Math.min(1, Math.sqrt(sum / buf.length) / 30));
+    level += (Math.min(1, Math.sqrt(sum / buf.length) / 30) - level) * .12;
+    talk.style.setProperty("--lvl", level.toFixed(3));
     requestAnimationFrame(tick);
   })();
   stopListening = () => rec.state === "recording" ? rec.stop() : sock.close();
@@ -88,6 +109,7 @@ async function start() {
   rec.onstop = () => { if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
   sock.onopen = () => {
     starting = false;
+    waiting(false);
     rec.start(100);
     document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Listening";
     said.className = ""; said.textContent = ""; live.textContent = "";
@@ -99,7 +121,7 @@ async function start() {
     if (m.is_final && words) done = (done + " " + words).trim();
     if (words) { said.className = ""; said.textContent = done; live.textContent = m.is_final ? "" : words; }
     // Each pause ends a segment: send it now so execution starts while the user keeps talking.
-    if (m.speech_final && done) { send(done); done = ""; }
+    if (m.speech_final && done) { send(done); done = ""; sent = true; }
   };
   sock.onclose = e => {
     stopListening = null;
@@ -111,6 +133,7 @@ async function start() {
     live.textContent = "";
     speakHeld();
     if (done) send(done);
+    waiting(sent || !!done);
     if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
   };
 }
