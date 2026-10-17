@@ -100,6 +100,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(404, "text/plain", b"not found")
 
     def do_POST(self) -> None:
+        # Read the body before any refusal: closing a socket with unread data makes some systems
+        # (Windows) send a reset, so the client sees "connection reset" instead of our reply.
+        raw = self._read_body()
         if not self._trusted_host():
             return
         origin = self.headers.get("Origin")
@@ -107,7 +110,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._reply(403, "application/json", b'{"error":"cross-origin request refused"}')
             return
         try:
-            body = self._json_body()
+            body = self._json_body(raw)
             if self.path == "/goal":
                 text = str(body.get("text", "")).strip()
                 if not text:
@@ -160,14 +163,24 @@ class _Handler(BaseHTTPRequestHandler):
         self._reply(403, "text/plain", b"unknown host")
         return False
 
-    def _json_body(self) -> dict[str, object]:
+    def _read_body(self) -> bytes | None:
+        """The request body, or None when it's missing or too large (the connection then closes)."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1
+        if not 0 < length <= MAX_BODY:
+            self.close_connection = True
+            return None
+        return self.rfile.read(length)
+
+    def _json_body(self, raw: bytes | None) -> dict[str, object]:
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             raise ValueError("Content-Type must be application/json")
-        length = int(self.headers.get("Content-Length") or 0)
-        if not 0 < length <= MAX_BODY:
+        if raw is None:
             raise ValueError("JSON body required")
         try:
-            body = json.loads(self.rfile.read(length))
+            body = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ValueError("invalid JSON") from exc
         if not isinstance(body, dict):

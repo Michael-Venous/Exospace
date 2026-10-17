@@ -153,5 +153,25 @@ class AgentEventTests(unittest.TestCase):
         self.assertTrue(bus.frame()[1].startswith(b"\xff\xd8"))  # JPEG
 
 
+    def test_batch_skipped_mid_way_reports_only_sent_actions(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        capture = Capture()
+        controller = Controller(HID(capture), capture, CancelToken(),
+                                SettleConfig(min_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
+        executor = Mock(spec=["next_actions"])
+        executor.next_actions.side_effect = [  # the fake screen changes on the first click
+            Plan("Fill", [Action("click", x=0.5, y=0.25), Action("click", x=0.5, y=0.75)], []),
+            Plan("Ask", [Action("ask_user", question="Next?")], []),
+        ]
+        bus = EventBus()
+        client = bus.subscribe()
+        agent = Agent(executor, controller, Memory(root / "session.json"),
+                      Telemetry(root / "results.csv", "test"), max_steps=4, events=bus)
+        agent.run("fill it", DeviceProfile("macos", Rect(0, 0, 160, 100), "mouse", 1))
+        actions = [e for e in drain(client) if e["ev"] == "action"]
+        self.assertEqual([(a["point"], a["ok"]) for a in actions], [([0.5, 0.25], True)])
+
 if __name__ == "__main__":
     unittest.main()
