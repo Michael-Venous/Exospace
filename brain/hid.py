@@ -9,15 +9,19 @@ from __future__ import annotations
 import itertools
 import json
 import platform
+import subprocess
 import threading
 from typing import Any, Callable, Protocol
 
 import serial
 
+from brain.types import ActionError
+
 HID_MAX = 32767
 ACK_TIMEOUT_S = 2.0
 
 EventCallback = Callable[[str], None]  # receives "mounted" / "unmounted"
+VOICE_WINDOW = "Exospace Voice"  # brain/voice/layer.html's title
 
 
 class HIDError(RuntimeError):
@@ -118,6 +122,7 @@ class LocalHID:
         pyautogui.PAUSE = 0  # we do our own settling
         self._gui = pyautogui
         self._keyboard = keyboard
+        self._menu_open = False  # Super opened the desktop menu, which X never reports as focused
         gui_key = "command" if platform.system() == "Darwin" else "win"
         self._keymap = {
             "CTRL": "ctrl", "SHIFT": "shift", "ALT": "alt", "GUI": gui_key,
@@ -132,6 +137,10 @@ class LocalHID:
         gui = self._gui
         if op == "ping":
             return
+        if op in ("key", "type"):
+            self._check_focus(cmd)
+        else:
+            self._menu_open = False
         if self._keyboard and op in ("key", "type", "release_all"):
             self._keyboard.send(cmd)
             if op != "release_all":
@@ -167,9 +176,31 @@ class LocalHID:
         if self._keyboard:
             self._keyboard.close()
 
+    def _check_focus(self, cmd: dict[str, Any]) -> None:
+        """Refuse keys bound for the voice app: it keeps focus after the user talks to it, which
+        the model cannot see, and a typed space there barges in on the run. A click moves focus."""
+        keys = set(cmd.get("keys", ()))
+        if "GUI" in keys:
+            self._menu_open = True
+        elif self._menu_open:
+            self._menu_open = not keys & {"ENTER", "ESC"}
+        elif _focused_title() == VOICE_WINDOW:
+            raise ActionError(f"keyboard focus is on the {VOICE_WINDOW} window; click the field to type into first")
+
     def _key(self, name: str) -> str:
         return self._keymap.get(name) or name.lower()
 
     def _px(self, x: int, y: int) -> tuple[int, int]:
         width, height = self._gui.size()
         return round(x / HID_MAX * (width - 1)), round(y / HID_MAX * (height - 1))
+
+
+def _focused_title() -> str:
+    """The focused X11 window's title, or "" where xprop cannot tell."""
+    try:
+        root = subprocess.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"], capture_output=True, text=True, timeout=1)
+        name = subprocess.run(["xprop", "-id", root.stdout.split()[-1], "_NET_WM_NAME"],
+                              capture_output=True, text=True, timeout=1)
+    except (OSError, subprocess.SubprocessError, IndexError):
+        return ""
+    return name.stdout.partition(" = ")[2].strip().strip('"')
