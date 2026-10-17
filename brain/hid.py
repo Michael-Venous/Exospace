@@ -108,13 +108,15 @@ class PicoHID:
 
 class LocalHID:
     """Development stand-in using pyautogui. Move the mouse to a screen corner
-    to trigger pyautogui's emergency stop."""
+    to trigger pyautogui's emergency stop. With `keyboard`, key commands go to that
+    device instead: some desktops (Cinnamon) ignore a faked Super, not a real one."""
 
-    def __init__(self) -> None:
+    def __init__(self, keyboard: HID | None = None) -> None:
         import pyautogui  # optional dependency, only needed for the local backend
 
         pyautogui.PAUSE = 0  # we do our own settling
         self._gui = pyautogui
+        self._keyboard = keyboard
         gui_key = "command" if platform.system() == "Darwin" else "win"
         self._keymap = {
             "CTRL": "ctrl", "SHIFT": "shift", "ALT": "alt", "GUI": gui_key,
@@ -129,6 +131,10 @@ class LocalHID:
         gui = self._gui
         if op == "ping":
             return
+        if self._keyboard and op in ("key", "type", "release_all"):
+            self._keyboard.send(cmd)
+            if op != "release_all":
+                return
         if op == "key":
             gui.hotkey(*(self._key(k) for k in cmd["keys"]))
         elif op == "type":
@@ -157,7 +163,8 @@ class LocalHID:
         return True
 
     def close(self) -> None:
-        pass
+        if self._keyboard:
+            self._keyboard.close()
 
     def _key(self, name: str) -> str:
         return self._keymap.get(name) or name.lower()

@@ -10,7 +10,7 @@ from pathlib import Path
 import statistics
 import time
 
-from brain.agent.executor import GeminiExecutor
+from brain.agent.executor import ModelExecutor
 from brain.agent.jev_flash import JevFlashExecutor, PROMPT, SCHEMA
 from bench.experiments.live_experiment import LiveJSON
 from bench.experiments.recipe_experiment import RecipeExecutor
@@ -65,10 +65,10 @@ def build(mode,cfg,token,cleanup,cold):
     elif mode=='overlap-refined': executor=RefinedPrefixExecutor(cfg,token)
     elif mode=='live-direct-v2': executor=LiveDirectExecutor(cfg,token)
     elif mode=='live-direct':
-        executor=GeminiExecutor(cfg,token)
+        executor=ModelExecutor(cfg,token)
         executor.model.close()
         executor.model=LiveJSON(cfg,token,LIVE_DIRECT_PROMPT,PLAN_SCHEMA)
-        # GeminiExecutor's generated prompt includes routing schema, but Live's
+        # ModelExecutor's generated prompt includes routing schema, but Live's
         # registered function uses PLAN_SCHEMA and forbids planner delegation.
     else: executor=JevFlashExecutor(cfg,token)
     if mode=='live-plan':

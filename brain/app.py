@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import argparse
 import queue
+import sys
 import threading
 import time
 from contextlib import ExitStack
-from typing import Callable
+from dataclasses import replace
+from typing import Callable, cast
 
 from brain.agent.executor import Executor
 from brain.agent.factory import build_executor
-from brain.agent.loop import Agent
+from brain.agent.loop import RESUMABLE, Agent
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled, CancelToken
 from brain.capture import Capture, ScreenCapture, V4L2Capture, active_rect
@@ -25,19 +27,20 @@ from brain.hid import HIDError, LocalHID, PicoHID
 from brain.imaging import prepare
 from brain.monitor import ConnectionMonitor
 from brain.telemetry import Telemetry
-from brain.types import Action, ActionError, DeviceProfile
+from brain.types import OS_NAMES, Action, ActionError, DeviceProfile, OSName
 
 LIVE_FPS = 4  # capture-card frames pushed to the display between steps
+RECONNECT_S = 180.0  # restarting a PC into firmware setup can take minutes
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=["local", "pi", "browser"], default="pi")
+    parser.add_argument("--backend", choices=["local", "pi", "browser", "qemu", "android"], default="pi")
     parser.add_argument("--url", help="Browser target URL (isolated profile)")
     parser.add_argument("--headed", action="store_true", help="Show browser target")
-    parser.add_argument("--os", choices=["macos", "windows", "linux", "android"])
+    parser.add_argument("--os", choices=[os for os in OS_NAMES if os != "unknown"])
     parser.add_argument("--task-id", default="interactive")
-    parser.add_argument("--config-name", default="jev-flash")
+    parser.add_argument("--config-name", help="Benchmark label (default: the executor)")
     parser.add_argument("--max-steps", type=int, default=30)
     parser.add_argument("--display", type=int, metavar="PORT",
                         help="Serve the touch display page on this port (e.g. 8770)")
@@ -48,8 +51,11 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.load()
     token = CancelToken()
     status = lambda message: print(message, flush=True)
-    if not cfg.gemini_api_key:
-        status("Set GEMINI_API_KEY in the project .env before starting (see .env.example).")
+    home_os = cast(OSName | None, cfg.target_os or None)
+    if home_os not in (None, *OS_NAMES) or home_os in ("unknown", "bios"):
+        parser.error("TARGET_OS must be one of windows, macos, linux, chromeos, android, ios")
+    if not (cfg.zai_api_key or cfg.gemini_api_key):
+        status("Set ZAI_API_KEY or GEMINI_API_KEY in the project .env (see .env.example).")
         return 1
     try:
         with ExitStack() as cleanup:
@@ -63,10 +69,16 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.url:
                     parser.error("--backend browser requires --url")
                 capture = hid = BrowserTarget(args.url, headed=args.headed)
+            elif args.backend == "qemu":
+                from brain.qemu import QemuTarget
+                capture = hid = QemuTarget()
+            elif args.backend == "android":
+                from brain.android import AndroidTarget
+                capture = hid = AndroidTarget()
             else:
                 capture = ScreenCapture()
                 cleanup.callback(capture.close)
-                hid = LocalHID()
+                hid = LocalHID(PicoHID(cfg.local_keyboard, cfg.pico_baud) if cfg.local_keyboard else None)
             cleanup.callback(hid.close)
             controller = Controller(hid, capture, token)
             cleanup.callback(controller.release_all)
@@ -85,15 +97,52 @@ def main(argv: list[str] | None = None) -> int:
                     _show_screen(capture, bus)
                 threading.Thread(target=_read_stdin, args=(commands,), name="stdin", daemon=True).start()
                 status(f"Display: {server.url}  (goals from the page or typed here)")
-            agent = Agent(executor, controller, Memory.load(cfg.session_path),
-                          Telemetry(cfg.bench_csv, args.config_name), args.max_steps, status, bus)
-            profile = None
+            profile: DeviceProfile | None = None
             generation = -1
+
+            def redetect(new_connection: bool = False) -> DeviceProfile | None:
+                """Classify the screen again; None keeps the OS when it cannot tell. The same
+                connection keeps its connected_at, which keys executor state (PLAN.md §5.4)."""
+                nonlocal profile
+                try:
+                    found = detect_profile(capture, executor, args.os, home_os=home_os, cancel=token)
+                except (RuntimeError, ValueError):  # e.g. an unclassifiable boot logo
+                    return None  # the model still sees the new screen
+                if profile and not new_connection:
+                    found = replace(found, connected_at=profile.connected_at)
+                profile = found
+                status(f"Target: {profile.os} ({profile.input})")
+                return profile
+
+            def reconnect(reason: str) -> DeviceProfile | None:
+                """Resume a run once the target is back (PLAN.md §5.6); re-detect a new connection."""
+                nonlocal generation
+                while True:
+                    if not controller.await_target(RECONNECT_S):
+                        raise Cancelled("target did not come back")
+                    token.reset()
+                    current = monitor.generation
+                    if current == generation:
+                        return None
+                    try:
+                        found = redetect(new_connection=True)
+                    except Cancelled as exc:
+                        if exc.reason not in RESUMABLE:
+                            raise
+                        continue  # it restarted again while coming back
+                    generation = current
+                    return found
+
+            agent = Agent(executor, controller, Memory.load(cfg.session_path),
+                          Telemetry(cfg.bench_csv, args.config_name or cfg.executor), args.max_steps, status,
+                          bus, reconnect, redetect)
             previous_goal = ""
             correction = False
             pointed: tuple[float, float] | None = None
 
-            status(f"Executor: {cfg.executor}; Gemini: {cfg.gemini_model}. Ctrl+C interrupts; idle Ctrl+C exits.")
+            status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
+            if cfg.executor == "jev-flash" and cfg.zai_api_key:
+                status("EXECUTOR=jev-flash makes GLM follow Jev's stages, slower and less reliable; clear it for direct.")
             while True:
                 try:
                     if bus is None:
@@ -109,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
                 if command.kind == "click":
                     try:
                         profile, generation = _connected_profile(
-                            monitor, capture, executor, args.os, token, profile, generation, status)
+                            monitor, capture, executor, args.os, home_os, token, profile, generation, status)
                         controller.execute(Action("click", x=command.x, y=command.y), profile)
                         controller.wait_settled()
                         if bus is not None:
@@ -137,8 +186,9 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 try:
                     profile, generation = _connected_profile(
-                        monitor, capture, executor, args.os, token, profile, generation, status)
-                    if args.backend == "local":
+                        monitor, capture, executor, args.os, home_os, token, profile, generation, status)
+                    # Goals from the page, the voice layer or a pipe need no window switch first.
+                    if args.backend == "local" and bus is None and sys.stdin.isatty():
                         status("Focus the target window; starting in 2 seconds.")
                         token.sleep(2)
                     result = agent.run(goal, profile, args.task_id)
@@ -191,7 +241,8 @@ def _pump_live_frames(capture: Capture, bus: EventBus) -> None:
 
 
 def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: Executor,
-                       os_override: str | None, token: CancelToken, profile: DeviceProfile | None,
+                       os_override: OSName | None, home_os: OSName | None, token: CancelToken,
+                       profile: DeviceProfile | None,
                        generation: int, status: Callable[[str], None]) -> tuple[DeviceProfile, int]:
     """Wait for a target and re-detect it if it changed. A disconnect during
     detection retries instead of dropping the user's pending goal."""
@@ -203,7 +254,7 @@ def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: E
         if profile is not None and current == generation:
             return profile, generation
         try:
-            detected = detect_profile(capture, executor, os_override, cancel=token)
+            detected = detect_profile(capture, executor, os_override, home_os=home_os, cancel=token)
         except Cancelled:
             if monitor.connected:
                 raise  # a real interruption, not an unplug
@@ -212,7 +263,6 @@ def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: E
             status(f"Target: {detected.os} ({detected.input})")
             return detected, current
         status("Target changed during detection; retrying.")
-
 
 
 if __name__ == "__main__":

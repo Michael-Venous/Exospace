@@ -28,8 +28,9 @@ Wayland input backend.
 
 Ctrl+C during a task cancels and releases input. The next line corrects the
 previous goal; `/new GOAL` starts a different task. Ctrl+C at the prompt exits.
-A disconnected target is re-detected before the next request. Voice and automatic
-resume on reconnect are not implemented yet. `--max-steps` defaults to 30.
+A run survives a target restart, replug or blank screen: it waits up to 180 s for
+video, re-detects the device and continues on the new screen. Voice is not wired into
+this prompt yet. `--max-steps` defaults to 30.
 
 | Module | Responsibility |
 |---|---|
@@ -37,7 +38,7 @@ resume on reconnect are not implemented yet. `--max-steps` defaults to 30.
 | `monitor.py` | Connection generation and disconnect cancellation |
 | `imaging.py` | Active-screen crops and JPEG preparation |
 | `telemetry.py` | Existing benchmark CSV contract |
-| `device.py` | Screenshot-based OS identification, or explicit `--os` |
+| `device.py` | Screenshot-based OS identification, or explicit `--os` / `TARGET_OS` |
 | `app.py` | Typed requests, corrections, lifecycle cleanup |
 | `agent/model.py` | Bounded Gemini requests and per-model timing log |
 | `agent/race.py` | Default executor: Jev triage races the planner; irreversible requests need approval |
@@ -46,11 +47,21 @@ resume on reconnect are not implemented yet. `--max-steps` defaults to 30.
 | `arbiter.py` | Commit gate for the pipelined voice layer (PLAN.md §14) |
 | `agent/jev.py` | Image normalization, bounded HTTP transport, presence/uniqueness gates |
 | `browser.py` | Isolated screenshot/input development backend |
+| `qemu.py` | Virtual PC (QEMU + OVMF UEFI) for firmware and restart tests |
+| `android.py` | Android emulator or USB-debugging phone over adb, for phone tests |
 | `agent/loop.py` | Single HID writer, verification, recovery and memory |
 
 ## Models and latency
 
-Current default: **race** (`EXECUTOR=race`): Jev triage and the Jev + Flash planner start
+With `ZAI_API_KEY` set, the default is `EXECUTOR=direct`: GLM-4.6V-FlashX returns each
+step's actions and coordinates in one call (PLAN.md §13). GLM tends to claim `done` from
+its own history, so once a run has sent input, a short second call (about 1.7 s per `done`
+claim) must confirm that the screenshot shows the goal; if not, the run continues with what
+is missing. A step's actions run as one batch, but a click or swipe after the first input
+is skipped once the screen has changed (a tapped field opening the keyboard), since its
+coordinates came from the old screen. A z.ai call is tried up to three times.
+
+Otherwise the default is **race** (`EXECUTOR=race`): Jev triage and the Jev + Flash planner start
 together on every request; a confident Jev click or "no action" wins, otherwise the planner's result is
 used. Completion is one Jev call on goal + executed steps + screen. Evidence and numbers:
 [`bench/arch/README.md`](../bench/arch/README.md). `EXECUTOR=jev-flash` runs the planner alone.
@@ -90,6 +101,40 @@ button. Semantic dragging maps to the existing `swipe` action. A hover and its
 subsequent submenu click always use different screenshots. Shared action/UART
 schemas are unchanged. Jev Box remains experimental, and the agent's successful
 completion claim should be measured against an independent task outcome.
+
+## Restarts and firmware setup
+
+The `boot_keys` skill arms setup keys (F2, DELETE, ESC...) that the controller taps
+every 0.2 s while the target restarts and for 5 s after its video returns. Taps start
+only once the Pico sees the USB reset, so a screen that merely blanks gets none, and a
+run that ends disarms them. Firmware screens get the `bios` profile. They have no
+pointer, so a click presses DOWN/UP until the menu's highlight bar covers the clicked
+row; right-click, scroll and swipe are rejected. A boot logo can read as firmware, so a
+`bios` profile is detected again once its screen has changed a lot since it was
+classified, also between goals. Test without hardware on a QEMU/OVMF virtual PC
+(Debian/Ubuntu packages `qemu-system-x86` and `ovmf`); every run starts from fresh
+firmware settings:
+
+```sh
+.venv/bin/python -m brain --backend qemu
+```
+
+Limits: Mac boot keys must be held, which taps cannot do. PCs with Fast Boot ignore USB
+keyboards during POST, and a restart that never resets USB (no `unmounted` from the Pico)
+gets no taps; use the OS's restart-to-firmware option there. Highlight
+detection needs a solid bar, so menus that only recolor text need arrow keys, as do
+one-row menus and a UEFI shell (UP/DOWN recall its history).
+
+## Phone testing with an Android emulator
+
+With one emulator (or a phone with USB debugging) listed by `adb devices`, the android
+backend stands in for the capture card and Pico: `adb screencap` frames in, `adb shell
+input` taps, swipes, keys and ASCII text out. It finds `adb` on `PATH` or in
+`~/Android/Sdk/platform-tools`.
+
+```sh
+.venv/bin/python -m brain --backend android
+```
 
 ## Local browser testing without the hardware adapter
 

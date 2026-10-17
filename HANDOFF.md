@@ -1,5 +1,75 @@
 # Exospace prototype handoff
 
+## Overnight branch state — 2026-10-17 (`overnight-ultracode`)
+
+Built unattended on `overnight-ultracode`. `integrate/overnight-voice` is `main` merged with it;
+where the two conflicted, overnight's behavior won, and where this section and the ones below
+differ, this one holds there. After the merge, 197 unit tests pass on the laptop
+(`.venv/bin/python -m unittest discover -s tests`).
+
+**Defaults and latency.** With `ZAI_API_KEY` in `.env`, `EXECUTOR=direct` runs
+`glm-4.6v-flashx`: one call per step returns the actions and their coordinates. Measured
+over 1,299 logged calls: p50 2.5 s, p90 4.3 s, p99 14 s per call. Each call has a 12 s
+timeout (`MODEL_TIMEOUT_S`) and up to three tries, so a step whose calls all hang waits
+about 37 s before it fails. Some goals start with no model call at all
+(`brain/agent/quick.py`): plain commands such as "press ctrl c" or `type "hi"`, and goals
+that start "open calculator, then ..." or "scroll down and ...". Once a run has sent
+input, a `done` claim costs one extra call (about 1.7 s) that must see the goal on screen.
+
+**Any OS.** The device profile (§5.4) names the OS as windows, macos, linux, chromeos,
+android, ios or bios, and each OS gets a short hint in `OS_HINTS` (`brain/agent/prompts.py`).
+- Phones: `--backend android` drives a phone over adb with touch input.
+- Firmware: `--backend qemu` runs OVMF on a scratch copy of its variable store.
+  - Clicks become arrow-key presses.
+  - `boot_keys` taps the setup keys through a restart, but only once the Pico reports the
+    USB reset. A run that ends disarms them.
+  - A run waits up to 180 s for the target to come back after a restart, then carries on
+    with the same goal (§5.6).
+- A `bios` profile is classified again once its screen has changed a lot since it was last
+  classified, mid-run or between goals (a boot logo can look like firmware).
+
+**End-to-end results.** These used the live model, and each oracle checked the result
+outside the agent. A run counts only when its oracle could tell (one alarm run started
+with the alarm already set, so it is left out).
+
+| Goal | Target | Result |
+|---|---|---|
+| Open a text editor, type a line, save `~/hello.txt` | nested XFCE desktop | PASS, 36.5 s (the 3 runs before the fixes failed) |
+| Work out 1234*5678 in the calculator | nested XFCE desktop | PASS, 24.2 s, with the answer stated |
+| Turn on dark theme | Android emulator | 2 of 3 passed (46.2 s, 50.5 s); the failure came before the Android hint |
+| Set an alarm for 6:45 AM | Android emulator | 1 of 3 passed (59.1 s). The Android hint now names the Clock app for an alarm, so this is no longer a blind test; its one run since failed at the clock-face time picker |
+| Add contact Ada Lovelace, 555 123 4567 | Android emulator | 0 of 9 passed. One run first passed a loose check with the name "Ada Lovelaceyy555 123"; the exact check now fails it. The last run typed the number into the name field |
+| Restart into firmware setup and set the boot time-out to 7 s | QEMU/OVMF | 4 of 21 passed |
+
+**Limits and risks**
+- **Contract notes need team sign-off.** PLAN.md now has notes on:
+  - §5.3: the `wait` and `boot_keys` skills
+  - §5.4: the new OS names and bios re-detection
+  - §5.6: resuming after a restart
+  - §3: firmware is now in scope
+  - §13: `direct` is the default executor with z.ai
+- **Untested targets.** iOS and ChromeOS have not been tried at all. Android has only run on
+  the emulator, where the on-screen keyboard covers form fields; a real phone typing
+  through the Pico keyboard is untested. The OS hints were tuned on Linux and Android only,
+  and the one-batch save hint covers Linux only.
+- **Firmware is unreliable.** The model often claims `done` before saving with F10 then Y.
+  A click on a list that scrolls under its highlight bar is rejected, so the model must
+  use the arrow keys there.
+- **Thin re-detection margins.** The threshold (40) is close to the smallest
+  firmware-to-desktop change measured (44.1, OVMF to Linux). One firmware-to-phone pair
+  changed by only 1.9, so a phone misread as firmware can stay `bios`. Consecutive firmware
+  screens changed by up to 114, so some firmware steps pay for an extra classification call.
+- **Restarts the Pico cannot see.** PCs with Fast Boot ignore USB keyboards during POST,
+  and a restart that never resets USB gets no key taps.
+- **Batch guard.** When a tap changes the screen mid-batch (for example by opening the
+  keyboard), the rest of the batch is skipped and planned again, which costs a step.
+- **Quick-path misses.** The quick path decides with a word list, so "open a text editor"
+  still goes to the model.
+- **Model quirks.** The model sometimes leaves out a coordinate, which wastes a step, and
+  has once given an empty `done` message. One call hung for the full 12 s before its retry.
+- **Self-reported success.** The success column in `bench/results.csv` is the agent's own
+  claim. Only the oracles above are independent checks.
+
 ## Status 2026-10-17 (Claude): read this first
 **`main` is the source of truth.** All branches are merged into it (PR #9); `agent/prototype` is
 superseded, so switch to `main` before continuing.

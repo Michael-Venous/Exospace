@@ -4,12 +4,11 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 import re
-from typing import cast
 
-from brain.agent.executor import Plan, StepContext, context_prompt, parse_plan
+from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, parse_plan
 from brain.agent.jev import JevVision
-from brain.agent.model import GeminiJSON
-from brain.agent.prompts import OS_PROMPT, OS_SCHEMA, PLAN_SCHEMA
+from brain.agent.model import language_model
+from brain.agent.prompts import PLAN_SCHEMA
 from brain.cancel import CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
@@ -59,7 +58,9 @@ Hover moves the pointer without holding a button: use it to reveal a submenu,
 then click the newly visible submenu item in a separate stage. Drag holds the
 button while moving to destination. These are different actions.
 Other actions: type_text(text), hotkey(keys), scroll(dy positive down),
-skill(name=open_app,text=app), remember(key,text), ask_user(message), fail(message).
+skill(name=open_app,text=app), skill(name=wait) while a device restarts or loads,
+skill(name=boot_keys,keys=firmware setup keys) right before restarting into setup,
+remember(key,text), ask_user(message), fail(message).
 No done action is needed: completion is checked after the last stage.
 Typing is literal. NEVER put tabs in text. Each hotkey is ONE simultaneous
 combination, not a sequence. Batch TAB and typing only when focus/tab order are
@@ -129,8 +130,7 @@ class JevFlashExecutor:
 
     def __init__(self,cfg:Config,cancel:CancelToken):
         self.cancel=cancel
-        self.model=GeminiJSON(cfg.gemini_api_key,cfg.gemini_model,cfg.gemini_thinking,
-                             cancel,cfg.model_timeout_s,cfg.model_log)
+        self.model=language_model(cfg,cancel)
         try:
             self.jev=JevVision(cfg.typesafe_api_key,cancel,cfg.model_log,cfg.jev_model,
                               cfg.jev_timeout_s,cfg.jev_min_presence,cfg.jev_min_confidence)
@@ -285,10 +285,7 @@ class JevFlashExecutor:
         raise AssertionError('unreachable')
 
     def classify_os(self,image:bytes)->OSName:
-        result=self.model.generate(image,OS_PROMPT,OS_PROMPT,OS_SCHEMA,role='device')
-        name=result.get('os','unknown')
-        if name not in {'windows','macos','linux','android','unknown'}:raise ValueError('Invalid OS')
-        return cast(OSName,name)
+        return detect_os(self.model,image)
 
     def close(self):
         self.jev.close()
