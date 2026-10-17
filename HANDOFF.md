@@ -1,5 +1,28 @@
 # Exospace prototype handoff
 
+## Status 2026-10-17 (Claude): read this first
+**`main` is the source of truth.** All branches are merged into it (PR #9); `agent/prototype` is
+superseded, so switch to `main` before continuing.
+
+Done and on `main`:
+- **Runtime:** race architecture is the default (`EXECUTOR=race`): Jev triage (act / plan / no action,
+  target, gesture, irreversible flag) races the Jev + Flash planner; steps-aware completion; experiments
+  moved to `bench/experiments/`. Evidence: `bench/arch/README.md` (89% vs 53%, 0 vs 5 unsafe).
+- **Voice layer:** `brain/voice/layer.py` (PLAN.md §14), smoke-tested through the real agent.
+- **Pi:** `scripts/pi/deploy.sh` deployed it; 151 tests pass on the Pi. `python -m brain.doctor` lists
+  what's left there.
+- **Protocol:** `tests/test_pico_loopback.py` runs the real `PicoHID` + `Controller` against the real
+  firmware command handler over a pty: gestures, taps, errors and unplug events all agree.
+- **Docs:** `docs/demo.md`, `docs/devpost.md`, `docs/hardware-bringup.md`.
+
+Waiting on hardware / sudo (in order):
+1. On the Pi with sudo: enable uart0, add `mike` to `video` and `dialout`, `loginctl enable-linger`
+   (exact commands printed by `scripts/pi/setup.sh`), reboot, copy `.env` (chmod 600).
+2. Plug in the capture card and Pico; flash `firmware/pico/` (see its README); run `python -m brain.doctor`.
+3. `systemctl --user enable --now exospace-agent exospace-voice`; run `docs/demo.md` on real targets
+   (Windows laptop, Mac, Samsung phone) and re-measure latency with the capture card.
+
+
 ## Fast interpreter and direct messy-request Jev benchmark — 2026-10-17
 
 **Completed:** model-driven interpretation, compact output, raw-screen Jev,
