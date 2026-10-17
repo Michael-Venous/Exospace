@@ -38,3 +38,7 @@ firmware/pico/sd/
 .Trash-*
 .metadata_never_index
 System Volume Information/
+
+# Learned replay cache (contains what users asked for)
+learned.json
+learned.json.tmp
