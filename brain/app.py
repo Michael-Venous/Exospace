@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--headed", action="store_true", help="Show browser target")
     parser.add_argument("--os", choices=["macos", "windows", "linux", "android"])
     parser.add_argument("--task-id", default="interactive")
-    parser.add_argument("--config-name", default="jev-flash")
+    parser.add_argument("--config-name", help="Benchmark label (default: the executor)")
     parser.add_argument("--max-steps", type=int, default=30)
     parser.add_argument("--display", type=int, metavar="PORT",
                         help="Serve the touch display page on this port (e.g. 8770)")
@@ -49,8 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.load()
     token = CancelToken()
     status = lambda message: print(message, flush=True)
-    if not cfg.gemini_api_key:
-        status("Set GEMINI_API_KEY in the project .env before starting (see .env.example).")
+    if not (cfg.gemini_api_key or cfg.uses_zai):
+        status("Set GEMINI_API_KEY (or ZAI_API_KEY with EXECUTOR=direct) in the project .env (see .env.example).")
         return 1
     try:
         with ExitStack() as cleanup:
@@ -87,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
                 threading.Thread(target=_read_stdin, args=(commands,), name="stdin", daemon=True).start()
                 status(f"Display: {server.url}  (goals from the page or typed here)")
             agent = Agent(executor, controller, Memory.load(cfg.session_path),
-                          Telemetry(cfg.bench_csv, args.config_name), args.max_steps, status, bus,
+                          Telemetry(cfg.bench_csv, args.config_name or cfg.executor), args.max_steps, status, bus,
                           resume=lambda: _await_video(monitor, capture, hid, token))
             profile = None
             generation = -1
@@ -95,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
             correction = False
             pointed: tuple[float, float] | None = None
 
-            status(f"Executor: {cfg.executor}; Gemini: {cfg.gemini_model}. Ctrl+C interrupts; idle Ctrl+C exits.")
+            status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
             while True:
                 try:
                     if bus is None:

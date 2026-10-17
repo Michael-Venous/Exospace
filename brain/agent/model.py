@@ -231,9 +231,8 @@ def _balanced(text: str, swap: bool) -> str:
 
 
 def language_model(cfg: Config, cancel: CancelToken) -> GeminiJSON | ZaiJSON:
-    """The direct executor's model: z.ai when its key is set, else Gemini. GLM cannot follow
-    jev-flash's stage schema (bench/results.csv), so the Jev executors use Gemini directly."""
-    if cfg.zai_api_key and cfg.executor == "direct":
+    """The one-call executor's model: z.ai when `cfg.uses_zai`, else Gemini."""
+    if cfg.uses_zai:
         return ZaiJSON(cfg.zai_api_key, cfg.zai_model, None, cancel, cfg.model_timeout_s,
                        cfg.model_log, cfg.zai_base_url)
     return GeminiJSON(cfg.gemini_api_key, cfg.gemini_model, cfg.gemini_thinking, cancel,

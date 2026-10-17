@@ -36,6 +36,16 @@ class Config:
     zai_model: str = "glm-4.6v-flashx"
     zai_base_url: str = "https://api.z.ai/api/paas/v4"
 
+    @property
+    def uses_zai(self) -> bool:
+        """z.ai serves only the direct executor; GLM cannot follow jev-flash's stage schema."""
+        return bool(self.zai_api_key) and self.executor == "direct"
+
+    @property
+    def model_name(self) -> str:
+        """The language model the executor's own calls use (see `language_model`)."""
+        return self.zai_model if self.uses_zai else self.gemini_model
+
     @classmethod
     def load(cls) -> Config:
         load_dotenv()

@@ -3,14 +3,16 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
 
-from brain.agent.model import GeminiJSON, ZaiJSON, first_json_object, shape
+from brain.agent.model import GeminiJSON, ZaiJSON, first_json_object, language_model, shape
 from brain.cancel import CancelToken
+from brain.config import Config
 
 
 class ModelTests(unittest.TestCase):
@@ -145,6 +147,26 @@ class ZaiTests(unittest.TestCase):
         reply = '{"reasoning": "r", "actions": [{"type": "click", "y": 0.2"}, {"type": "type_text"}]}'
         with self.assertRaises(ValueError):
             first_json_object(reply, ("reasoning", "actions"))
+
+
+
+class ProviderTests(unittest.TestCase):
+    def test_zai_serves_only_the_direct_executor(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        log = Path(temp.name) / "calls.jsonl"
+        base = Config("offline-gemini-key", "gemini-test", None, "", 0, "", 0, 0, log, log,
+                      model_log=log, zai_api_key="offline-zai-key")
+        for executor, kind in (("direct", ZaiJSON), ("race", GeminiJSON), ("jev-flash", GeminiJSON)):
+            with self.subTest(executor=executor):
+                cfg = replace(base, executor=executor)
+                client = language_model(cfg, CancelToken())
+                self.addCleanup(client.close)
+                self.assertIsInstance(client, kind)
+                self.assertEqual(cfg.model_name, "glm-4.6v-flashx" if kind is ZaiJSON else "gemini-test")
+        client = language_model(replace(base, executor="direct", zai_api_key=""), CancelToken())
+        self.addCleanup(client.close)
+        self.assertIsInstance(client, GeminiJSON)
 
 
 if __name__ == "__main__":
