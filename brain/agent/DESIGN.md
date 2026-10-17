@@ -3,7 +3,7 @@
 **Owner:** Agent. **Status:** proposal. Section 8 lists what needs team approval before it touches PLAN.md §5.
 
 This covers what happens from the moment the user wants something until it's done: who it's for, what they hear and
-see, how speech gets in, and how the smart model (Gemini) and the fast model (UI-TARS on the B200s, or Jev) share
+see, how speech gets in, and how the smart model (Gemini) and the fast model (UI-TARS on the B200s, or a fast text model picking from a numbered list) share
 the work.
 
 ## 1. Who it's for
@@ -100,7 +100,7 @@ Each tier is only used when the cheaper one can't handle the moment.
 | Tier | Who | Target latency | Job |
 |---|---|---|---|
 | 0. Skill / cache | Controller (no AI) | < 0.1 s | Per-OS keyboard skills (§6 in PLAN.md); replay a cached action for a screen seen before |
-| 1. Executor | UI-TARS on the B200s (candidate), **Jev (candidate)**, Gemini (baseline) | ~0.3–1 s | Screen + subtask → ONE next action (§5.3) |
+| 1. Executor | UI-TARS on the B200s (candidate), **numbered-list picker (candidate)**, Gemini (baseline) | ~0.3–1 s | Screen + subtask → ONE next action (§5.3) |
 | 2. Planner | Gemini | 1.5–3 s | Goal + memory + device → subtasks; repair when stuck |
 
 **Rule: Gemini never runs between individual actions.** It runs on a new request, a device change, or when the
@@ -122,12 +122,37 @@ The planner then returns a revised list of remaining subtasks. **Risky actions**
 - **Screen-fingerprint cache:** hash the settled frame (downscaled perceptual hash + the subtask text) → the action
   that worked. A cache hit skips the model entirely. Repeat runs get faster, which suits the benchmark slide.
 
-### Jev as an executor candidate (benchmark it, don't assume it)
-Jev reads text and chooses from options, so on text-heavy screens:
-local OCR finds text boxes → each box becomes an option → Jev picks one with a probability → the center of that box
-is converted to normalized coordinates (§5.2) → a normal `click`. About 0.3 s, with real confidence numbers.
-It can't see icons, so UI-TARS or Gemini handle icon-only screens. Add it as a `config` in `bench/results.csv`
-and let the numbers decide (PLAN.md §8).
+### Pick from a numbered list instead of guessing pixels (benchmark it, don't assume it)
+Asking a model to output exact click coordinates from a screenshot is slow and error-prone. Turning the screen into
+a **numbered list of clickable things** lets a small, fast *text* model answer with one number:
+1. **Where the list comes from:**
+   - **macOS Voice Control overlay (best on Macs).** System Settings → Accessibility → Voice Control → Overlay:
+     *Item Numbers* keeps a number badge on every clickable element, all the time. Those numbers come from the
+     Mac's own accessibility tree, so we get the tree **through the HDMI pixels** with nothing installed, only a
+     setting turned on once. OCR the badges, and you know the position of every button.
+   - **Everywhere else:** local OCR text boxes (a button labeled "Save" becomes option 7).
+2. A fast text model (on the B200, or a small Gemini) picks the number for the subtask.
+3. The badge or box center becomes normalized coordinates (§5.2), then a normal `click`.
+
+It can't see unlabeled icons, so UI-TARS or Gemini handle those screens. Add it as a `config` in
+`bench/results.csv` and let the numbers decide (PLAN.md §8). (Jev would have fit here, but the team says we can't
+use it.)
+
+**Why not the real accessibility API?** That's what makes Mac-only voice agents fast, but it requires software
+running *on* the target, which breaks "nothing installed" and our hardware story. The Voice Control overlay is the
+closest we can get from outside the machine. Test it tonight on the MacBook.
+
+### Reaching the B200s (HiPerGator) from the Pi
+Running a model there is fine, not just training:
+1. Start a Slurm job on the B200 partition that runs vLLM (`vllm serve <model> --port 8000`). Never run it on a login
+   node. Ask for a long `--time` so it lasts through judging.
+2. From the Pi, tunnel through a login node: `ssh -N -L 8000:<compute-node>:8000 <gatorlink>@hpg.rc.ufl.edu`.
+   The Pi then calls `EXECUTOR_BASE_URL=http://localhost:8000/v1`, with no code change.
+3. The Pi needs an SSH key on the account for this. Use `autossh` so the tunnel reconnects after Wi-Fi drops.
+4. Measure the round trip on UF Wi-Fi early (PLAN.md §10). Staying on campus should keep it small.
+
+**Easier backup:** UF's **NaviGator Toolkit** gives an OpenAI-compatible API (`https://api.ai.it.ufl.edu/v1`) with a
+GatorLink-made key, including models hosted on HiPerGator. No Slurm, no tunnel, but only the models they offer.
 
 ### Sensitive data never leaves the Pi unmasked
 Gemini is a cloud model, and frames sent to it can contain passwords, card numbers, SSNs or bank routing numbers.
@@ -154,7 +179,7 @@ class Executor(Protocol):                   # brain/agent/ calls server/ (Models
 @dataclass
 class Step:
     action: Action          # §5.3 schema
-    confidence: float | None  # Jev: real probability; UI-TARS: from vLLM logprobs, or None
+    confidence: float | None  # from vLLM logprobs where available, else None
     t_model: float
 
 class Planner(Protocol):                    # brain/agent/ (Agent)
