@@ -32,6 +32,15 @@ class Config:
     jev_timeout_s: float = 20.0
     jev_min_presence: float = 0.85
     jev_min_confidence: float = 0.6
+    zai_api_key: str = ""
+    zai_model: str = "glm-4.6v-flashx"
+    zai_planner_model: str = "glm-4.6v"
+    zai_base_url: str = "https://api.z.ai/api/paas/v4"
+
+    @property
+    def model_name(self) -> str:
+        """The language model actually in use (z.ai wins when its key is set)."""
+        return self.zai_model if self.zai_api_key else self.gemini_model
 
     @classmethod
     def load(cls) -> Config:
@@ -59,4 +68,8 @@ class Config:
             jev_timeout_s=float(env("JEV_TIMEOUT_S", "20")),
             jev_min_presence=float(env("JEV_MIN_PRESENCE", "0.85")),
             jev_min_confidence=float(env("JEV_MIN_CONFIDENCE", "0.6")),
+            zai_api_key=env("ZAI_API_KEY", ""),
+            zai_model=env("ZAI_MODEL", "glm-4.6v-flashx"),
+            zai_planner_model=env("ZAI_PLANNER_MODEL", "glm-4.6v"),
+            zai_base_url=env("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
         )

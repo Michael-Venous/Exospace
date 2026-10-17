@@ -168,6 +168,10 @@ class RuntimeTests(unittest.TestCase):
                 self.assertTrue(result.rejected)
                 self.assertEqual(result.actions, [])
 
+    def test_oversized_batch_keeps_first_five(self):
+        result = parse_plan({"actions": [{"type": "type_text", "text": str(n)} for n in range(7)]})
+        self.assertEqual([a.text for a in result.actions], ["0", "1", "2", "3", "4"])
+
     def test_cancel_does_not_swallow_worker_timeout(self):
         def timeout():
             raise TimeoutError("provider timed out")

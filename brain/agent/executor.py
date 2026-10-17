@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from brain.agent.memory import Memory
-from brain.agent.model import GeminiJSON
+from brain.agent.model import language_model
 from brain.agent.prompts import OS_PROMPT, OS_SCHEMA, PLAN_SCHEMA, SYSTEM_PROMPT, USER_TEMPLATE
 from brain.cancel import CancelToken
 from brain.config import Config
@@ -68,15 +68,17 @@ FAST_SCHEMA = {
 }
 
 
-class GeminiExecutor:
-    def __init__(self, cfg: Config, cancel: CancelToken) -> None:
-        self.model = GeminiJSON(cfg.gemini_api_key, cfg.gemini_model, cfg.gemini_thinking,
-                                cancel, cfg.model_timeout_s, cfg.model_log)
+class ModelExecutor:
+    """One vision-model call per step; with `routing`, hard steps go to a planner."""
+
+    def __init__(self, cfg: Config, cancel: CancelToken, *, routing: bool = True) -> None:
+        self.model = language_model(cfg, cancel)
+        self.system, self.schema = ((SYSTEM_PROMPT + ROUTING_PROMPT, FAST_SCHEMA) if routing
+                                    else (SYSTEM_PROMPT, PLAN_SCHEMA))
 
     def next_actions(self, image_jpeg: bytes, ctx: StepContext) -> Plan:
-        prompt = context_prompt(ctx)
-        data = self.model.generate(image_jpeg, prompt, SYSTEM_PROMPT + ROUTING_PROMPT,
-                                   FAST_SCHEMA, role="fast", run_id=ctx.run_id, step=ctx.step)
+        data = self.model.generate(image_jpeg, context_prompt(ctx), self.system, self.schema,
+                                   role="fast", run_id=ctx.run_id, step=ctx.step)
         return parse_plan(data)
 
     def classify_os(self, image_jpeg: bytes) -> OSName:
@@ -102,8 +104,9 @@ def context_prompt(ctx: StepContext) -> str:
 
 def parse_plan(data: dict[str, Any]) -> Plan:
     raw_actions = data.get("actions")
-    if not isinstance(raw_actions, list) or len(raw_actions) > 5:
-        raise ValueError("executor must return an actions list with at most 5 items")
+    if not isinstance(raw_actions, list):
+        raise ValueError("executor must return an actions list")
+    raw_actions = raw_actions[:5]  # GLM ignores maxItems; the rest is re-planned from a new screen
     delegate = data.get("needs_planner", False)
     if not isinstance(delegate, bool):
         raise ValueError("needs_planner must be boolean")

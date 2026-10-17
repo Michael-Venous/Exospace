@@ -33,8 +33,8 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.load()
     token = CancelToken()
     status = lambda message: print(message, flush=True)
-    if not cfg.gemini_api_key:
-        status("Set GEMINI_API_KEY in the project .env before starting (see .env.example).")
+    if not (cfg.zai_api_key or cfg.gemini_api_key):
+        status("Set ZAI_API_KEY or GEMINI_API_KEY in the project .env (see .env.example).")
         return 1
     try:
         with ExitStack() as cleanup:
@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             generation = -1
             previous_goal = ""
             correction = False
-            status(f"Executor: {cfg.executor}; Gemini: {cfg.gemini_model}. Ctrl+C interrupts; idle Ctrl+C exits.")
+            status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
             while True:
                 try:
                     line = input("Correction (or /new GOAL)> " if correction else "Goal> ").strip()

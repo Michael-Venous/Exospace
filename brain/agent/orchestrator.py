@@ -1,4 +1,4 @@
-"""Fast model owns interaction; Argon supplies plans without touching the HID."""
+"""Fast model owns interaction; the planner model supplies plans without touching the HID."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass, replace
 from typing import Callable, Protocol
 
 from brain.agent.executor import Executor, Plan, StepContext, context_prompt
-from brain.agent.model import GeminiJSON
+from brain.agent.model import language_model
 from brain.cancel import CancelToken
 from brain.config import Config
 from brain.types import OSName
@@ -43,10 +43,9 @@ class Planner(Protocol):
     def plan(self, image: bytes, ctx: StepContext) -> Guidance: ...
 
 
-class GeminiPlanner:
+class ModelPlanner:
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
-        self.model = GeminiJSON(cfg.gemini_api_key, cfg.planner_model, cfg.planner_thinking,
-                                cancel, cfg.planner_timeout_s, cfg.model_log)
+        self.model = language_model(cfg, cancel, planner=True)
 
     def plan(self, image: bytes, ctx: StepContext) -> Guidance:
         data = self.model.generate(image, context_prompt(ctx), PLANNER_PROMPT, PLANNER_SCHEMA,
@@ -99,7 +98,7 @@ class Orchestrator:
     def _plan(self, image: bytes, ctx: StepContext) -> Plan:
         if self._consecutive_plans >= 2:
             raise RuntimeError("Repeated planner delegation without execution; stopping")
-        self.on_status("Planning with Argon…")
+        self.on_status("Planning…")
         guidance = self.planner.plan(image, ctx)
         self.cancel.check()  # cancelled/stale results must not enter session memory
         self._guidance = json.dumps({"subtasks": guidance.subtasks, "guidance": guidance.text})

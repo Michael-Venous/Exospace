@@ -8,7 +8,7 @@ import time
 
 import numpy as np
 
-from brain.agent.model import GeminiJSON
+from brain.agent.model import language_model
 from brain.cancel import CancelToken
 from brain.config import Config
 from brain.imaging import prepare
@@ -27,11 +27,8 @@ def main() -> int:
     jpeg = prepare(frame, Rect(0, 0, 160, 120), grid=False)
     schema = {"type": "object", "properties": {"color": {"type": "string"}}, "required": ["color"]}
     try:
-        for role, model, thinking, timeout in (
-            ("fast", cfg.gemini_model, cfg.gemini_thinking, cfg.model_timeout_s),
-            ("planner", cfg.planner_model, cfg.planner_thinking, cfg.planner_timeout_s),
-        ):
-            client = GeminiJSON(cfg.gemini_api_key, model, thinking, cancel, timeout, cfg.model_log)
+        for role in ("fast", "planner"):
+            client = language_model(cfg, cancel, planner=role == "planner")
             try:
                 elapsed = []
                 for n in range(args.runs):
@@ -42,7 +39,7 @@ def main() -> int:
                     if not isinstance(result.get("color"), str) or not result["color"]:
                         raise ValueError("Missing color in probe result")
                     elapsed.append(time.monotonic() - start)
-                print(f"{role} {model}: n={len(elapsed)}, median={statistics.median(elapsed):.3f}s, max={max(elapsed):.3f}s")
+                print(f"{role} {client.model}: n={len(elapsed)}, median={statistics.median(elapsed):.3f}s, max={max(elapsed):.3f}s")
             finally:
                 client.close()
     except Exception as exc:
