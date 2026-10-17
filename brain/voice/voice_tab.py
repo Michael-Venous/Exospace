@@ -49,9 +49,13 @@ body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:c
 #log>li{padding:12px 0;border-top:1px solid #e8e8ed}
 #log .why li{padding:3px 0}
 #log .said{color:#86868b}
+#log .did{display:inline}
 #log .did::before{content:"✓ ";color:#1a7f37}
 #log .no .did::before{content:"✗ ";color:#d70015}
 #log .when{float:right;color:#a1a1a6;font-variant-numeric:tabular-nums}
+#log .conf{margin-left:10px;padding:1px 8px;border-radius:999px;font-size:14px;background:#e8f5ec;color:#1a7f37}
+#log .conf.mid{background:#fff4e0;color:#a05a00}
+#log .conf.low{background:#fdecec;color:#d70015}
 #log .why{display:none;margin:6px 0 0;padding:0;list-style:none;color:#6e6e73;font-size:15px}
 .details #log .why{display:block}
 .why .bar{display:inline-block;width:80px;height:6px;margin:0 8px 1px 0;border-radius:3px;background:#e8e8ed;vertical-align:middle}
@@ -91,6 +95,14 @@ function logCommand(text, r, seconds) {
   li.className = o.ok ? "" : "no";
   li.innerHTML = "<span class=when></span><div class=said></div><div class=did></div>";
   li.querySelector(".when").textContent = seconds.toFixed(1) + " s";
+  if (typeof r.confidence === "number") {
+    // Jev's confidence in what it decided the command meant.
+    const conf = document.createElement("span");
+    conf.className = "conf" + (r.confidence < 0.6 ? " low" : r.confidence < 0.85 ? " mid" : "");
+    conf.textContent = Math.round(r.confidence * 100) + "% sure";
+    conf.title = "Jev's confidence that the command means " + r.choice;
+    li.querySelector(".did").after(conf);
+  }
   li.querySelector(".said").textContent = "“" + text + "”";
   li.querySelector(".did").textContent = o.text;
   why.className = "why";
