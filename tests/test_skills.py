@@ -29,6 +29,10 @@ class SkillTests(unittest.TestCase):
                     unittest.mock.call.hotkey(["ENTER"]),
                 ])
 
+    def test_wait_only_watches_the_screen(self):
+        run_skill("wait", {}, self.profile("windows"), self.controller)
+        self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change()])
+
     def test_unsupported_has_no_input(self):
         for os in ("android", "unknown"):
             with self.assertRaises(SkillUnavailable):

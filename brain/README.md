@@ -28,8 +28,10 @@ Wayland input backend.
 
 Ctrl+C during a task cancels and releases input. The next line corrects the
 previous goal; `/new GOAL` starts a different task. Ctrl+C at the prompt exits.
-A disconnected target is re-detected before the next request. Voice and automatic
-resume on reconnect are not implemented yet. `--max-steps` defaults to 30.
+A disconnected target is re-detected before the next request. If the screen blanks
+mid-task while the Pico stays connected (display sleep, mode switch), the run waits up
+to 10 s and continues the same goal; an unplug ends the run, since the next device may
+be another one. `--max-steps` defaults to 30.
 
 | Module | Responsibility |
 |---|---|
@@ -39,7 +41,8 @@ resume on reconnect are not implemented yet. `--max-steps` defaults to 30.
 | `telemetry.py` | Existing benchmark CSV contract |
 | `device.py` | Screenshot-based OS identification, or explicit `--os` |
 | `app.py` | Typed requests, corrections, lifecycle cleanup |
-| `agent/model.py` | Bounded Gemini requests and per-model timing log |
+| `agent/model.py` | Bounded Gemini and z.ai requests and per-model timing log |
+| `agent/executor.py` | `direct` executor: one model call per step; done claims checked on screen |
 | `agent/race.py` | Default executor: Jev triage races the planner; irreversible requests need approval |
 | `agent/triage.py` | One Jev call: act / plan / no action, target box, irreversible flag; zoom refinement |
 | `agent/jev_flash.py` | Planner: Flash semantic stages + Jev grounding; steps-aware completion check |
@@ -54,6 +57,13 @@ Current default: **race** (`EXECUTOR=race`): Jev triage and the Jev + Flash plan
 together on every request; a confident Jev click or "no action" wins, otherwise the planner's result is
 used. Completion is one Jev call on goal + executed steps + screen. Evidence and numbers:
 [`bench/arch/README.md`](../bench/arch/README.md). `EXECUTOR=jev-flash` runs the planner alone.
+
+Option: **direct** (`EXECUTOR=direct`): one vision-model call per step returns the actions
+and their coordinates. With `ZAI_API_KEY` set it uses z.ai GLM-4.6V-FlashX (p50 2.5 s per
+call over 1,299 calls; 12 s timeout, up to three tries), otherwise Gemini. After the run
+has sent input, a `done` claim costs one more call that must see the goal on screen.
+z.ai serves only this executor: GLM does not follow jev-flash's stage schema. Not yet
+compared with race end to end against independent checks.
 
 Planner details (the race executor's plan path):
 Set `GEMINI_API_KEY` and `TYPESAFE_API_KEY` in the ignored `.env`. Flash chooses
@@ -86,7 +96,8 @@ intent still requires clarification. This is separate from optional Argon routin
 which is being considered but is not currently implemented.
 
 Hover is an existing `skill` action backed by UART `move`, and never presses a
-button. Semantic dragging maps to the existing `swipe` action. A hover and its
+button. The `wait` skill blocks until the screen changes (at most 10 s) for slow
+loads; the direct executor is offered it, race not yet. Semantic dragging maps to the existing `swipe` action. A hover and its
 subsequent submenu click always use different screenshots. Shared action/UART
 schemas are unchanged. Jev Box remains experimental, and the agent's successful
 completion claim should be measured against an independent task outcome.

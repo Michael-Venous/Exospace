@@ -21,8 +21,11 @@ def run_skill(
     profile: DeviceProfile,
     controller: Controller,
 ) -> None:
-    """Open an app through OS search, checking cancellation between stages."""
+    """Run a named skill (hover, wait, open_app), checking cancellation between stages."""
     controller.cancel.check()
+    if name == "wait":
+        controller.wait_for_change()
+        return
     if name == "hover":
         if profile.input == "touch":
             raise SkillUnavailable("Hover is unavailable on touch targets")

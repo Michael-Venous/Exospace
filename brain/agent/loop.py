@@ -33,12 +33,15 @@ class Agent:
     def __init__(self, executor: Executor, controller: Controller, memory: Memory,
                  telemetry: Telemetry, max_steps: int = 30,
                  on_status: Callable[[str], None] = lambda message: None,
-                 events: EventBus | None = None) -> None:
+                 events: EventBus | None = None,
+                 resume: Callable[[], None] | None = None) -> None:
+        """`resume()` waits for the picture to come back after the screen blanked on the same
+        machine, or raises Cancelled; without it lost video ends the run (PLAN.md §5.6)."""
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
-        self.events = events
+        self.events, self.resume = events, resume
         self._shown_scores: object = None
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
@@ -103,7 +106,7 @@ class Agent:
                             continue
                         stale_discards = 0
                     notes = list(plan.rejected)
-                    changed_input = False
+                    acted = sent_input = False
                     action_failed = bool(plan.rejected)
                     terminal = None
                     for action in plan.actions:
@@ -111,16 +114,28 @@ class Agent:
                         if action.type == "remember":
                             self.memory.remember(action.key, action.value)
                         elif action.type in TERMINAL_ACTIONS:
-                            if action.type == "done" and changed_input:
+                            if action.type == "done" and acted:
                                 notes.append("Verify the result on a fresh screen before returning done.")
                             else:
                                 terminal = action
                             break
                         else:
+                            if acted and action.x is not None:
+                                # Aimed at the screen the batch was planned on, e.g. a tapped field
+                                # opened the keyboard over it.
+                                stamp = time.monotonic()
+                                latest = ctl.capture.grab()
+                                times["t_capture"] += time.monotonic() - stamp
+                                if latest is None or frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                                    notes.append("The screen changed mid-batch, so the rest was skipped. "
+                                                 "Reground on this screen.")
+                                    break
                             stamp = time.monotonic()
                             try:
                                 ctl.execute(action, profile)
-                                changed_input = True
+                                acted = True
+                                # A wait sends no input, so a still screen after it is no failure.
+                                sent_input = sent_input or not (action.type == "skill" and action.name == "wait")
                                 self._emit_action(step, action, ok=True)
                             except ActionError as exc:
                                 self._emit_action(step, action, ok=False)
@@ -138,7 +153,7 @@ class Agent:
                     acknowledge = getattr(self.executor, "acknowledge", None)
                     if callable(acknowledge):
                         acknowledge(bool(plan.actions) and not action_failed)
-                    if changed_input:
+                    if sent_input:
                         after = ctl.capture.grab()
                         if after is None or is_blank(after):
                             token.cancel("video lost")
@@ -165,6 +180,12 @@ class Agent:
                     else:
                         failures, recovery_used = 0, False
                     note = "\n".join(notes)
+                except Cancelled as exc:
+                    if self.resume is None or exc.reason != "video lost":
+                        raise
+                    self.on_status("The screen went blank; waiting for it to come back…")
+                    self.resume()
+                    note = "The screen blanked and came back; continue from this screen."
                 finally:
                     self.telemetry.step(run_id, profile.os, task_id, step, **times)
         except KeyboardInterrupt:
