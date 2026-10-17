@@ -22,7 +22,7 @@ from bench.arch.triage_study import SCREENS, hit
 from bench.arch.zoom_study import refine
 from brain.agent.jev import JevVision
 from brain.agent.jev_flash import PROMPT, SCHEMA
-from brain.agent.live_experiment import LiveJSON
+from bench.experiments.live_experiment import LiveJSON
 from brain.agent.model import GeminiJSON
 from brain.cancel import CancelToken
 from brain.config import Config

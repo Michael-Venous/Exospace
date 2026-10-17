@@ -18,6 +18,7 @@ from pathlib import Path
 from bench.arch.triage_executor import RaceExecutor, RaceLedgerExecutor, RaceRelaxedExecutor, TriageExecutor, TriageLedgerExecutor
 from bench.arch import studio, workstation
 from brain.agent.jev_flash import JevFlashExecutor
+from brain.agent.race import RaceExecutor as RuntimeRaceExecutor
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
 from brain.browser import BrowserTarget
@@ -35,7 +36,8 @@ EXECUTORS = {"jev-flash (current)": JevFlashExecutor, "triage-first": TriageExec
              "race+verify+relaxed-gate": RaceRelaxedExecutor,
              "race+ledger-verify": RaceLedgerExecutor,
              "race+ledger-verify-v2": RaceLedgerExecutor,
-             "final-concrete": RaceExecutor, "final-steps-aware": RaceLedgerExecutor}
+             "final-concrete": RaceExecutor, "final-steps-aware": RaceLedgerExecutor,
+             "runtime-race": RuntimeRaceExecutor}
 
 
 def run_segment(name: str, index: int, repeat: int, base: Config, scenario=workstation, out: Path = OUT) -> dict:

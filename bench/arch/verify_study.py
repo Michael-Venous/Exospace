@@ -23,7 +23,7 @@ from bench.arch.workstation import HTML as WORKSTATION, at
 from brain.agent.jev import JevVision, prepare_image
 from brain.cancel import CancelToken
 from brain.config import Config
-from brain.sequence_benchmark import CASES as SEQ
+from bench.experiments.sequence_benchmark import CASES as SEQ
 
 OUT = Path("work/arch/verify")
 CATALOG_GOAL = "Open the catalog, then click the first result. Verify that its guide opened."

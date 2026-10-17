@@ -152,6 +152,30 @@ At gate 0.5: **27/27 destructive caught, 0/33 ordinary flagged.** Destructive sc
 In the end-to-end study it must **replace** the whole final check: an early prototype kept the
 other checks in the same call and stalled planned tasks (15/20) until that was fixed.
 
+### Gesture choice (study 8, `gesture_study.py`): 14 direct requests × 3
+A gesture Choice added to the same triage call (no extra latency), run through the runtime
+`brain.agent.triage`. Whenever Jev acted, the gesture was right **38/38**: 21 click, 9 double-click
+(desktop icons and a file), 8 right-click ("right click the recycle bin", "options for…", the
+Blender cube). "Play the first video" went to the planner on the static YouTube screen (safe).
+
+### Newer models via OpenRouter (study 7, `openrouter_study.py`)
+Same triage (32) and first-step planning (18 × 2) tasks, all models run concurrently, low reasoning
+effort, screenshot included. "Unsafe" = acting on a remark/planning request or the wrong target.
+
+| Model | Triage correct / unsafe | Planning correct / wrong | Triage p50 | Planning p50 / p90 |
+|---|---|---|---|---|
+| **Gemini 3.8 Flash** (Google API) | **32/32 / 0** | 21/36 / 6 | 2.87 s | 2.70 / 3.63 s |
+| Gemini 3.8 Flash (OpenRouter) | 32/32 / 0 | 25/36 / 4 | 2.99 s | 2.84 / 5.70 s |
+| GPT-6 Luna | 29/32 / 2 | 25/36 / 4 | 2.67 s | 3.40 / 4.65 s |
+| Claude Haiku 5.5 | 19/32 / 11 | 22/36 / 4 | 1.87 s | 2.86 / 11.3 s |
+| Nemotron 3.5 Super VL | 16/32 / 15 | 22/36 / 5 | 1.20 s | 2.65 / 8.5 s |
+| Qwen 3.8 Omni Flash | 30/32 / 1 | 22/36 / 8 | 3.38 s | 20.3 / 171 s |
+| MiMo v2.6 Flash | 21/32 / 5 (12 JSON errors) | 17/36 / 5 | 3.67 s | 8.0 / 15.4 s |
+
+GPT-6 Luna is not faster (planning slower) and acted unsafely twice (e.g. "no wait, the other
+one"). The faster models are unsafe on messy speech. Flash 3.8 stays the planner; the two Flash
+rows differ only by sampling noise (21 vs 25 of 36). Direct commands don't wait on any LLM.
+
 ### Streaming (study 2, `stream_study.py`)
 - Schema-enforced streaming is valid but only ~0.4 s faster (2.38 vs 2.79 s), because Flash
   plans **one stage per observation point** even when told to look ahead. That's sensible:
@@ -175,23 +199,16 @@ other checks in the same call and stalled planned tasks (15/20) until that was f
    on the *planner* path didn't help end-to-end, so keep it there; use 0.5 + zoom only for
    the triage fast path, where it measured 0 wrong clicks.
 
-## Next steps (to port into `brain/`)
-1. `TriageExecutor`/`RaceExecutor` + zoom refinement into `brain/agent/` (prototype:
-   `triage_executor.py`).
-2. Replace the final completion check in `jev_flash.py` with the steps-aware check (goal +
-   executed steps + screen, gate 0.3, one Jev call that decides alone; prototype
-   `RaceLedgerExecutor` in `triage_executor.py`). Remove the discarded `jev.assess` call.
-   Re-run Codex's Flash vs routines vs overlap comparisons under this checker, since they
-   were confounded by the old one.
-3. `arbiter.py` as the single HID commit gate for pipelined speech (5 tests in
-   `tests/test_arbiter.py`).
-4. **Irreversible actions:** add study 6's question to the triage call (gate 0.5) and route
-   flagged requests to a spoken confirmation on both the fast and planner paths. The current
-   runtime's prompt-only rule deleted data in 3/3 runs.
-5. **Gesture type in triage:** desktop icons need double-click; add a Jev choice
-   (click / double_click / right_click) to the same call.
-6. Re-measure on the Pi with the capture card. These are browser fixtures, one scenario,
-   small samples.
+## Ported into the runtime
+Done in `brain/`: `agent/race.py` (default `EXECUTOR=race`), `agent/triage.py` (triage, zoom,
+irreversible flag, gesture choice, approval check), steps-aware completion in `agent/jev_flash.py` (the discarded
+Jev call and the `direct_command` regex are gone), and `arbiter.py` (commit gate for the voice
+layer, not yet wired: the typed interface runs one segment at a time).
+
+## Next steps
+1. Wire `arbiter.py` when the voice layer lands (PLAN.md §14).
+2. Re-run Codex's Flash vs routines vs overlap comparisons under the new completion check.
+3. Re-measure on the Pi with the capture card; these are browser fixtures.
 
 ## Limits
 Synthetic HTML screens rendered in a browser; two interactive scenarios (2 and 3 repeats). API latency
