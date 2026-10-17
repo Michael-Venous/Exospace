@@ -147,11 +147,20 @@ One request per step can ask several questions about the same screenshot:
 - Downscale and crop frames before sending: fewer pixels means a faster, cheaper call.
 - Mask sensitive regions first (see "Sensitive data" below): this sends the screen to TypeSafe.
 
+**First test (GitHub repo page):** the boxes for "Code" and "Star" were centered on the button. "Sign in" (small,
+near the edge) drifted, and its center landed right at the button's bottom edge. So small targets need:
+1. **Zoom and ask again:** when the box is small or confidence is low, crop about 3× around it at full resolution
+   and ask `box` again on the crop. Map the result back to the full frame.
+2. **Hover, then click:** move the absolute mouse to the center, check that the target reacted (hover pixel change,
+   or a `noul` like "is the pointer on Sign in?"), then click. This is the same "check the target again before input"
+   rule computah uses.
+
 This could replace OCR plus a candidate list for most screens. The numbered-list approach below stays as the
 fallback for dense, text-heavy screens, and lets us compare.
 
 **Open-source "Jev 8B" is not Jev.** TypeSafe hasn't released weights. Kev-8B on Hugging Face is a community,
-text-only model that copies the API, so it can't do `box`. For open vision on the B200s, use UI-TARS.
+text-only model that copies the API, so it can't do `box`. For open vision on the B200s, benchmark UI-TARS-1.5-7B
+and a Qwen3-VL-8B-class model (the team estimates about 100–150 ms per call there; measure it).
 
 ### Pick from a numbered list instead of guessing pixels (benchmark it, don't assume it)
 Asking a model to output exact click coordinates from a screenshot is slow and error-prone. Turning the screen into
@@ -217,7 +226,10 @@ Gemini is a cloud model, and frames sent to it can contain passwords, card numbe
 Before a frame goes to Gemini, the Pi runs local OCR and blacks out matching boxes: password fields, 9-digit
 SSN-like numbers, 16-digit card-like numbers, and 9-digit routing numbers next to "routing". If a password field has
 focus, the agent asks the user instead of typing it. Frames sent to our own B200 server are a lower risk, but get the
-same masking if it's cheap enough. A good line for judges: "it blurs your SSN before any AI sees it."
+same masking if it's cheap enough.
+**Keeping it fast:** OCR for masking runs on the settled frame *while* we wait for settle anyway, and the mask is
+reused until the screen changes. Password fields (rows of dots) are cheap to detect. Make it a **privacy mode**
+toggle and benchmark it on and off. A good line for judges: "it blurs your SSN before any AI sees it."
 
 ## 7. Interfaces between modules (typed, small)
 ```python
