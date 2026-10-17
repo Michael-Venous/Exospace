@@ -40,5 +40,37 @@ class RedetectTests(unittest.TestCase):
         self.assertEqual(seen, [("first", 1, 1), ("second", 1, 1), ("restart", 1, 1), 1, 3, ("after", 3, 3)])
 
 
+class DisplayGoalTests(unittest.TestCase):
+    def run_goals(self, statuses):
+        goals = []
+
+        class FakeAgent:
+            def __init__(self, *args):
+                pass
+
+            def run(self, goal, profile, task_id):
+                goals.append(goal)
+                return Mock(status=statuses[len(goals) - 1], message="")
+
+        commands = [app.Command("goal", text=t) for t in ("select guest mode", "search Genghis Khan")]
+        monitor = Mock(generation=0, connected=True)
+        monitor.wait_connected.return_value = 0
+        with patch.object(app.Config, "load", return_value=Mock(executor="direct", target_os="")), \
+                patch.object(app, "build_executor"), patch("brain.qemu.QemuTarget"), patch.object(app, "Controller"), \
+                patch.object(app, "ConnectionMonitor", return_value=monitor), patch.object(app, "DisplayServer"), \
+                patch.object(app, "_show_screen"), patch.object(app, "Memory"), patch.object(app, "Telemetry"), \
+                patch.object(app, "detect_profile"), patch.object(app, "Agent", FakeAgent), \
+                patch.object(app, "_next_command", side_effect=[*commands, EOFError]), \
+                patch("builtins.input", side_effect=EOFError), patch("builtins.print"):
+            self.assertEqual(app.main(["--backend", "qemu", "--display", "8770"]), 0)
+        return goals
+
+    def test_a_request_after_an_interruption_is_new(self):
+        self.assertEqual(self.run_goals(["cancelled", "done"]), ["select guest mode", "search Genghis Khan"])
+
+    def test_an_answer_to_a_question_continues_the_goal(self):
+        self.assertEqual(self.run_goals(["ask_user", "done"])[1], "select guest mode\nUser correction: search Genghis Khan")
+
+
 if __name__ == "__main__":
     unittest.main()

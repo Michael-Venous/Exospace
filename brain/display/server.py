@@ -5,7 +5,7 @@ GET  /events      server-sent events from the EventBus
 GET  /screen.jpg  latest screen image (active rect, so tap coordinates map 1:1)
 POST /goal        {"text": "..."}                 a typed or transcribed request
 POST /tap         {"x": 0-1, "y": 0-1, "mode": "click"|"point"}
-POST /stop        cancel whatever is running (same path as barge-in)
+POST /stop        cancel whatever is running (same path as barge-in) and drop queued requests
 
 The server never touches HID: goals and taps are queued for the main loop,
 which stays the single HID writer.
@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+from contextlib import suppress
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -119,6 +120,11 @@ class _Handler(BaseHTTPRequestHandler):
                     raise ValueError("mode must be click or point")
                 self.commands.put(Command(mode, x=_unit(body.get("x")), y=_unit(body.get("y"))))
             elif self.path == "/stop":
+                # The newest request wins: what was queued before the stop is stale. The voice layer stops
+                # before the new speech is sent, so this never drops the request that follows.
+                with suppress(queue.Empty):
+                    while True:
+                        self.commands.get_nowait()
                 self.stop("barge-in")
                 self.bus.publish("stopped")
             else:

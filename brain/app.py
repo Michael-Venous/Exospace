@@ -194,11 +194,13 @@ def main(argv: list[str] | None = None) -> int:
                     result = agent.run(goal, profile, args.task_id)
                     status(f"{result.status}: {result.message}")
                     previous_goal = goal
-                    correction = result.status in {"cancelled", "ask_user"}
+                    # Spoken or page requests after an interruption are new ones (the voice layer interrupts
+                    # whenever the user talks); only an answer to the agent's question continues a goal.
+                    correction = result.status == "ask_user" or (bus is None and result.status == "cancelled")
                 except (Cancelled, KeyboardInterrupt):
                     token.cancel("barge-in")
                     controller.release_all()
-                    previous_goal, correction = goal, True
+                    previous_goal, correction = goal, bus is None
                     status("Interrupted. Enter a correction or /new GOAL.")
     except Exception as exc:
         status(f"Setup failed: {describe(exc, 'setup')}")

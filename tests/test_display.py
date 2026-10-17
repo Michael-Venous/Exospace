@@ -99,10 +99,12 @@ class DisplayServerTests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/goal", {"text": "  "})[0], 400)
         self.assertTrue(self.commands.empty())
 
-    def test_stop_uses_the_cancel_path(self):
+    def test_stop_uses_the_cancel_path_and_drops_queued_requests(self):
         client = self.bus.subscribe()
+        self.commands.put(Command("goal", text="an older request"))
         self.assertEqual(self.request("POST", "/stop", {})[0], 200)
         self.stop.assert_called_once_with("barge-in")
+        self.assertTrue(self.commands.empty())
         self.assertEqual([e["ev"] for e in drain(client)], ["stopped"])
 
     def test_screen_is_empty_until_a_frame_arrives(self):

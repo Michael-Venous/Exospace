@@ -1,18 +1,25 @@
 <!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Exospace Voice</title>
 <style>
-:root{--bg:#fff;--fg:#1d1d1f;--dim:#86868b;--accent:#5e6ad2;--err:#d70015}
-@media (prefers-color-scheme:dark){:root{--bg:#000;--fg:#f5f5f7;--dim:#98989d;--accent:#7d93ff}}
-body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:40px;padding:16px;
-  box-sizing:border-box;background:var(--bg);color:var(--fg);font:20px system-ui,sans-serif;text-align:center}
-#talk{width:200px;height:200px;border-radius:50%;border:0;background:var(--accent);color:#fff;font:600 22px system-ui;
-  cursor:pointer;transform:scale(calc(1 + var(--lvl,0) * .25));transition:transform .08s}
-body.on #talk{box-shadow:0 0 0 14px color-mix(in srgb,var(--accent) 30%,transparent)}
-#said{min-height:1.4em;max-width:min(680px,92vw)}#live{color:var(--dim);min-height:1.2em}
-#says{color:var(--dim);font-size:18px;min-height:1.2em;max-width:min(680px,92vw)}.err{color:var(--err)}
+body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:56px;padding:16px;box-sizing:border-box;
+  background:#fff;color:#1d1d1f;font:500 22px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;text-align:center}
+#talk{width:150px;height:150px;border:0;border-radius:50%;cursor:pointer;
+  background:radial-gradient(circle at 34% 28%,#fff 0,#cfe0ff 18%,#7d93ff 52%,#b77bff 80%,#ff9ad5 100%);
+  box-shadow:0 18px 50px rgb(125 147 255/.35),0 0 0 calc(var(--lvl,0)*36px) rgb(125 147 255/.12);
+  transform:scale(calc(1 + var(--lvl,0)*.55));transition:transform 90ms ease-out,box-shadow 90ms ease-out;animation:breathe 4s ease-in-out infinite}
+#talk:focus-visible{outline:2px solid #7d93ff;outline-offset:8px}
+.on #talk{animation:breathe 4s ease-in-out infinite,drift 6s linear infinite}
+#heard{max-width:min(640px,90vw);min-height:2.8em;margin:0}
+#live,#says{color:#86868b}
+#said:empty~#live:empty::before{content:"Tap to talk";color:#a1a1a6}
+#says{font-size:18px;min-height:1.2em;max-width:min(640px,90vw)}
+.err{color:#d70015}
+@keyframes breathe{50%{scale:1.04}}
+@keyframes drift{to{filter:hue-rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
-<button id=talk aria-pressed=false>Talk</button>
-<div><div id=said></div><div id=live></div></div>
+<button id=talk aria-label="Start listening" aria-pressed=false></button>
+<p id=heard aria-live=polite><span id=said></span> <span id=live></span></p>
 <div id=says aria-live=polite></div>
 <script>
 let stopListening = null;
@@ -55,7 +62,7 @@ async function start() {
   rec.onstop = () => { if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
   sock.onopen = () => {
     rec.start(100);
-    document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.textContent = "Listening";
+    document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Stop listening";
     said.className = ""; said.textContent = ""; live.textContent = "";
   };
   sock.onmessage = e => {
@@ -72,7 +79,7 @@ async function start() {
     if (rec.state !== "inactive") rec.stop();
     mic.getTracks().forEach(t => t.stop());
     ctx.close();
-    document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.textContent = "Talk";
+    document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Start listening";
     live.textContent = "";
     if (done) send(done);
     if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
