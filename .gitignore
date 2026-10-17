@@ -38,3 +38,4 @@ firmware/pico/sd/
 .Trash-*
 .metadata_never_index
 System Volume Information/
+replay.json

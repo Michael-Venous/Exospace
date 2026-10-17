@@ -42,6 +42,7 @@ class Config:
     local_keyboard: str = ""
     local_pico: str = ""
     local_capture: str = ""
+    replay_path: Path | None = None  # successful runs replayed without model calls (brain/agent/replay.py)
 
     @property
     def uses_zai(self) -> bool:
@@ -68,6 +69,7 @@ class Config:
             capture_width=int(env("CAPTURE_WIDTH", "1920")),
             capture_height=int(env("CAPTURE_HEIGHT", "1080")),
             session_path=Path(env("SESSION_PATH", "session.json")),
+            replay_path=Path(env("REPLAY_PATH", "replay.json")) if env("REPLAY_PATH", "replay.json") else None,
             bench_csv=Path(env("BENCH_CSV", "bench/results.csv")),
             fallback_model=env("FALLBACK_MODEL", "gemini-3.5-flash-lite"),
             planner_model=env("PLANNER_MODEL", "gemini-4-argon"),
