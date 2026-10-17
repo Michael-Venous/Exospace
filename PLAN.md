@@ -199,7 +199,8 @@ actions, paired sign test p = 0.00002, two scenarios incl. a held-out one).
   on the same model; other errors keep the old retry. 3.8 Flash returned 503/429 for hours on
   2026-10-17. Probe (synthetic image, Windows): Lite 0.77–1.97 s (median 0.83, n=6) vs one
   3.8 Flash call at 3.44 s. Lite planned worse in the study above, so this is degraded mode, not
-  a default. z.ai GLM is not a race fallback (it cannot follow jev-flash's stage schema).
+  a default. z.ai GLM is not this fallback: with `ZAI_API_KEY` set, z.ai serves race itself
+  (user decision, 2026-10-17).
 
 *(2026-10-17, from `overnight-ultracode`: `EXECUTOR=direct` (one call per step: z.ai GLM-4.6V-FlashX
 with `ZAI_API_KEY`, else Gemini) is an option, not the default. GLM does not follow jev-flash's stage
