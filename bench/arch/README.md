@@ -206,7 +206,7 @@ Jev call and the `direct_command` regex are gone), and `arbiter.py` (commit gate
 layer, not yet wired: the typed interface runs one segment at a time).
 
 ## Next steps
-1. Wire `arbiter.py` when the voice layer lands (PLAN.md §14).
+1. Wire `arbiter.py` so the voice layer can pipeline segments (PLAN.md §11); today it interrupts and resubmits.
 2. Re-run Codex's Flash vs routines vs overlap comparisons under the new completion check.
 3. Re-measure on the Pi with the capture card; these are browser fixtures.
 

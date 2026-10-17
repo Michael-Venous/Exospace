@@ -1,4 +1,4 @@
-"""Commit gate for pipelined, interruptible execution (PLAN.md §13, §14).
+"""Commit gate for pipelined, interruptible execution (PLAN.md §10, §11).
 
 The voice layer submits segments through this gate while the user keeps talking;
 the typed interface runs one segment at a time and does not need it yet.

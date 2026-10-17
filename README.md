@@ -18,23 +18,19 @@ Built at SwampHacks XII (October 16–18, 2026).
 - **Models (race architecture):** for every spoken request, Jev 1.14 and Gemini 3.8 Flash start at once. If Jev confidently sees one control to click, it acts in about a second and Flash's plan is thrown away; remarks are remembered without touching anything; everything else uses Flash's plan, grounded and checked step by step by Jev. Anything irreversible (send, delete, pay, BIOS changes) waits for a spoken "yes". Measured: 89% task success vs 53% for a Flash-planner-only agent, with 0 unsafe actions ([bench/arch/README.md](bench/arch/README.md)). An optional `direct` executor makes one model call per step (z.ai GLM or Gemini); race stays the default.
 - **Voice:** a push-to-talk page (one button or the Space bar, so a single accessibility switch works) sends what you say to the agent and speaks back its questions and results.
 
-See [PLAN.md](PLAN.md) for the full architecture, shared contracts, owners and checkpoints.
-
 ## Repository layout
 
 | Path | What | Owner |
 |---|---|---|
-| `firmware/pico/` | CircuitPython HID firmware and the UART protocol | Hardware |
-| `brain/` | Pi-side runtime: capture, HID client, controller | Hardware / Agent |
-| `brain/agent/` | Planner, executor loop, memory, verification, recovery | Agent |
-| `brain/skills/` | Per-OS keyboard-shortcut skills | Agent |
-| `brain/voice/` | Voice layer (push-to-talk, narration) and the laptop voice demo | Demo |
-| `server/` | Model serving on the B200s (deferred) | Models |
-| `bench/arch/` | Architecture studies behind every design decision | Models |
-| `bench/experiments/` | Earlier executor experiments and benchmarks | Models |
-| `scripts/pi/` | Deploy to the Pi, user services, setup checklist | Hardware |
-| `docs/` | Hardware bring-up, demo script, Devpost draft | Demo |
-| `demo/` | Projector view and demo script | Demo |
+| `brain/` | Pi-side runtime: capture, HID client, controller, agent loop ([README](brain/README.md)) | Hardware / Agent |
+| `brain/agent/` | Race executor, triage, planner, memory ([README](brain/agent/README.md)) | Agent |
+| `brain/skills/` | Keyboard skills: `open_app`, `hover`, `wait` | Agent |
+| `brain/voice/` | Voice layer: push-to-talk page, Deepgram relay, narration ([README](brain/voice/README.md)) | Demo |
+| `brain/display/` | Touch display and projector page | Demo |
+| `firmware/pico/` | CircuitPython HID firmware for the UART protocol ([README](firmware/pico/README.md)) | Hardware |
+| `scripts/pi/` | Deploy to the Pi, setup, user services | Hardware |
+| `bench/` | Architecture studies and benchmarks behind every claim ([README](bench/README.md)) | Models |
+| `tests/` | Offline tests (no API calls) | All |
 
 ## Setup
 
@@ -45,11 +41,20 @@ See [PLAN.md](PLAN.md) for the full architecture, shared contracts, owners and c
    .venv/bin/python -m brain --backend browser --url https://example.com --os linux --display 8770
    .venv/bin/python -m brain.voice.layer --agent http://127.0.0.1:8770   # then open :8780
    ```
-4. On the Pi: `scripts/pi/deploy.sh` from the laptop, then `.venv/bin/python -m brain.doctor`
-   on the Pi once the capture card and Pico are plugged in ([docs/hardware-bringup.md](docs/hardware-bringup.md)).
+4. On the Pi: `scripts/pi/deploy.sh` from the laptop, then follow [docs/hardware-bringup.md](docs/hardware-bringup.md).
 5. Tests: `.venv/bin/python -m unittest discover -s tests` (offline, no API calls).
 
-See [brain/README.md](brain/README.md) for the runtime and [docs/demo.md](docs/demo.md) for the demo.
+## Documentation
+
+| Read | For |
+|---|---|
+| [PLAN.md](PLAN.md) | Goals, non-goals, architecture, the shared contracts, owners, the model decision |
+| [HANDOFF.md](HANDOFF.md) | Current status, known issues, what is waiting on hardware |
+| [brain/README.md](brain/README.md) | Running the runtime, how a request flows, modules, touch display |
+| [docs/hardware-bringup.md](docs/hardware-bringup.md) | Wiring, Pi setup, bring-up order, pre-demo checklist |
+| [docs/demo.md](docs/demo.md) | The demo script and fallbacks |
+| [docs/devpost.md](docs/devpost.md) | Devpost draft |
+| [bench/arch/README.md](bench/arch/README.md) | The measurements behind the architecture |
 
 ## Prior work
 

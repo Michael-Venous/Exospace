@@ -1,4 +1,4 @@
-"""Local web server for the touch display and projector (brain/agent/DESIGN.md §5, §5b).
+"""Local web server for the touch display and projector (brain/README.md, "Touch display").
 
 GET  /            the display page
 GET  /events      server-sent events from the EventBus

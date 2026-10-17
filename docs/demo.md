@@ -3,10 +3,11 @@
 Judges will try to break it. The script leans into that: every "attack" below is something
 we measured and handle.
 
-**Setup:** Exospace box (Pi 5 + Pico + capture card) on its own power. Laptop A (Windows),
-laptop B (Mac) and the Samsung phone, all mirrored, all pre-plugged once (first-plug driver
-popups done). Projector shows the touch display page (`--display 8770`): live screen,
-crosshair on each click, plain-language history. Voice page (`:8780`) on the
+**Setup:** Exospace box (Pi 5 + Pico in demo mode + capture card) on its own power. Laptop A
+(Windows), laptop B (Mac) and the Samsung phone, all mirrored, "Show taps" on the phone, all
+pre-plugged once (first-plug driver popups done; full checklist in
+[hardware-bringup.md](hardware-bringup.md) §5). Projector shows the touch display page (`:8770`):
+live screen, crosshair on each click, plain-language history. Voice page (`:8780`) on the
 display, big Talk button. Phone hotspot as backup network.
 
 Run both pages in Chromium **on the Pi itself** (its screen or second micro-HDMI to the projector), with a USB
