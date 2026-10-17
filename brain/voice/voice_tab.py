@@ -33,7 +33,7 @@ LAUNCHER = ("Super_L",)
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Exospace Voice</title>
 <style>
-body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:100px;padding:16px;box-sizing:border-box;
+body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:56px;padding:16px;box-sizing:border-box;
   background:#fff;color:#1d1d1f;font:500 22px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;text-align:center}
 #orb{width:150px;height:150px;border:0;border-radius:50%;cursor:pointer;
   background:radial-gradient(circle at 34% 28%,#fff 0,#cfe0ff 18%,#7d93ff 52%,#b77bff 80%,#ff9ad5 100%);
@@ -45,12 +45,27 @@ body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:c
 #live{color:#86868b}
 #said:empty~#live:empty::before{content:"Tap to talk";color:#a1a1a6}
 .err{color:#d70015}
+#log{width:min(640px,90vw);margin:0;padding:0;list-style:none;text-align:left;font-size:17px}
+#log>li{padding:12px 0;border-top:1px solid #e8e8ed}
+#log .why li{padding:3px 0}
+#log .said{color:#86868b}
+#log .did::before{content:"✓ ";color:#1a7f37}
+#log .no .did::before{content:"✗ ";color:#d70015}
+#log .when{float:right;color:#a1a1a6;font-variant-numeric:tabular-nums}
+#log .why{display:none;margin:6px 0 0;padding:0;list-style:none;color:#6e6e73;font-size:15px}
+.details #log .why{display:block}
+.why .bar{display:inline-block;width:80px;height:6px;margin:0 8px 1px 0;border-radius:3px;background:#e8e8ed;vertical-align:middle}
+.why .bar i{display:block;height:100%;border-radius:3px;background:#7d93ff}
+#details{border:0;background:none;color:#a1a1a6;font:inherit;font-size:15px;cursor:pointer}
+#details[aria-pressed=true]{color:#7d93ff}
 @keyframes breathe{50%{scale:1.04}}
 @keyframes drift{to{filter:hue-rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
 <button id=orb aria-label="Start listening" aria-pressed=false></button>
 <p id=heard aria-live=polite><span id=said></span> <span id=live></span></p>
+<ul id=log aria-label="What it did"></ul>
+<button id=details aria-pressed=false>Show details</button>
 <script>
 let stopListening = null;
 function listening(on) {
@@ -58,13 +73,57 @@ function listening(on) {
   orb.setAttribute("aria-pressed", on);
   orb.ariaLabel = on ? "Stop listening" : "Start listening";
 }
+// What each command did. Simple by default; "Show details" adds Jev's choice, confidence and each check.
+const DID = {open_tab: () => "Opened a new tab", none_here: () => "No action: didn't match a command"};
+function outcome(r) {
+  if (r.error) return {ok: false, text: r.error};
+  if (r.opened) return {ok: true, text: r.label ? "Opened " + r.label : DID[r.choice]()};
+  if (DID[r.choice]) return {ok: false, text: DID[r.choice]()};
+  const last = (r.steps || []).at(-1) || "", app = r.label || "the app";
+  const reason = last.startsWith("Launcher open?") ? "the launcher didn't open"
+    : last.startsWith("Typed") ? "the top search result didn't match"
+    : last.startsWith("Opened?") ? "couldn't confirm it opened" : last.toLowerCase();
+  return {ok: false, text: `Couldn't open ${app}` + (reason ? ": " + reason : "")};
+}
+function bar(p) { return `<span class=bar><i style="width:${Math.round(p * 100)}%"></i></span>`; }
+function logCommand(text, r, seconds) {
+  const o = outcome(r), li = document.createElement("li"), why = document.createElement("ul");
+  li.className = o.ok ? "" : "no";
+  li.innerHTML = "<span class=when></span><div class=said></div><div class=did></div>";
+  li.querySelector(".when").textContent = seconds.toFixed(1) + " s";
+  li.querySelector(".said").textContent = "“" + text + "”";
+  li.querySelector(".did").textContent = o.text;
+  why.className = "why";
+  if (r.choice) {
+    const row = document.createElement("li");
+    row.innerHTML = bar(r.confidence || 0);
+    row.append(`Jev: ${r.choice} ${(r.confidence || 0).toFixed(2)} (${r.ms} ms)`);
+    why.append(row);
+  }
+  for (const step of r.steps || []) {
+    const row = document.createElement("li"), score = step.match(/ ([0-9][.][0-9][0-9]) [(]/);
+    if (score) row.innerHTML = bar(Number(score[1]));
+    row.append(step);
+    why.append(row);
+  }
+  li.append(why);
+  log.prepend(li);
+  while (log.children.length > 8) log.lastChild.remove();
+}
+details.onclick = () => {
+  const on = document.body.classList.toggle("details");
+  details.setAttribute("aria-pressed", on);
+  details.textContent = on ? "Hide details" : "Show details";
+};
 async function run(text) {
+  const started = performance.now();
   let r;
   // A server crash returns HTML or drops the connection; show it instead of failing silently.
   try { r = await fetch("/command", {method: "POST", headers: {"Content-Type": "application/json"},
                                      body: JSON.stringify({text})}).then(r => r.json()); }
   catch (err) { r = {error: "No answer from the server: " + err.message}; }
   if (r.error) { said.className = "err"; said.textContent = r.error; }
+  logCommand(text, r, (performance.now() - started) / 1000);
 }
 orb.onclick = async () => {
   if (stopListening) return stopListening();

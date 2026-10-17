@@ -9,4 +9,4 @@
 
 ## Laptop demo
 
-`./start.sh` opens a white page with a bubble: tap it, speak, and Deepgram's live transcript shows underneath. Jev picks the app and the launcher opens it. Needs `TYPESAFE_API_KEY` and `DEEPGRAM_API_KEY` in the repo's `.env`.
+`./start.sh` opens a white page with a bubble: tap it, speak, and Deepgram's live transcript shows underneath. Jev picks the app and the launcher opens it. Needs `TYPESAFE_API_KEY` and `DEEPGRAM_API_KEY` in the repo's `.env`. Under the transcript, a log shows what each command did; **Show details** adds Jev's choice and confidence and each on-screen check with its score and time.
