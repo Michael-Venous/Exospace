@@ -151,3 +151,44 @@ Cite KaiVM and other agent KVMs as prior work. Say "models run on our own GPU se
 
 ## 12. Code quality
 AI judges read the repo: keep code clean, typed, small modules, a real README (architecture, how to run, benchmark results). No dead code, no committed secrets.
+
+## 13. Prototype model decision — 2026-10-17
+
+**Current user-selected implementation:** Jev 1.14 + Gemini 3.8 Flash; no separate
+slow/fast LLM routing and no B200. Jev has an explicit `execute` / `ask_flash`
+choice. Explicit pointer requests can execute without Flash; predictable sequences
+use cached semantic stages with per-stage Jev verification/grounding; uncertainty,
+unexpected screens or complex new requests use Flash. Genuine ambiguity asks the
+user. Hover uses an existing skill plus UART move; drag uses existing swipe.
+Shared §5 contracts are unchanged. The screenshot-only local browser backend is
+being tested while microphone, speaker and adapter are unavailable. Current results
+and remaining limitations are in HANDOFF.md. Earlier model proposals below are
+historical and superseded.
+
+**Latest scope:** user explicitly deferred the B200. GPU serving, training and
+endpoint setup are outside the current prototype scope; hosted APIs are the
+execution path. Earlier B200 diagrams/checkpoints below and above are historical
+options, not current requirements. Next recommended comparison: Jev + smart
+planner versus the implemented fast-LLM + planner baseline. Jev integration and
+live comparisons are still pending; a third model is optional. Shared contracts
+in §5 are unchanged.
+
+User direction: balance immediate response, platform independence and intelligent
+long-horizon tasks; use Gemini 4 Argon, investigate Jev and an accessibility
+translation layer, and consider the available B200 for inference/training.
+
+Implemented baseline: configurable Gemini 3.5 Flash-Lite executor with Gemini 4
+Argon planner. Simple requests do not invoke the planner. Complex requests and
+recovery do; the executor gets a fresh screenshot after every planner response.
+Gemini 3.8 Flash is the next API comparison for stronger visual execution. These
+are candidates, not measured winners. See brain/README.md and HANDOFF.md for
+current validation and gaps. This section does not alter the shared contracts.
+
+Research direction: normalize detected controls into a bounded candidate set,
+then compare a decision model against direct multimodal execution. Native
+accessibility is optional because it requires target-side software; screenshot
+perception plus HID remains the no-install path. The B200 should first run an
+existing perception/grounding model and an open decision-model baseline. Consider
+training only after recorded failures reveal a specific deficit and a held-out
+evaluation can measure the improvement. User reports the B200 is at UF HiPerGator;
+their friend is arranging API access. No endpoint or GPU access is configured yet.

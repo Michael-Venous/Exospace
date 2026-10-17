@@ -21,3 +21,9 @@ venv/
 *.mkv
 bench/frames/
 models/
+
+# Private runtime state and local model timings
+session.json
+session.tmp
+bench/model_calls.jsonl
+work/
