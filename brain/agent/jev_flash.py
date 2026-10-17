@@ -4,6 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 import re
+import time
 
 from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, parse_plan
 from brain.agent.jev import JevVision
@@ -186,6 +187,7 @@ class JevFlashExecutor:
             prompt+='\nVISUAL FALLBACK AUTHORIZED: Jev could not reliably locate a target. If the user intent and visible target are unambiguous, you may provide fallback_x and fallback_y (0-1000, top-left origin) for the center of ONE visible target. Return exactly one stage. This is an exception to Jev supplying coordinates. Use it for a click or hover, never to guess missing intent. Otherwise ask_user. The result will be checked on a fresh screenshot.'
         else:
             prompt+='\nDo not provide fallback_x or fallback_y: Jev handles grounding for this plan.'
+        started=time.monotonic()
         for attempt in range(2):
             data=self.model.generate(image,prompt,PROMPT,SCHEMA,role='flash',run_id=ctx.run_id,step=ctx.step)
             self.cancel.check()
@@ -197,6 +199,10 @@ class JevFlashExecutor:
                 prompt+='\nCorrect this invalid plan structure: '+str(exc)
         self.completion=data['completion']
         self.last_reason=str(data.get('reasoning',''))
+        self.jev.trace.append({'label':'plan','elapsed_s':round(time.monotonic()-started,3),
+            'reason':reason or 'new task','reasoning':self.last_reason,'completion':self.completion,
+            'stages':[{'expected':s['expected'],'ready':s['ready'],'actions':[_describe(a) for a in s['actions']]}
+                      for s in self.stages]})
         if self.stages and 'fallback_x' in self.stages[0]['actions'][0]:
             self._fallback_image=image
         ctx.memory.set_subtasks([stage['expected'] for stage in self.stages])

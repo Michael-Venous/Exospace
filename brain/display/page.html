@@ -47,18 +47,38 @@ aside h2{margin:0;padding:12px 14px 6px;font-size:13px;letter-spacing:.06em;text
 #history .icon{text-align:center}
 #history .meta{color:var(--muted);font-size:14px;font-variant-numeric:tabular-nums}
 #history .why{grid-column:2/4;color:var(--muted);font-size:15px}
-#details{order:-1;display:none;max-height:55%;overflow:auto;padding:0 14px 10px;border-bottom:1px solid var(--line)}
+#details{order:-1;display:none;max-height:70%;overflow:auto;padding:0 14px 10px;border-bottom:1px solid var(--line)}
 body.details #details{display:block}
+@media (min-width:821px){body.details main{grid-template-columns:minmax(0,1fr) minmax(340px,1fr)}}
+#details .kv button{padding:2px 10px;font-size:13px;border-radius:999px}
 /* Simple view by default: plain-language rows. Details adds raw actions, coordinates and model times. */
-#history li.debug{display:none}
+#history li.debug{display:none;cursor:pointer}
 body.details #history li.debug{display:grid}
+#history li.sel{background:var(--line);border-radius:8px}
 body:not(.details) #history .meta{display:none}
-.score{display:grid;grid-template-columns:110px 1fr 46px;align-items:center;gap:10px;margin:8px 0;font-size:15px}
+.shot{position:relative;line-height:0;margin:6px 0;cursor:zoom-in}
+.shot img{width:100%;border-radius:8px}
+.box{position:absolute;border:2px solid var(--c);border-radius:3px;pointer-events:none}
+.box.miss{border-style:dashed}
+.box span{position:absolute;bottom:100%;left:-2px;padding:1px 4px;border-radius:3px;background:var(--c);color:#000;
+  font-size:11px;line-height:1.3;white-space:nowrap}
+.dot{position:absolute;width:12px;height:12px;margin:-6px 0 0 -6px;border-radius:50%;border:2px solid #000;background:var(--warn)}
+.dot.ok{background:var(--ok)}
+.dot.bad{background:var(--bad)}
+#zoom{position:fixed;inset:0;z-index:9;display:grid;place-items:center;background:rgb(0 0 0/.85);cursor:zoom-out}
+#zoom[hidden]{display:none}
+#zoom .shot img{width:auto;max-width:96vw;max-height:92vh}
+.call{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+.call h3{margin:0 0 4px;font-size:13px;letter-spacing:.05em;text-transform:uppercase;color:var(--c)}
+.call ol{margin:4px 0;padding-left:22px;font-size:15px}
+.kv{margin:4px 0;font-size:14px;color:var(--muted);overflow-wrap:anywhere}
+.kv b{color:var(--text);font-weight:600}
+.score{display:grid;grid-template-columns:minmax(0,130px) 1fr 46px;align-items:center;gap:10px;margin:8px 0;font-size:15px}
+.score span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .bar{position:relative;height:10px;border-radius:5px;background:var(--line);overflow:visible}
 .bar i{position:absolute;inset:0 auto 0 0;border-radius:5px;background:var(--ok)}
 .bar i.low{background:var(--bad)}
 .bar b{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--text)}
-.target{margin-top:14px;font-weight:600}
 .note{color:var(--muted);font-size:14px}
 footer{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 #stop{background:var(--bad);border-color:var(--bad);font-weight:800;font-size:20px;padding:14px 30px;letter-spacing:.06em}
@@ -94,13 +114,14 @@ input{flex:1;min-width:0;font:inherit;color:inherit;background:var(--panel);bord
     <h2>History</h2>
     <ul id="history" aria-live="polite"></ul>
     <section id="details">
-      <h2>Last Jev check</h2>
-      <div id="scores"><p class="note">No Jev check yet.</p></div>
-      <p class="note">Bars are Jev's confidence. The white tick is the pass mark from <code>.env</code>.
-        Pass marks are provisional, not tuned.</p>
+      <h2>Step decisions</h2>
+      <div id="inspect"><p class="note">No step yet.</p></div>
+      <p class="note">Tap a ⚙ row to inspect that step, and the screenshot to enlarge it. Bars are Jev's confidence;
+        the white tick is the pass mark the code used. Dashed boxes missed theirs.</p>
     </section>
   </aside>
 </main>
+<div id="zoom" hidden></div>
 <footer>
   <button id="stop">STOP</button>
   <div class="seg" role="group" aria-label="What a tap on the screen does">
@@ -115,7 +136,10 @@ input{flex:1;min-width:0;font:inherit;color:inherit;background:var(--panel);bord
 const SAVED_TASKS = ["Open a new tab", "Search Google for SwampHacks", "Scroll down"];
 const $ = id => document.getElementById(id);
 const LABELS = {idle: "Idle", working: "Working", done: "Done", ask_user: "Asking you", cancelled: "Stopped", fail: "Failed"};
-let gates = {min_presence: .85, min_confidence: .6}, tapMode = "click", started = 0, timer = 0;
+let tapMode = "click", started = 0, timer = 0;
+// Each step's plan event plus the actions it sent, keyed "run:step", for the decision inspector.
+const steps = new Map(), MAX_STEPS = 60;
+let runNo = 0, lastKey = null, selected = null, follow = true;
 // Markers are kept as 0-1 points and redrawn whenever the image loads or the layout changes.
 const marks = {action: null, point: null};
 
@@ -131,6 +155,7 @@ function addRow(icon, text, meta, why, debug) {
   if (why) { const w = document.createElement("span"); w.className = "why"; w.textContent = why; li.append(w); }
   $("history").prepend(li);
   while ($("history").children.length > 40) $("history").lastChild.remove();
+  return li;
 }
 
 // Map between 0-1 target coordinates and the letterboxed image on screen.
@@ -187,32 +212,112 @@ $("ask").onsubmit = e => {
   post("/goal", {text}); $("text").value = "";
 };
 
-function scoreRow(label, value, pass) {
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+const fmt = v => typeof v === "number" ? v.toFixed(2) : "—";
+function kv(key, value) { const p = el("p", "kv"); p.append(el("b", "", key + ": "), String(value ?? "—")); return p; }
+// `risky` answers (irreversible, decline) are the ones where crossing the pass mark stops the action.
+function scoreRow(label, value, pass, risky) {
   const v = typeof value === "number" ? value : null;
-  const row = document.createElement("div"); row.className = "score";
+  const row = el("div", "score");
   row.innerHTML = `<span></span><span class="bar"><i></i></span><span></span>`;
-  row.children[0].textContent = label;
-  row.children[2].textContent = v === null ? "—" : v.toFixed(2);
+  row.children[0].textContent = label; row.children[0].title = label;
+  row.children[2].textContent = fmt(v);
   const fill = row.querySelector("i"); fill.style.width = ((v || 0) * 100) + "%";
   if (pass != null) {
     const tick = document.createElement("b"); tick.style.left = (pass * 100) + "%"; row.querySelector(".bar").append(tick);
-    if (v !== null && v < pass) fill.className = "low";
+    if (v !== null && (v < pass) !== !!risky) fill.className = "low";
   }
   return row;
 }
-function showScores(scores) {
-  const box = $("scores"); box.replaceChildren();
-  if (scores.route) box.append(scoreRow("route: " + scores.route, scores.route_confidence, null));
-  for (const [name, s] of Object.entries(scores)) {
-    if (typeof s !== "object" || s === null) continue;
-    const title = document.createElement("div"); title.className = "target"; title.textContent = "Target: " + name;
-    box.append(title,
-      scoreRow("present", s.presence, gates.min_presence),
-      scoreRow("unique", s.unique, gates.min_presence),
-      scoreRow("clear", s.clear, null),
-      scoreRow("box", s.box_confidence, gates.min_confidence));
-  }
+
+// Decision inspector: the step's screen with Jev's boxes and the click points, then every decision in order.
+const COLORS = {triage: "var(--ok)", zoom: "var(--info)", "stage check": "var(--warn)", locate: "var(--ask)",
+                route: "var(--text)", plan: "var(--info)"};
+function select(key) {
+  selected = key;
+  document.querySelectorAll("#history li.sel").forEach(li => li.classList.remove("sel"));
+  document.querySelector(`#history li[data-key="${key}"]`)?.classList.add("sel");
+  renderStep();
 }
+function dot(point, cls) {
+  const d = el("div", "dot " + cls);
+  d.style.left = point[0] * 100 + "%"; d.style.top = point[1] * 100 + "%";
+  return d;
+}
+function shot(s) {
+  const wrap = el("div", "shot");
+  if (!s.img) {  // one element per step: the frame is served uncached, so re-renders must not refetch it
+    s.img = Object.assign(el("img"), {src: `/frame/${s.frame}.jpg`, alt: `Screen at step ${s.step}`});
+    s.img.onerror = () => { s.frame = 0; s.gone = true; renderStep(); };
+  }
+  wrap.append(s.img);
+  for (const c of s.trace) for (const [name, a] of Object.entries(c.answers || {})) {
+    if (!Array.isArray(a?.box)) continue;
+    const [l, t, r, b] = a.box, gate = c.gates?.[name];
+    const d = el("div", "box" + (gate != null && !(a.confidence >= gate) ? " miss" : ""));
+    Object.assign(d.style, {left: l * 100 + "%", top: t * 100 + "%", width: (r - l) * 100 + "%", height: (b - t) * 100 + "%"});
+    d.style.setProperty("--c", COLORS[c.label] || "var(--text)");
+    d.append(el("span", "", `${c.label} ${name} ${fmt(a.confidence)}`));
+    wrap.append(d);
+  }
+  for (const p of s.points) wrap.append(dot(p, ""));
+  for (const a of s.sent) if (a.point) wrap.append(dot(a.point, a.ok ? "ok" : "bad"));
+  wrap.onclick = () => { $("zoom").replaceChildren(wrap.cloneNode(true)); $("zoom").hidden = false; };
+  return wrap;
+}
+function callView(c) {
+  const box = el("div", "call");
+  box.style.setProperty("--c", COLORS[c.label] || "var(--muted)");
+  const ms = typeof c.elapsed_s === "number" ? ` · ${Math.round(c.elapsed_s * 1000)} ms` : "";
+  if (c.label === "route") {
+    box.append(el("h3", "", `Route → ${c.mode}` + (c.mode === "act" ? ` (${c.gesture})` : "")));
+    if (c.irreversible) box.append(el("p", "kv", c.approved ? "Irreversible; the user approved it." : "Irreversible: asks first."));
+  } else if (c.label === "plan") {
+    const ol = el("ol");
+    for (const st of c.stages) {
+      const li = el("li", "", `${st.expected} — ${st.actions.join(", ")}`);
+      li.append(el("div", "note", "ready when: " + st.ready));
+      ol.append(li);
+    }
+    box.append(el("h3", "", "Plan" + ms), kv("why", c.reason), kv("thinking", c.reasoning), ol, kv("done when", c.completion));
+  } else {
+    box.append(el("h3", "", "Jev " + c.label + ms));
+    for (const [k, v] of Object.entries(c.state || {})) box.append(kv(k, Array.isArray(v) ? v.join("; ") || "nothing yet" : v));
+    for (const [name, a] of Object.entries(c.answers || {})) {
+      if (!a) continue;
+      if ("choice" in a) box.append(kv(name, `${a.choice} (${fmt(a.confidence)})`));
+      else if ("box" in a) box.append(scoreRow(name, a.confidence, c.gates?.[name]));
+      else if ("noul" in a) box.append(scoreRow(name, a.noul, c.gates?.[name], /irreversible|decline/.test(name)));
+    }
+  }
+  return box;
+}
+function renderStep() {
+  const s = steps.get(selected), box = $("inspect");
+  box.replaceChildren();
+  if (!s) { box.append(el("p", "note", "No step yet.")); return; }
+  const head = el("p", "kv");
+  head.append(el("b", "", `Step ${s.step}`), ` · ${fmt(s.t_model)} s deciding `);
+  if (!follow) {
+    const latest = el("button", "", "Latest");
+    latest.onclick = () => { follow = true; select(lastKey); };
+    head.append(latest);
+  }
+  box.append(head);
+  if (s.frame) box.append(shot(s));
+  else if (s.gone) box.append(el("p", "note", "Screenshot no longer kept."));
+  box.append(kv("decided", s.reasoning), kv("planned", s.actions.join(", ") || "no action"));
+  if (s.sent.length) box.append(kv("sent", s.sent.map(a => (a.ok ? "✓ " : "✗ ") + a.action).join(", ")));
+  for (const r of s.rejected) box.append(kv("rejected", r));
+  if (!s.trace.length) box.append(el("p", "note", "No new model call this step."));
+  for (const c of s.trace) box.append(callView(c));
+}
+$("zoom").onclick = () => { $("zoom").hidden = true; $("zoom").replaceChildren(); };
 
 // Plain-language versions of the agent's action briefs for the simple view.
 function friendly(brief) {
@@ -234,7 +339,6 @@ const stageText = reasoning => {
 let lastStage = "";
 
 const handlers = {
-  config: e => { gates = e; },
   frame: e => { $("screen").src = "/screen.jpg?id=" + e.id; },
   run: e => {
     setState("working"); $("goal").textContent = "“" + e.goal + "”";
@@ -242,20 +346,34 @@ const handlers = {
     timer = setInterval(() => { $("timer").textContent = (Date.now() / 1000 - started).toFixed(1) + " s"; }, 100);
     setMark("point", null);
     addRow("▶", e.goal); lastStage = "";
+    runNo++; lastKey = null;
   },
   plan: e => {
-    if (e.scores) showScores(e.scores);
     if (e.points.length) setMark("action", e.points[0], "pending");
     const stage = stageText(e.reasoning);
     if (stage && stage !== lastStage) addRow("◆", stage);
     lastStage = stage;
-    addRow("⚙", e.actions.join(", ") || "No action", e.t_model ? e.t_model.toFixed(2) + " s" : "", e.reasoning, true);
+    const key = runNo + ":" + e.step;
+    steps.set(key, {...e, sent: []});
+    if (steps.size > MAX_STEPS) steps.delete(steps.keys().next().value);
+    const li = addRow("⚙", e.actions.join(", ") || "No action", e.t_model ? e.t_model.toFixed(2) + " s" : "", e.reasoning, true);
+    li.dataset.key = key;
+    li.onclick = () => { follow = key === lastKey; select(key); };
+    lastKey = key;
+    if (follow) select(key);
   },
   action: e => {
     if (e.point) setMark("action", e.point, e.ok ? "done" : "bad");
     addRow(e.ok ? "✓" : "✗", friendly(e.action), e.action);
+    const key = runNo + ":" + e.step;
+    steps.get(key)?.sent.push(e);
+    if (key === selected) renderStep();
   },
   result: e => {
+    if (e.trace?.length && steps.has(lastKey)) {  // decisions after the last plan, e.g. a final check
+      steps.get(lastKey).trace.push(...e.trace);
+      if (lastKey === selected) renderStep();
+    }
     setState(e.status); clearInterval(timer); $("timer").textContent = e.total_s.toFixed(1) + " s";
     addRow(e.status === "done" ? "●" : "■", e.message, e.steps + " steps");
   },
@@ -264,6 +382,11 @@ const handlers = {
   notice: e => addRow("ℹ", e.message),
 };
 const events = new EventSource("/events");
+// A reconnect replays the server's history (a restarted brain has a new one): rebuild the log from it.
+events.onopen = () => {
+  $("history").replaceChildren(); steps.clear();
+  runNo = 0; lastKey = selected = null; follow = true; renderStep();
+};
 events.onmessage = m => { const e = JSON.parse(m.data); (handlers[e.ev] || (() => {}))(e); };
 </script>
 </body>

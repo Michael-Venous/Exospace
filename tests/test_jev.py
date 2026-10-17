@@ -65,6 +65,21 @@ class JevTests(unittest.TestCase):
         self.answers['location']['box'].update(top=.8,bottom=.9)
         self.assertIsNone(self.jev.locate(self.image,'button'))
 
+    def test_trace_records_answers_gates_and_boxes_on_screen(self):
+        self.jev.locate(self.image,'button')
+        call=self.jev.trace.pop()
+        self.assertEqual((call['label'],call['gates']['location']),('locate',.6))
+        self.assertEqual(call['answers']['location']['box'],[.3,.2,.5,.4])
+        self.assertEqual(call['answers']['present'],{'noul':.99})
+        # A padded crop of the screen's bottom-right quarter: boxes land back on the whole screen.
+        self.image=cv2.imencode('.jpg',np.full((100,500,3),240,np.uint8))[1].tobytes()
+        self.answers['location']['box'].update(top=.1,bottom=.2)
+        self.jev.evaluate(self.image,{'location':{}},region=(.5,.5,1,1))
+        self.assertEqual(self.jev.trace.pop()['answers']['location']['box'],[.65,.64,.75,.78])
+        self.answers['location']['box']['left']='bad'
+        self.jev.evaluate(self.image,{'location':{}})
+        self.assertIsNone(self.jev.trace.pop()['answers']['location']['box'])
+
     def test_api_error_and_incomplete_response(self):
         self.status=401
         with self.assertRaisesRegex(JevError,'401'): self.jev.locate(self.image,'button')
