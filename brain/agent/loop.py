@@ -66,6 +66,7 @@ class Agent:
         note = ""
         failures = 0
         recovery_used = False
+        attempts: dict[tuple[str, ...], list[np.ndarray]] = {}  # each batch's starting screens
         connected_at, basis = self._classified
         if connected_at != profile.connected_at:  # another connection's screen
             basis = None
@@ -212,6 +213,13 @@ class Agent:
                             recovery_used = True
                     else:
                         failures, recovery_used = 0, False
+                    # The same batch from the same screen a third time is stuck, even when each try flashed
+                    # something the check above saw as progress (measured: open_app looping from one page).
+                    tried = attempts.setdefault(tuple(a.brief() for a in plan.actions), [])
+                    tried.append(before)
+                    if sent_input and sum(frame_change(t, before) < ctl.settle.threshold for t in tried) >= 3:
+                        status, message = "fail", "Stuck repeating the same action"
+                        break
                     note = "\n".join(notes)
                 except Cancelled as exc:
                     if self.reconnect is None or exc.reason not in RESUMABLE:

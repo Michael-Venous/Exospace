@@ -11,7 +11,7 @@ body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:c
 .on #talk{animation:breathe 4s ease-in-out infinite,drift 6s linear infinite}
 #heard{max-width:min(640px,90vw);min-height:2.8em;margin:0}
 #live,#says{color:#86868b}
-#said:empty~#live:empty::before{content:"Tap to talk";color:#a1a1a6}
+#said:empty~#live:empty::before{content:"Hold to talk";color:#a1a1a6}
 #says{font-size:18px;min-height:1.2em;max-width:min(640px,90vw)}
 .err{color:#d70015}
 #mics{position:fixed;bottom:16px;left:50%;translate:-50%;max-width:calc(100vw - 32px);
@@ -20,7 +20,7 @@ body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:c
 @keyframes drift{to{filter:hue-rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
-<button id=talk aria-label="Start listening" aria-pressed=false></button>
+<button id=talk aria-label="Hold to talk" aria-pressed=false></button>
 <p id=heard aria-live=polite><span id=said></span> <span id=live></span></p>
 <div id=says aria-live=polite></div>
 <select id=mics aria-label=Microphone></select>
@@ -61,6 +61,7 @@ async function start() {
   let mic;
   try { mic = await navigator.mediaDevices.getUserMedia({audio: mics.value ? {deviceId: {exact: mics.value}} : true}); }
   catch (err) { return showError("Microphone blocked: " + err.message); }
+  if (!held) return mic.getTracks().forEach(t => t.stop());  // let go before the mic opened
   listMics();
   const rec = new MediaRecorder(mic), sock = new WebSocket(`ws://${location.hostname}:__WS_PORT__`);
   let done = "";
@@ -79,7 +80,7 @@ async function start() {
   rec.onstop = () => { if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
   sock.onopen = () => {
     rec.start(100);
-    document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Stop listening";
+    document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Listening";
     said.className = ""; said.textContent = ""; live.textContent = "";
   };
   sock.onmessage = e => {
@@ -96,14 +97,19 @@ async function start() {
     if (rec.state !== "inactive") rec.stop();
     mic.getTracks().forEach(t => t.stop());
     ctx.close();
-    document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Start listening";
+    document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Hold to talk";
     live.textContent = "";
     if (done) send(done);
     if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
   };
 }
-const toggle = () => stopListening ? stopListening() : start();
-talk.onclick = toggle;
-// Space works as a big switch: one press to talk, one to finish (accessibility switches send keys too).
-addEventListener("keydown", e => { if (e.code === "Space" && !e.repeat && e.target !== mics) { e.preventDefault(); toggle(); } });
+// Push to talk: listen only while the orb or Space is held, so speech meant for someone else is never acted on.
+let held = false;
+function press() { if (!held && !stopListening) { held = true; start(); } }
+function release() { if (held) { held = false; if (stopListening) stopListening(); } }
+talk.onpointerdown = e => { talk.setPointerCapture(e.pointerId); press(); };
+talk.onpointerup = talk.onpointercancel = release;
+addEventListener("keydown", e => { if (e.code === "Space" && e.target !== mics) { e.preventDefault(); if (!e.repeat) press(); } });
+addEventListener("keyup", e => { if (e.code === "Space" && e.target !== mics) release(); });
+addEventListener("blur", release);  // the keyup goes to another window
 </script>

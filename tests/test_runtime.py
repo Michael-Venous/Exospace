@@ -201,6 +201,14 @@ class RuntimeTests(unittest.TestCase):
         self.planner.plan.assert_called_once()
         self.assertEqual(sum(c["op"] == "key" for c in self.hid.commands), 3)
 
+    def test_same_batch_from_same_screen_stops_at_third_try(self):
+        self.hid.change = False
+        self.fast.next_actions.return_value = Plan("launch", [Action("skill", name="open_app",
+                                                                     args={"name": "video player"})], [])
+        with patch("brain.agent.loop.visibly_changed", return_value=True):  # each try flashed the launcher
+            result = self.agent().run("See the video", self.profile)
+        self.assertEqual((result.status, result.message, result.steps), ("fail", "Stuck repeating the same action", 3))
+
     def test_rejected_skill_drops_dependent_actions(self):
         self.fast.next_actions.side_effect = [
             Plan("skill", [Action("skill", name="missing"), Action("type_text", text="unsafe tail")], []),
