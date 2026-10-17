@@ -1,0 +1,85 @@
+<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Exospace Voice</title>
+<style>
+:root{--bg:#fff;--fg:#1d1d1f;--dim:#86868b;--accent:#5e6ad2;--err:#d70015}
+@media (prefers-color-scheme:dark){:root{--bg:#000;--fg:#f5f5f7;--dim:#98989d;--accent:#7d93ff}}
+body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:40px;padding:16px;
+  box-sizing:border-box;background:var(--bg);color:var(--fg);font:20px system-ui,sans-serif;text-align:center}
+#talk{width:200px;height:200px;border-radius:50%;border:0;background:var(--accent);color:#fff;font:600 22px system-ui;
+  cursor:pointer;transform:scale(calc(1 + var(--lvl,0) * .25));transition:transform .08s}
+body.on #talk{box-shadow:0 0 0 14px color-mix(in srgb,var(--accent) 30%,transparent)}
+#said{min-height:1.4em;max-width:min(680px,92vw)}#live{color:var(--dim);min-height:1.2em}
+#says{color:var(--dim);font-size:18px;min-height:1.2em;max-width:min(680px,92vw)}.err{color:var(--err)}
+</style>
+<button id=talk aria-pressed=false>Talk</button>
+<div><div id=said></div><div id=live></div></div>
+<div id=says aria-live=polite></div>
+<script>
+let stopListening = null;
+const post = (path, body = {}) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
+  body: JSON.stringify(body)}).then(r => r.json()).catch(err => ({error: err.message}));
+function showError(text) { said.className = "err"; said.textContent = text; }
+
+// Narration: speak the agent's questions and results, but never over the user.
+new EventSource("/narration").onmessage = e => {
+  const {say} = JSON.parse(e.data);
+  says.textContent = say;
+  if (!stopListening) speechSynthesis.speak(new SpeechSynthesisUtterance(say));
+};
+
+async function send(text) {
+  const r = await post("/segment", {text});
+  if (r.error) showError(r.error);
+}
+
+async function start() {
+  speechSynthesis.cancel();  // the user is talking: stop speaking at once
+  post("/talk");             // barge in on whatever the agent is doing
+  let mic;
+  try { mic = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  catch (err) { return showError("Microphone blocked: " + err.message); }
+  const rec = new MediaRecorder(mic), sock = new WebSocket(`ws://${location.hostname}:__WS_PORT__`);
+  let done = "";
+  const ctx = new AudioContext(), an = ctx.createAnalyser(), buf = new Uint8Array(512);
+  an.fftSize = buf.length;
+  ctx.createMediaStreamSource(mic).connect(an);
+  (function tick() {
+    if (ctx.state === "closed") return talk.style.removeProperty("--lvl");
+    an.getByteTimeDomainData(buf);
+    let sum = 0; for (const v of buf) sum += (v - 128) ** 2;
+    talk.style.setProperty("--lvl", Math.min(1, Math.sqrt(sum / buf.length) / 30));
+    requestAnimationFrame(tick);
+  })();
+  stopListening = () => rec.state === "recording" ? rec.stop() : sock.close();
+  rec.ondataavailable = e => { if (e.data.size && sock.readyState === 1) sock.send(e.data); };
+  rec.onstop = () => { if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
+  sock.onopen = () => {
+    rec.start(100);
+    document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.textContent = "Listening";
+    said.className = ""; said.textContent = ""; live.textContent = "";
+  };
+  sock.onmessage = e => {
+    const m = JSON.parse(e.data);
+    if (m.type !== "Results") return;
+    const words = m.channel.alternatives[0].transcript;
+    if (m.is_final && words) done = (done + " " + words).trim();
+    if (words) { said.className = ""; said.textContent = done; live.textContent = m.is_final ? "" : words; }
+    // Each pause ends a segment: send it now so execution starts while the user keeps talking.
+    if (m.speech_final && done) { send(done); done = ""; }
+  };
+  sock.onclose = e => {
+    stopListening = null;
+    if (rec.state !== "inactive") rec.stop();
+    mic.getTracks().forEach(t => t.stop());
+    ctx.close();
+    document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.textContent = "Talk";
+    live.textContent = "";
+    if (done) send(done);
+    if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
+  };
+}
+const toggle = () => stopListening ? stopListening() : start();
+talk.onclick = toggle;
+// Space works as a big switch: one press to talk, one to finish (accessibility switches send keys too).
+addEventListener("keydown", e => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); toggle(); } });
+</script>

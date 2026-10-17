@@ -16,9 +16,12 @@ dependencies = [
 # Stand-in backend: drive the machine you're on (MacBook) instead of a target.
 local = ["mss>=9.0", "pyautogui>=0.9.54"]
 browser = ["playwright>=1.50,<2"]
+# Voice layer: Deepgram relay (brain/voice/layer.py).
+voice = ["websockets>=13"]
 
 [tool.setuptools]
-packages = ["brain", "brain.agent", "brain.display", "brain.skills"]
+packages = ["brain", "brain.agent", "brain.display", "brain.skills", "brain.voice"]
 
 [tool.setuptools.package-data]
 "brain.display" = ["page.html"]
+"brain.voice" = ["layer.html"]
