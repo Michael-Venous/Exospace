@@ -10,3 +10,5 @@
 ## Laptop demo
 
 `./start.sh` opens a white page with a bubble: tap it, speak, and Deepgram's live transcript shows underneath. Jev picks the app and the launcher opens it. Needs `TYPESAFE_API_KEY` and `DEEPGRAM_API_KEY` in the repo's `.env`.
+
+The Pico does the typing, plugged straight into the laptop. Copy `pico/boot.py` and `pico/code.py` onto the `CIRCUITPY` drive, then unplug and replug it. This laptop-only firmware takes keyboard commands over a second USB serial port, because the laptop has no UART to reach [`firmware/pico/`](../../firmware/pico/), the real firmware.
