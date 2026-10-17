@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+from dataclasses import replace
 
 from brain.agent.factory import build_executor
 from brain.agent.loop import RESUMABLE, Agent
@@ -69,13 +70,17 @@ def main(argv: list[str] | None = None) -> int:
             profile: DeviceProfile | None = None
             generation = -1
 
-            def redetect() -> DeviceProfile | None:
-                """Classify the screen again; None keeps the OS when it cannot tell."""
+            def redetect(new_connection: bool = False) -> DeviceProfile | None:
+                """Classify the screen again; None keeps the OS when it cannot tell. The same
+                connection keeps its connected_at, which keys executor state (PLAN.md §5.4)."""
                 nonlocal profile
                 try:
-                    profile = detect_profile(capture, executor, args.os, cancel=token)
+                    found = detect_profile(capture, executor, args.os, cancel=token)
                 except (RuntimeError, ValueError):  # e.g. an unclassifiable boot logo
                     return None  # the model still sees the new screen
+                if profile and not new_connection:
+                    found = replace(found, connected_at=profile.connected_at)
+                profile = found
                 status(f"Target: {profile.os} ({profile.input})")
                 return profile
 
@@ -90,7 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                     if current == generation:
                         return None
                     try:
-                        found = redetect()
+                        found = redetect(new_connection=True)
                     except Cancelled as exc:
                         if exc.reason not in RESUMABLE:
                             raise
@@ -136,8 +141,6 @@ def main(argv: list[str] | None = None) -> int:
                             continue
                         generation = current
                         status(f"Target: {profile.os} ({profile.input})")
-                    elif profile.os == "bios":
-                        redetect()  # a boot logo read as firmware may have become a desktop since
                     if args.backend == "local":
                         status("Focus the target window; starting in 2 seconds.")
                         token.sleep(2)

@@ -12,7 +12,7 @@ from brain.capture import Capture, frame_change, is_blank, thumbnail
 from brain.hid import HID, HID_MAX, HIDError
 from brain.keys import canonical_combo
 from brain.types import Action, ActionError, DeviceProfile
-from brain.verification import highlight_rows
+from brain.verification import highlight_rows, visibly_changed
 
 TYPE_CHUNK = 32  # chars per UART "type" command, so cancel lands quickly
 WAIT_S = 10.0  # longest block of the wait skill
@@ -124,11 +124,14 @@ class Controller:
             after = self.capture.grab()
             band = None if after is None else highlight_rows(frame, after)
             if band is None:
-                if last is None and key == "DOWN":
-                    key = "UP"  # the highlight may sit on the last row of a menu that does not wrap round
+                # An unchanged screen: the highlight may sit on the last row of a menu that does not
+                # wrap round. A change may be a list scrolling under its bar, which leaves `target` stale.
+                if last is None and key == "DOWN" and after is not None and not visibly_changed(frame, after):
+                    key = "UP"
                     continue
                 if last is None:
-                    raise ActionError("pressed DOWN and UP but no menu highlight moved; use the arrow keys")
+                    raise ActionError(f"pressed {'DOWN and UP' if key == 'UP' else 'DOWN'} but no menu "
+                                      "highlight moved; use the arrow keys")
                 return  # the end of a menu that does not wrap round: the row nearest the target
             frame = after
             if band[0] <= target <= band[1]:
@@ -176,7 +179,9 @@ class Controller:
         return False
 
     def release_all(self) -> None:
-        """Best effort: never leave a key or button held down."""
+        """Best effort: never leave a key or button held down, or firmware keys armed
+        after the run that armed them (a later blank screen would tap them into the OS)."""
+        self._boot_until = 0.0
         if self.hid.is_mounted():
             try:
                 self.hid.send({"op": "release_all"})

@@ -140,6 +140,18 @@ class RuntimeTests(unittest.TestCase):
         agent.run("Boot Windows", self.profile)  # another OS is never checked again
         redetect.assert_called_once_with()
 
+    def test_firmware_is_redetected_between_goals_only_after_a_big_change(self):
+        bios = DeviceProfile("bios", Rect(0, 0, 160, 100), "mouse", 1)
+        redetect = Mock(return_value=bios)
+        self.fast.next_actions.return_value = Plan("menu", [Action("done", summary="Shown")], [])
+        agent = Agent(self.executor, self.controller, self.memory, self.telemetry, redetect=redetect)
+        for _ in range(2):  # an unchanged screen: no model call before acting
+            agent.run("Show the menu", bios)
+        redetect.assert_not_called()
+        self.capture.frame[:] = 160  # e.g. a boot logo read as firmware became a desktop
+        agent.run("Show the menu", bios)
+        redetect.assert_called_once_with()
+
     def test_completion_requires_fresh_frame_after_input(self):
         self.fast.next_actions.side_effect = [
             Plan("type", [Action("type_text", text="hello"), Action("done")], []),
@@ -302,7 +314,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.hid.commands, [])
         with self.assertRaises(ActionError):  # a screen without a menu highlight
             self.controller.execute(Action("click", x=.5, y=.5), bios)
-        self.assertEqual(self.hid.commands, [{"op": "key", "keys": ["DOWN"]}, {"op": "key", "keys": ["UP"]}])
+        self.assertEqual(self.hid.commands, [{"op": "key", "keys": ["DOWN"]}])  # it changed, so no UP
 
     def test_boot_keys_reach_skill_args(self):
         for raw in ({"type": "skill", "name": "boot_keys", "keys": ["F2"]}, {"type": "boot_keys", "keys": ["F2"]}):
@@ -406,6 +418,24 @@ class FirmwareClickTests(unittest.TestCase):
         controller.execute(Action("double_click", x=.5, y=50 / 240), bios)
         self.assertEqual((menu.selected, menu.commands[-1]), (0, {"op": "key", "keys": ["ENTER"]}))
 
+    def test_a_list_scrolling_under_the_bar_is_an_error(self):
+        bios = DeviceProfile("bios", Rect(0, 0, 320, 240), "mouse", 1)
+        menu = Menu(4, False)  # the bar on the bottom row of a longer list
+        move = menu.send
+
+        def send(command):  # DOWN scrolls the next item under the bar: only thin label strokes change
+            if command["keys"] != ["DOWN"]:
+                return move(command)
+            menu.commands.append(command)
+            menu.frame[44:56, 100:196] = 152
+
+        menu.send = send
+        controller = Controller(menu, menu, CancelToken(),
+                                SettleConfig(min_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
+        with self.assertRaisesRegex(ActionError, "pressed DOWN but"):
+            controller.execute(Action("click", x=.5, y=50 / 240), bios)
+        self.assertEqual(len(menu.commands), 1)
+
 
 class AwaitTargetTests(unittest.TestCase):
     def setUp(self):
@@ -438,6 +468,14 @@ class AwaitTargetTests(unittest.TestCase):
         self.hid.callbacks[0]("unmounted")  # the restart itself
         self.assertTrue(self.controller.await_target(1))
         self.assertIn({"op": "key", "keys": ["DELETE"]}, self.hid.commands)
+
+    def test_keys_armed_by_a_finished_run_never_tap(self):
+        self.controller.arm_boot_keys(["DELETE"])
+        self.controller.release_all()  # the run ended, e.g. a barge-in before the restart
+        self.hid.commands.clear()
+        self.hid.callbacks[0]("unmounted")  # a restart while waiting at the goal prompt
+        self.assertTrue(self.controller.await_target(1))  # the next run's blank screen
+        self.assertEqual(self.hid.commands, [])
 
     def test_no_video_times_out(self):
         self.capture.frame[:] = 0

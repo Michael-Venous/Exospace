@@ -6,6 +6,8 @@ import time
 from dataclasses import dataclass, replace
 from typing import Callable
 
+import numpy as np
+
 from brain.agent.executor import Executor, StepContext
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled
@@ -46,6 +48,8 @@ class Agent:
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
         self.reconnect, self.redetect = reconnect, redetect
+        # (connected_at, thumbnail) of the screen the OS was classified on, kept between goals
+        self._classified: tuple[float, np.ndarray | None] = (0.0, None)
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
@@ -57,7 +61,9 @@ class Agent:
         note = ""
         failures = 0
         recovery_used = False
-        basis = None  # thumbnail of the screen the OS was classified on
+        connected_at, basis = self._classified
+        if connected_at != profile.connected_at:  # another connection's screen
+            basis = None
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
         self.on_status("Working on your request…")
@@ -191,6 +197,7 @@ class Agent:
             # Keep SDK exception payloads (possibly containing request data) out of transcripts.
             status, message = "fail", f"{type(exc).__name__}: runtime operation failed; check setup and model access"
         finally:
+            self._classified = (profile.connected_at, basis)
             ctl.release_all()
             self.telemetry.finish(run_id, profile.os, task_id, step, status == "done",
                                   time.monotonic() - started)

@@ -29,6 +29,8 @@ class QuickActionTests(unittest.TestCase):
             'type "hello world" and press enter': ["type_text('hello world')", "hotkey(ENTER)"],
             "type “hi there”, then press tab.": ["type_text('hi there')", "hotkey(TAB)"],
             "scroll down": ["scroll(5)"],
+            "scroll up and click the first result": ["scroll(-5)"],  # a scroll is easily undone
+            "scroll down, please": ["scroll(5)"],
         }
         for goal, expected in cases.items():
             with self.subTest(goal=goal):
@@ -43,8 +45,9 @@ class QuickActionTests(unittest.TestCase):
                      "open calculator and type 2+2\nUser correction: I meant calendar",
                      # half a combination, or a qualified command, must not act alone
                      "press control and c", "press windows and r", "press alt and f4",
+                     "press shift and press enter", "press control and then press s",
                      "press delete, but only on the second email", "press enter, not yet",
-                     'type "cats", after clicking the search box', "scroll up and click the first result",
+                     'type "cats", after clicking the search box',
                      # things on the screen, not apps
                      "open the second result", "open the attachment", "open them", "open history",
                      "open his profile"):

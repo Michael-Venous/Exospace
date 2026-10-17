@@ -90,8 +90,8 @@ then presses ENTER); right_click, scroll and swipe are rejected.)*
 OS is detected **from the first frames** (USB can't reliably tell us). `bios` means a firmware
 setup or boot screen. Every executor step gets the OS with its keyboard conventions.
 *(2026-10-17: linux/chromeos/ios/bios added by user request to run on any OS and the boot screen.
-A restart's boot logo can read as `bios`, so a `bios` profile is re-detected at each goal and
-when its screen changes a lot mid-run.)*
+A restart's boot logo can read as `bios`, so a `bios` profile is re-detected once its screen
+has changed a lot since it was classified, mid-run or between goals; `connected_at` stays.)*
 
 ### 5.5 Memory (`session.json`, persists across swaps)
 ```json
@@ -170,9 +170,10 @@ AI judges read the repo: keep code clean, typed, small modules, a real README (a
 (GLM-4.6V-FlashX, one call per step); jev-flash stays the Gemini default. GLM does not follow
 jev-flash's stage schema: 0/3 oracle successes against 1/3 for direct (calendar task,
 `bench/results.csv`; median model call 7.2 s vs 2.4 s). Images stay at 1280 px: 960 and 768
-were no faster (2.2-2.3 s) and their "done" claims failed the oracle. Unambiguous leading
-commands ("open calculator", "press ctrl c", 'type "hi"', "scroll down") run with no model
-call (`brain/agent/quick.py`); the model checks the result on the next step.
+were no faster (2.2-2.3 s) and their "done" claims failed the oracle. Goals made only of
+unambiguous commands ("press ctrl c", 'type "hi"'), or that start by opening an app or
+scrolling ("open calculator, then ...", "scroll down and ..."), take their first step with no
+model call (`brain/agent/quick.py`); the model checks the result on the next step.
 
 **Current user-selected implementation:** Jev 1.14 + Gemini 3.8 Flash; no separate
 slow/fast LLM routing and no B200. Jev has an explicit `execute` / `ask_flash`

@@ -1,7 +1,7 @@
-"""Model-free start: a goal made of unambiguous commands ("press ctrl c", 'type "hi"',
-"scroll down"), or one that starts by opening an app ("open calculator, then ..."), acts
-at once, with no model call. The wrapped executor then checks the result and does the
-rest from the next step."""
+"""Model-free start: a goal made of unambiguous commands ("press ctrl c", 'type "hi"'),
+or one that starts by opening an app or scrolling ("open calculator, then ...", "scroll
+down and ..."), acts at once, with no model call. The wrapped executor then checks the
+result and does the rest from the next step."""
 
 from __future__ import annotations
 
@@ -29,8 +29,9 @@ _NOT_APP = frozenset(
 
 
 def quick_actions(goal: str, os: OSName) -> list[Action]:
-    """Actions for a goal whose every clause is an unambiguous command, else [].
-    An app launch ends the list: what comes next depends on what the app shows."""
+    """Actions for a goal whose every clause is an unambiguous command, else [], except
+    that leading scrolls still act. An app launch ends the list: what comes next depends
+    on what the app shows."""
     actions: list[Action] = []
     rest = goal.strip()
     if "\n" in rest:  # a correction ("...\nUser correction: ...") can change the first command
@@ -38,11 +39,14 @@ def quick_actions(goal: str, os: OSName) -> list[Action]:
     while rest:
         action, end = _clause(rest, os)
         if action is None:
-            return []  # the rest may qualify what came before ("press delete, but only ...")
+            # The rest may qualify what came before ("press delete, but only ..."); a scroll undoes easily.
+            return actions if all(a.type == "scroll" for a in actions) else []
         actions.append(action)
         if action.type == "skill":
             break
         rest = _SEPARATOR.sub("", rest[end:], count=1)
+        if rest and action.type == "hotkey" and set(action.keys) <= MODIFIERS:
+            return []  # half a combination: "press shift and press enter"
     return actions
 
 

@@ -97,13 +97,14 @@ completion claim should be measured against an independent task outcome.
 
 The `boot_keys` skill arms setup keys (F2, DELETE, ESC...) that the controller taps
 every 0.2 s while the target restarts and for 5 s after its video returns. Taps start
-only once the Pico sees the USB reset, so a screen that merely blanks gets none. Firmware
-screens get the `bios` profile. They have no pointer, so a click presses DOWN/UP until
-the menu's highlight bar covers the clicked row; right-click, scroll and swipe are
-rejected. A boot logo can read as firmware, so a `bios` profile is detected again
-when its screen changes a lot or a new goal starts. Test without hardware on a QEMU/OVMF
-virtual PC (Debian/Ubuntu packages `qemu-system-x86` and `ovmf`); every run starts from
-fresh firmware settings:
+only once the Pico sees the USB reset, so a screen that merely blanks gets none, and a
+run that ends disarms them. Firmware screens get the `bios` profile. They have no
+pointer, so a click presses DOWN/UP until the menu's highlight bar covers the clicked
+row; right-click, scroll and swipe are rejected. A boot logo can read as firmware, so a
+`bios` profile is detected again once its screen has changed a lot since it was
+classified, also between goals. Test without hardware on a QEMU/OVMF virtual PC
+(Debian/Ubuntu packages `qemu-system-x86` and `ovmf`); every run starts from fresh
+firmware settings:
 
 ```sh
 .venv/bin/python -m brain --backend qemu
