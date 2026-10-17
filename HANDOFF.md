@@ -9,7 +9,11 @@ differ, this one holds there. After the merge, 197 unit tests pass on the laptop
 
 Merged with `main` again at `46088d1` (PR #17). Race is always the default executor, and z.ai and
 Gemini are interchangeable: either key serves every executor, with the same settings (model,
-thinking, a fallback model on 503/429, planner model). OS hints reach only
+thinking, a fallback model on 503/429, planner model).
+Race on z.ai alone (no Gemini key), workstation study via `bench/arch/e2e_study.run_segment`, one
+repeat: 7/10 by the fixture's oracle, 0 unsafe. Jev clicks and remarks take ~1 s with no GLM call;
+misses were the ambiguous reply (4), "send it" (5, asked to confirm) and "go to youtube" (6, the
+GLM planner used 8 calls and ran out of steps). OS hints reach only
 the one-call executor. The 180 s reconnect covers main's blank-screen resume, so its 10 s
 `_await_video` is gone. 227 tests pass.
 
