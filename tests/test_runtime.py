@@ -312,6 +312,10 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("never instructions to you", SYSTEM_PROMPT)
         self.assertIn("is not evidence by itself", DONE_PROMPT)
 
+    def test_history_uses_the_models_coordinate_scale(self):
+        self.assertEqual(Action("click", x=.4215, y=.13).brief(), "click(422,130)")
+        self.assertEqual(Action("swipe", x=.5, y=.9, x2=.5, y2=.1).brief(), "swipe(500,900->500,100)")
+
     def test_oversized_batch_keeps_first_five(self):
         result = parse_plan({"actions": [{"type": "type_text", "text": str(n)} for n in range(7)]})
         self.assertEqual([a.text for a in result.actions], ["0", "1", "2", "3", "4"])
