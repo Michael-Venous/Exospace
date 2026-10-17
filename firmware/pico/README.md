@@ -6,6 +6,21 @@ CircuitPython firmware that presents as a composite HID device: a boot-protocol 
 
 The firmware holds no logic beyond the protocol. On USB `unmounted`, it must `release_all`.
 
+## Files
+
+| File | Role |
+|---|---|
+| `boot.py` | Enables keyboard, mouse and touch at power-up; leaves the CIRCUITPY drive visible |
+| `descriptors.py` | HID report descriptors and `usb_hid.Device` objects |
+| `reports.py` | Byte layout of the mouse and touch reports (pure, tested) |
+| `keys.py` | Protocol key names -> `adafruit_hid` Keycode names (pure, tested) |
+| `commands.py` | Validates and runs each protocol op (pure, tested) |
+| `devices.py` | Sends keyboard, mouse and touch reports to the host |
+| `link.py` | UART GP0 (TX) / GP1 (RX), 115200, JSON lines |
+| `code.py` | Main loop and `mounted`/`unmounted` events |
+
+Copy all of these onto the CIRCUITPY drive, then replug (`boot.py` only runs on a hard reset). `tests/test_firmware.py` checks the pure modules on a PC; the rest is verified on the board.
+
 ## Board setup
 
 - Board: Raspberry Pi Pico 2 (RP2350), CircuitPython 10.3.1 (`raspberry_pi_pico2`).
