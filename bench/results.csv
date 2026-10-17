@@ -1749,3 +1749,4 @@ interp-interpreter-screen-heldout-v1-jev_raw_screen-h3-0,jev_raw_screen,laptop-m
 interp-interpreter-screen-heldout-v1-jev_raw_screen-h3-1,jev_raw_screen,laptop-microbenchmark,h3,0,0,0,0.356902,0,0,1,0.356902
 interp-interpreter-screen-heldout-v1-jev_raw_screen-h11-0,jev_raw_screen,laptop-microbenchmark,h11,0,0,0,0.237331,0,0,0,0.237331
 interp-interpreter-screen-heldout-v1-jev_raw_screen-h7-1,jev_raw_screen,laptop-microbenchmark,h7,0,0,0,0.230309,0,0,0,0.230309
+guard-a007c486,mid_batch_guard,laptop-microbenchmark,guard_check_1080p,0,0.001198,0,0,0,0,,0.001198

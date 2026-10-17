@@ -117,6 +117,16 @@ class Agent:
                                 terminal = action
                             break
                         else:
+                            if changed_input and action.x is not None:
+                                # Aimed at the screen the batch was planned on, e.g. a tapped field
+                                # opened the keyboard over it.
+                                stamp = time.monotonic()
+                                latest = ctl.capture.grab()
+                                times["t_capture"] += time.monotonic() - stamp
+                                if latest is None or frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                                    notes.append("The screen changed mid-batch, so the rest was skipped. "
+                                                 "Reground on this screen.")
+                                    break
                             stamp = time.monotonic()
                             try:
                                 ctl.execute(action, profile)

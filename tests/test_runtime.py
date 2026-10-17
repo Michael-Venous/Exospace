@@ -210,6 +210,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(sum(c["op"] == "click" for c in self.hid.commands), 1)
 
+    def test_batch_stops_before_a_click_aimed_at_a_changed_screen(self):
+        clicks = [Action("click", x=.5, y=.5), Action("click", x=.5, y=.9)]
+        self.fast.next_actions.side_effect = [
+            Plan("form", clicks, []),  # the fake screen changes on the first click
+            Plan("keyboard up", [Action("ask_user", question="Next?")], []),
+            Plan("form", clicks, []),
+            Plan("form", [Action("ask_user", question="Next?")], []),
+        ]
+        self.assertEqual(self.agent().run("Fill the form", self.profile).status, "ask_user")
+        self.assertIn("changed mid-batch", self.fast.next_actions.call_args.args[1].note)
+        self.hid.change = False  # a click that leaves the screen alone keeps the batch going
+        self.agent().run("Fill the form", self.profile)
+        self.assertEqual([c["y"] for c in self.hid.commands if c["op"] == "click"], [16384, 16384, 29490])
+
     def test_disconnect_during_detection_keeps_pending_goal(self):
         monitor = SimpleNamespace(connected=True, generation=1)
         monitor.wait_connected = lambda: setattr(monitor, "connected", True) or monitor.generation
