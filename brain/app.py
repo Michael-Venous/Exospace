@@ -14,20 +14,21 @@ from brain.agent.factory import build_executor
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled, CancelToken
-from brain.capture import Capture, ScreenCapture, V4L2Capture, active_rect
+from brain.capture import Capture, ScreenCapture, V4L2Capture, active_rect, is_blank
 from brain.config import Config
 from brain.controller import Controller
 from brain.device import detect_profile
 from brain.errors import describe
 from brain.display.server import Command, DisplayServer
 from brain.events import EventBus
-from brain.hid import HIDError, LocalHID, PicoHID
+from brain.hid import HID, HIDError, LocalHID, PicoHID
 from brain.imaging import prepare
-from brain.monitor import ConnectionMonitor
+from brain.monitor import POLL_S, ConnectionMonitor
 from brain.telemetry import Telemetry
 from brain.types import Action, ActionError, DeviceProfile
 
 LIVE_FPS = 4  # capture-card frames pushed to the display between steps
+RESUME_S = 10.0  # a blanked screen on the same machine (sleep, mode switch) gets this long to return
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -86,7 +87,8 @@ def main(argv: list[str] | None = None) -> int:
                 threading.Thread(target=_read_stdin, args=(commands,), name="stdin", daemon=True).start()
                 status(f"Display: {server.url}  (goals from the page or typed here)")
             agent = Agent(executor, controller, Memory.load(cfg.session_path),
-                          Telemetry(cfg.bench_csv, args.config_name), args.max_steps, status, bus)
+                          Telemetry(cfg.bench_csv, args.config_name), args.max_steps, status, bus,
+                          resume=lambda: _await_video(monitor, capture, hid, token))
             profile = None
             generation = -1
             previous_goal = ""
@@ -188,6 +190,22 @@ def _pump_live_frames(capture: Capture, bus: EventBus) -> None:
             _show_screen(capture, bus)
             time.sleep(1 / LIVE_FPS)
     threading.Thread(target=pump, name="display-frames", daemon=True).start()
+
+
+def _await_video(monitor: ConnectionMonitor, capture: Capture, hid: HID, token: CancelToken,
+                 timeout_s: float = RESUME_S) -> None:
+    """After the screen blanked mid-run, wait for live video on the same machine. An unplug
+    ends the run instead: the next device may be another one, so the user gives its goal."""
+    token.reset()  # a stop pressed while waiting still cancels
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not hid.is_mounted():
+            raise Cancelled("target disconnected")
+        frame = capture.grab()
+        if monitor.connected and frame is not None and not is_blank(frame):
+            return
+        token.sleep(POLL_S)
+    raise Cancelled("video did not come back")
 
 
 def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: Executor,

@@ -33,12 +33,15 @@ class Agent:
     def __init__(self, executor: Executor, controller: Controller, memory: Memory,
                  telemetry: Telemetry, max_steps: int = 30,
                  on_status: Callable[[str], None] = lambda message: None,
-                 events: EventBus | None = None) -> None:
+                 events: EventBus | None = None,
+                 resume: Callable[[], None] | None = None) -> None:
+        """`resume()` waits for the picture to come back after the screen blanked on the same
+        machine, or raises Cancelled; without it lost video ends the run (PLAN.md §5.6)."""
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
-        self.events = events
+        self.events, self.resume = events, resume
         self._shown_scores: object = None
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
@@ -175,6 +178,12 @@ class Agent:
                     else:
                         failures, recovery_used = 0, False
                     note = "\n".join(notes)
+                except Cancelled as exc:
+                    if self.resume is None or exc.reason != "video lost":
+                        raise
+                    self.on_status("The screen went blank; waiting for it to come back…")
+                    self.resume()
+                    note = "The screen blanked and came back; continue from this screen."
                 finally:
                     self.telemetry.step(run_id, profile.os, task_id, step, **times)
         except KeyboardInterrupt:

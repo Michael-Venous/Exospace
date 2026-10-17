@@ -13,7 +13,7 @@ from brain.agent.executor import Plan, StepContext, parse_plan
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
 from brain.agent.orchestrator import Guidance, Orchestrator
-from brain.app import _connected_profile
+from brain.app import _await_video, _connected_profile
 from brain.cancel import Cancelled, CancelToken
 from brain.controller import Controller, SettleConfig
 from brain.device import detect_profile
@@ -224,6 +224,42 @@ class RuntimeTests(unittest.TestCase):
         self.agent().run("Fill the form", self.profile)
         self.assertEqual([c["y"] for c in self.hid.commands if c["op"] == "click"], [16384, 16384, 29490])
 
+    def _blank_on_click(self):
+        def send(command):
+            HID.send(self.hid, command)
+            if command["op"] == "click":
+                self.capture.frame[:] = 0  # e.g. the display slept or switched mode
+        self.hid.send = send
+        self.fast.next_actions.side_effect = [
+            Plan("click", [Action("click", x=.5, y=.5)], []),
+            Plan("back", [Action("done", summary="Done")], []),
+        ]
+
+    def test_blank_screen_resumes_the_same_goal(self):
+        self._blank_on_click()
+        def resume():
+            self.capture.frame[:] = 80
+            self.cancel.reset()
+        resume = Mock(side_effect=resume)
+        agent = Agent(self.executor, self.controller, self.memory, self.telemetry, resume=resume)
+        self.assertEqual(agent.run("Click it", self.profile).status, "done")
+        resume.assert_called_once_with()
+        self.assertIn("blanked", self.fast.next_actions.call_args.args[1].note)
+
+    def test_blank_screen_ends_the_run_without_resume(self):
+        self._blank_on_click()
+        result = self.agent().run("Click it", self.profile)
+        self.assertEqual((result.status, result.message), ("cancelled", "video lost"))
+
+    def test_unplug_is_never_resumed(self):
+        self.fast.next_actions.side_effect = lambda image, ctx: self.cancel.cancel("target disconnected") or Plan(
+            "click", [Action("click", x=.5, y=.5)], [])
+        resume = Mock()
+        agent = Agent(self.executor, self.controller, self.memory, self.telemetry, resume=resume)
+        result = agent.run("Click it", self.profile)
+        self.assertEqual((result.status, result.message), ("cancelled", "target disconnected"))
+        resume.assert_not_called()
+
     def test_disconnect_during_detection_keeps_pending_goal(self):
         monitor = SimpleNamespace(connected=True, generation=1)
         monitor.wait_connected = lambda: setattr(monitor, "connected", True) or monitor.generation
@@ -259,6 +295,42 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(executor.acknowledge.call_count,3)
 
 
+
+
+class AwaitVideoTests(unittest.TestCase):
+    def setUp(self):
+        self.capture = Capture()
+        self.capture.frame[:] = 0
+        self.hid = SimpleNamespace(is_mounted=lambda: True)
+        self.monitor = SimpleNamespace(connected=False)
+        self.token = CancelToken()
+        self.token.cancel("video lost")
+
+    def test_returns_once_the_picture_is_back(self):
+        def mounted():
+            self.capture.frame[:] = 80
+            self.monitor.connected = True
+            return True
+        self.hid.is_mounted = mounted
+        _await_video(self.monitor, self.capture, self.hid, self.token, timeout_s=1)
+        self.assertFalse(self.token.cancelled)
+
+    def test_unplug_while_blank_ends_the_run(self):
+        self.hid.is_mounted = lambda: False
+        with self.assertRaises(Cancelled) as caught:
+            _await_video(self.monitor, self.capture, self.hid, self.token, timeout_s=1)
+        self.assertEqual(caught.exception.reason, "target disconnected")
+
+    def test_gives_up_after_the_timeout(self):
+        with self.assertRaises(Cancelled) as caught:
+            _await_video(self.monitor, self.capture, self.hid, self.token, timeout_s=0.05)
+        self.assertEqual(caught.exception.reason, "video did not come back")
+
+    def test_stop_while_waiting_still_cancels(self):
+        self.hid.is_mounted = lambda: self.token.cancel("barge-in") or True
+        with self.assertRaises(Cancelled) as caught:
+            _await_video(self.monitor, self.capture, self.hid, self.token, timeout_s=1)
+        self.assertEqual(caught.exception.reason, "barge-in")
 
 if __name__ == "__main__":
     unittest.main()

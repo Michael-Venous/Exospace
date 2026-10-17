@@ -94,6 +94,9 @@ Planner gets memory + device profile on every call.
 ### 5.6 Cancellation — ONE path for everything
 Triggers: Pico `unmounted` · capture no-signal/black > 300 ms · button press during execution (barge-in) · 3 failed verifications.
 Effect: Pico `release_all` → drop action queue → (if disconnect) wait for new device → build profile → planner resumes from memory.
+*(2026-10-17, approved: when the screen blanks mid-run but the Pico stays mounted — same machine — the run waits up
+to 10 s for video and continues the same goal. An unplug still ends the run: the next device may be another one,
+so the user gives its goal; memory carries over as before.)*
 
 ### 5.7 Benchmark log (`bench/results.csv`)
 `run_id, config, device, task_id, step, t_capture, t_upload, t_model, t_execute, t_settle, success, total_s`
