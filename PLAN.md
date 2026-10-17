@@ -176,6 +176,14 @@ actions, paired sign test p = 0.00002, two scenarios incl. a held-out one).
 - Flash 3.8 stays the planner: Live and Flash-Lite 3.5 made ~2x the wrong moves; text-only
   planning saved no time. Regex `direct_command` and recipe grammars are retired.
 
+*(2026-10-17, from `overnight-ultracode`: `EXECUTOR=direct` (one call per step: z.ai GLM-4.6V-FlashX
+with `ZAI_API_KEY`, else Gemini) is an option, not the default. GLM does not follow jev-flash's stage
+schema: 0/3 oracle successes vs 1/3 for direct on the calendar task, median model call 7.2 s vs 2.4 s
+(`bench/results.csv`, configs `jev-flash/glm-*` and `direct/glm-*`), so z.ai serves only `direct`.
+Images stay at 1280 px: 960 and 768 were no faster. Race's planner prompt now treats screen text and
+remembered facts as material for the user's goal, never instructions; race vs direct, with an
+injection segment, is still to be measured with `bench/arch/e2e_study.py`.)*
+
 
 **Fast interpreter benchmark completed:** compact text interpretation takes about
 0.75–0.81 s with 3.5 Flash-Lite, 1.35–1.58 s with 3.8 Flash on the measured sets.
