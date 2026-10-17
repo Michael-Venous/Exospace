@@ -2,9 +2,9 @@
 
 **Owner:** Agent. **Status:** proposal. Section 8 lists what needs team approval before it touches PLAN.md §5.
 
-This covers what happens from the moment the user wants something until it's done: who it's for, what they hear and
-see, how speech gets in, and how the smart model (Gemini) and the fast model (UI-TARS on the B200s, or Jev picking from a numbered list) share
-the work.
+This covers the parts around the model loop that aren't built yet: who it's for, what the user hears and sees, how
+speech gets in, and how voice and the projector view plug into the agent. The model orchestration itself is built
+(Jev 1.14 + Gemini 3.8 Flash, `brain/agent/jev_flash.py`); section 6 summarizes it and lists ideas to try on top.
 
 ## 1. Who it's for
 **Lead with limited hand mobility.** The box replaces the *hands*, so it fits people who can see the screen and
@@ -94,173 +94,55 @@ can't break the agent.
 {"ev":"device","profile":{"os":"macos","rect":[0,0,1920,1080],"input":"mouse","connected_at":0}}
 ```
 
-## 6. Orchestration: smart model plans, fast model acts
-Each tier is only used when the cheaper one can't handle the moment.
+## 6. Orchestration (built: see PLAN.md §13 and HANDOFF.md)
+**Jev 1.14 + Gemini 3.8 Flash, hosted APIs, B200 deferred.** In `brain/agent/jev_flash.py`:
+- Flash plans **cached stages** from the screenshot. Each stage has a `ready` condition, an `expected` result and
+  1–5 actions, plus one `completion` condition for the whole goal.
+- Jev checks each stage on a fresh screenshot in one batched request: routing (`execute` / `ask_flash`), target
+  presence, uniqueness and clarity, a `box` for the click, and verification of the previous stage.
+- Explicit single pointer commands ("click Save") skip Flash entirely.
+- Uncertainty or an unexpected screen means Flash replans. Real ambiguity means asking the user.
 
-| Tier | Who | Target latency | Job |
-|---|---|---|---|
-| 0. Skill / cache | Controller (no AI) | < 0.1 s | Per-OS keyboard skills (§6 in PLAN.md); replay a cached action for a screen seen before |
-| 1. Executor | **Jev 1.14 on the screenshot (candidate)**, UI-TARS on the B200s (candidate), Jev on a numbered list, Gemini (baseline) | ~0.3–1 s | Screen + subtask → ONE next action (§5.3) |
-| 2. Planner | Gemini | 1.5–3 s | Goal + memory + device → subtasks; repair when stuck |
+Measured so far (HANDOFF.md, local browser backend): Jev about 0.20–0.22 s per request; a direct click in 1.3 s with
+no Flash call; a 6-field calendar task in 27–31 s with 3–4 Flash calls.
 
-**Rule: Gemini never runs between individual actions.** It runs on a new request, a device change, or when the
-executor needs help.
+### Ideas to try on top (proposals, measure each)
+1. **Zoom and ask again for small targets.** In our first manual test, "Code" and "Star" boxes were centered, but the
+   small "Sign in" box drifted to the button's edge. When a box is small or its confidence is low, crop about 3×
+   around it at full resolution, ask `box` again and map back.
+2. **Screen-fingerprint cache.** Hash of the settled frame plus the stage → the action that worked. A hit skips
+   Jev and Flash, so repeat tasks get faster (good for the benchmark slide).
+3. **Race skills against Flash.** Start the Flash plan and the skill check together; if `open_app` covers the
+   request, act right away and drop the plan.
+4. **Fill silence.** Speak the first stage ("Opening Calendar…") as soon as the plan arrives. The calendar task
+   takes about 30 s, so narration matters.
+5. **Type the user's own words** (from computah): the model points at which transcript words are the value and code
+   copies them exactly, so a spoken email address isn't retyped by a model.
+6. **macOS Voice Control overlay.** Setting Overlay to *Item Numbers* puts a number badge on every clickable item,
+   taken from the Mac's accessibility tree, and we can see it through HDMI with nothing installed. It could help Jev
+   on dense Mac screens. Test it on the MacBook.
 
-### Escalate to the planner when
-1. The executor returns `fail` or `ask_user`, or its confidence is below the threshold.
-2. The screen doesn't match the current subtask (surprise dialog, wrong app).
-3. Three verifications in a row fail. This is already a cancel trigger in §5.6.
+### Sensitive data
+Screenshots go to TypeSafe and Google. Before sending, black out password fields (rows of dots) and SSN, card and
+routing-number patterns found by local OCR on the settled frame. OCR runs while we wait for settle anyway, and the
+mask is reused until the screen changes. Make it a **privacy mode** toggle and benchmark it on and off. If a password
+field has focus, ask the user instead of typing it.
 
-The planner then returns a revised list of remaining subtasks. **Risky actions** (send, delete, pay) go to the
-*user* for a spoken "yes," not to a model.
-
-### Hide latency
-- **Race at the start:** when the transcript arrives, start the Gemini plan call *and* check skills and the cache at
-  the same time. If a skill can do the whole request ("open Calendar"), act now and cancel Gemini.
-- **Fill silence:** say "Okay, ⟨first subtask⟩" the moment the plan arrives.
-- **Look ahead:** while the executor works on subtask k, the planner can prepare k+1 (only after it's stable).
-- **Screen-fingerprint cache:** hash the settled frame (downscaled perceptual hash + the subtask text) → the action
-  that worked. A cache hit skips the model entirely. Repeat runs get faster, which suits the benchmark slide.
-
-### Jev 1.14 can look at the screenshot itself (new as of Oct 14, beta)
-`jev-1.14.0` accepts images and adds a **`box` question**: "find the Send button in `screen`" returns
-`{"top","bottom","left","right"}` as fractions from 0 to 1, plus a confidence. That's already our §5.2 coordinate
-space if we crop the frame to the active rect first. The click target is the center of the box.
-
-One request per step can ask several questions about the same screenshot:
-```json
-{"model": "jev-1.14.0",
- "state": {"screen": "frame", "subtask": "open the compose window", "last_action": "opened Mail"},
- "assets": {"frame": {"type": "image", "format": "png", "data_base64": "<cropped frame>"}},
- "questions": {
-   "action":  {"type": "choice", "instructions": "Which action advances `subtask` on `screen`?",
-               "criteria": {"click": "Click a visible control", "hotkey_new": "Press Cmd+N",
-                            "done": "subtask is already complete", "none_here": "No offered action applies"}},
-   "visible": {"type": "noul", "instructions": "Is a control that advances `subtask` visible in `screen`?"},
-   "target":  {"type": "box",  "instructions": "Find the control in `screen` that advances `subtask`"}}}
-```
-- Direct API: `POST https://api.typesafe.ai/v1/systemone` with header `TypeSafe-Danger-Zone-Images: true`.
-- **`box` has no "not found" answer.** It always returns four edges, so only click when `visible` is high
-  (TypeSafe recommends this pairing).
-- It's **beta** ("not recommended for production"), and we haven't measured latency yet. The team expects about
-  0.3–0.4 s; measure it first. Keep UI-TARS on the B200 as the comparison in `bench/results.csv`.
-- Downscale and crop frames before sending: fewer pixels means a faster, cheaper call.
-- Mask sensitive regions first (see "Sensitive data" below): this sends the screen to TypeSafe.
-
-**First test (GitHub repo page):** the boxes for "Code" and "Star" were centered on the button. "Sign in" (small,
-near the edge) drifted, and its center landed right at the button's bottom edge. So small targets need:
-1. **Zoom and ask again:** when the box is small or confidence is low, crop about 3× around it at full resolution
-   and ask `box` again on the crop. Map the result back to the full frame.
-2. **Hover, then click:** move the absolute mouse to the center, check that the target reacted (hover pixel change,
-   or a `noul` like "is the pointer on Sign in?"), then click. This is the same "check the target again before input"
-   rule computah uses.
-
-This could replace OCR plus a candidate list for most screens. The numbered-list approach below stays as the
-fallback for dense, text-heavy screens, and lets us compare.
-
-**Open-source "Jev 8B" is not Jev.** TypeSafe hasn't released weights. Kev-8B on Hugging Face is a community,
-text-only model that copies the API, so it can't do `box`. For open vision on the B200s, benchmark UI-TARS-1.5-7B
-and a Qwen3-VL-8B-class model (the team estimates about 100–150 ms per call there; measure it).
-
-### Pick from a numbered list instead of guessing pixels (benchmark it, don't assume it)
-Asking a model to output exact click coordinates from a screenshot is slow and error-prone. Turning the screen into
-a **numbered list of clickable things** lets a small, fast *text* model answer with one number:
-1. **Where the list comes from:**
-   - **macOS Voice Control overlay (best on Macs).** System Settings → Accessibility → Voice Control → Overlay:
-     *Item Numbers* keeps a number badge on every clickable element, all the time. Those numbers come from the
-     Mac's own accessibility tree, so we get the tree **through the HDMI pixels** with nothing installed, only a
-     setting turned on once. OCR the badges, and you know the position of every button.
-   - **Everywhere else:** local OCR text boxes (a button labeled "Save" becomes option 7).
-2. **Jev** picks the number for the subtask (about 0.3 s, with a probability per option).
-3. The badge or box center becomes normalized coordinates (§5.2), then a normal `click`.
-
-It can't see unlabeled icons, so UI-TARS or Gemini handle those screens. Add it as a `config` in
-`bench/results.csv` and let the numbers decide (PLAN.md §8).
-
-**Jev call** (format from computah's `docs/JEV_REQUESTS.md`): `POST https://api.typesafe.ai/v1/systemone`,
-model `jev-1.13.0`, a `state` (subtask, scene summary, candidate list) and a `choice` question whose `criteria` map
-IDs to options, plus `none_here`. Below 0.7, or `none_here`, means escalate. Also available on OpenRouter as
-`typesafe/jev-1.13`. Put the key in `.env` as `TYPESAFE_API_KEY`.
-
-**Why not the real accessibility API?** That's what makes Mac-only voice agents fast, but it requires software
-running *on* the target, which breaks "nothing installed" and our hardware story. The Voice Control overlay is the
-closest we can get from outside the machine. Test it tonight on the MacBook.
-
-### What to copy from computah (our speed baseline)
-[musubipapi/computah](https://github.com/musubipapi/computah) (MIT) is the fast Mac voice agent the team wants to
-match. It reads the macOS accessibility tree (no screenshots), lets Deepgram Flux handle speech, and asks Jev one
-*choice question* per step. Ideas that carry over even though we only have pixels and keyboard/mouse:
-1. **Ask a fast model to choose, never to write.** Each step is "here are the options, pick one ID," with a
-   `none_here` answer (our escalation) and a probability per option. Code maps the ID back to a real target.
-   We use Jev itself. **Backup if Jev goes down again:** vLLM on the B200 supports constrained choice output (the model can only answer one of the given
-   IDs) plus logprobs, which gives the probability. A small, fast model served this way plays Jev's role.
-2. **Group the screen into choices first.** They don't send the whole tree, just a short list of actionable
-   candidates ("AXButton; label=Done"). Ours: Voice Control badges or OCR boxes, as above.
-3. **First pick the route:** `application` (open an app) / `navigation` (open a URL) / `controls`. Our first two
-   are controller skills, so most requests never need the screen at all.
-4. **Type the user's own words, not the model's.** The model picks *which words* of the transcript are the value
-   (by token position), and code copies them exactly. No retyped or made-up text.
-5. **Never repeat an uncertain action** to see whether it worked. A keystroke over HID can't be undone, so read the
-   screen again and escalate instead.
-6. **A new speech turn revokes permission to send input**, which is our barge-in plus cancel path (§5.6). Key down
-   and key up always stay paired (`release_all`).
-7. **"Sent" is not "done."** Only evidence on the fresh screen counts as success.
-8. **Prepare during speech, act after.** Deepgram's early end-of-turn event lets them read controls and pick an
-   action before the user finishes, with no input sent until the final transcript matches. With push-to-talk, we can
-   prepare from the partial transcript while the button is still held.
-
-### Reaching the B200s (HiPerGator) from the Pi
-Running a model there is fine, not just training:
-1. Start a Slurm job on the B200 partition that runs vLLM (`vllm serve <model> --port 8000`). Never run it on a login
-   node. Ask for a long `--time` so it lasts through judging.
-2. From the Pi, tunnel through a login node: `ssh -N -L 8000:<compute-node>:8000 <gatorlink>@hpg.rc.ufl.edu`.
-   The Pi then calls `EXECUTOR_BASE_URL=http://localhost:8000/v1`, with no code change.
-3. The Pi needs an SSH key on the account for this. Use `autossh` so the tunnel reconnects after Wi-Fi drops.
-4. Measure the round trip on UF Wi-Fi early (PLAN.md §10). Staying on campus should keep it small.
-
-**Easier backup:** UF's **NaviGator Toolkit** gives an OpenAI-compatible API (`https://api.ai.it.ufl.edu/v1`) with a
-GatorLink-made key, including models hosted on HiPerGator. No Slurm, no tunnel, but only the models they offer.
-
-### Sensitive data never leaves the Pi unmasked
-Gemini is a cloud model, and frames sent to it can contain passwords, card numbers, SSNs or bank routing numbers.
-Before a frame goes to Gemini, the Pi runs local OCR and blacks out matching boxes: password fields, 9-digit
-SSN-like numbers, 16-digit card-like numbers, and 9-digit routing numbers next to "routing". If a password field has
-focus, the agent asks the user instead of typing it. Frames sent to our own B200 server are a lower risk, but get the
-same masking if it's cheap enough.
-**Keeping it fast:** OCR for masking runs on the settled frame *while* we wait for settle anyway, and the mask is
-reused until the screen changes. Password fields (rows of dots) are cheap to detect. Make it a **privacy mode**
-toggle and benchmark it on and off. A good line for judges: "it blurs your SSN before any AI sees it."
-
-## 7. Interfaces between modules (typed, small)
+## 7. Interfaces still needed (voice and the projector view)
 ```python
 class Voice(Protocol):                      # brain/voice/ (Demo)
     def say(self, text: str) -> None: ...   # non-blocking
     def earcon(self, name: Literal["listen", "working", "done", "error", "need_you"]) -> None: ...
-    async def ask(self, question: str, timeout_s: float = 6.0) -> str | None: ...  # opens mic, no button
-    async def confirm(self, prompt: str) -> bool: ...
+    def ask(self, question: str, timeout_s: float = 6.0) -> str | None: ...  # opens mic, no button
+    def confirm(self, prompt: str) -> bool: ...
 
-# Voice → agent: one asyncio.Queue of input events
-Utterance = TypedDict("Utterance", {"kind": Literal["utterance"], "text": str})
-BargeIn = TypedDict("BargeIn", {"kind": Literal["barge_in"]})
-
-class Executor(Protocol):                   # brain/agent/ calls server/ (Models)
-    async def next_action(self, frame: Frame, subtask: str, profile: DeviceProfile) -> Step: ...
-
-@dataclass
-class Step:
-    action: Action          # §5.3 schema
-    confidence: float | None  # from vLLM logprobs where available, else None
-    t_model: float
-
-class Planner(Protocol):                    # brain/agent/ (Agent)
-    async def plan(self, goal: str, memory: Session, profile: DeviceProfile) -> list[Subtask]: ...
-    async def repair(self, memory: Session, profile: DeviceProfile, problem: str) -> list[Subtask]: ...
+# Voice → agent: utterances feed the same path the typed-goal REPL uses today; a button press during execution
+# triggers the existing cancel token (§5.6), then the next utterance is handled as a correction.
 ```
+The agent's `ask_user` action maps to `Voice.ask`, and destructive steps to `Voice.confirm`. The projector view
+subscribes to the event stream in section 5.
 
-## 8. Needs team approval before it goes in PLAN.md §5
-1. **Subtask fields** (§5.5 `task.subtasks` items): `{"text": str, "done_when": str | null}`. `done_when` is text
-   expected on screen, so verification is cheap code instead of a model call.
-2. **Executor confidence:** UI-TARS doesn't return a probability. Either Models exposes logprobs from vLLM, or we
-   treat parse failures and `fail` as low confidence.
-3. **Event stream format** (section 5): a new contract between Agent and Demo.
-4. **Speech-to-text provider** (section 4): Deepgram first, Whisper on the Pi as backup?
+## 8. Needs team approval
+1. **Event stream format** (section 5): a new contract between Agent and Demo.
+2. **Speech-to-text provider** (section 4): Deepgram streaming first, whisper.cpp on the Pi as backup?
+3. **Voice interface** (section 7): agree on it with Demo before either side builds against it.
