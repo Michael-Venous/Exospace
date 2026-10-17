@@ -11,10 +11,13 @@ from brain.agent.memory import Memory
 from brain.cancel import Cancelled
 from brain.capture import active_rect, frame_change, is_blank, thumbnail
 from brain.controller import Controller
+from brain.errors import describe
 from brain.imaging import prepare
 from brain.telemetry import Telemetry
 from brain.types import ActionError, DeviceProfile, TERMINAL_ACTIONS
 from brain.verification import visibly_changed
+
+MAX_STALE_DISCARDS = 1  # consecutive plans dropped because the screen moved mid-inference
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,7 @@ class Agent:
         history: list[str] = []
         note = ""
         failures = 0
+        stale_discards = 0
         recovery_used = False
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
@@ -80,9 +84,14 @@ class Agent:
                         if latest is None or is_blank(latest):
                             token.cancel("video lost")
                             token.check()
-                        if frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                        moved = frame_change(before, thumbnail(latest)) >= ctl.settle.threshold
+                        # A screen that never stops moving (video, spinner) would
+                        # discard every plan; after one discard, act anyway.
+                        if moved and stale_discards < MAX_STALE_DISCARDS:
+                            stale_discards += 1
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
                             continue
+                        stale_discards = 0
                     notes = list(plan.rejected)
                     changed_input = False
                     action_failed = bool(plan.rejected)
@@ -152,8 +161,7 @@ class Agent:
         except Cancelled as exc:
             status, message = "cancelled", exc.reason
         except Exception as exc:
-            # Keep SDK exception payloads (possibly containing request data) out of transcripts.
-            status, message = "fail", f"{type(exc).__name__}: runtime operation failed; check setup and model access"
+            status, message = "fail", describe(exc, "task")
         finally:
             ctl.release_all()
             self.telemetry.finish(run_id, profile.os, task_id, step, status == "done",

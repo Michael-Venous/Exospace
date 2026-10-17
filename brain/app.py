@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import argparse
 from contextlib import ExitStack
+from typing import Callable
 
+from brain.agent.executor import Executor
 from brain.agent.factory import build_executor
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled, CancelToken
-from brain.capture import ScreenCapture, V4L2Capture
+from brain.capture import Capture, ScreenCapture, V4L2Capture
 from brain.config import Config
 from brain.controller import Controller
 from brain.device import detect_profile
+from brain.errors import describe
 from brain.hid import LocalHID, PicoHID
 from brain.monitor import ConnectionMonitor
 from brain.telemetry import Telemetry
+from brain.types import DeviceProfile
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -81,19 +85,8 @@ def main(argv: list[str] | None = None) -> int:
                 if not goal:
                     continue
                 try:
-                    status("Waiting for target…")
-                    monitor.wait_connected()
-                    token.reset()
-                    current = monitor.generation
-                    if not monitor.connected:
-                        continue
-                    if profile is None or current != generation:
-                        profile = detect_profile(capture, executor, args.os, cancel=token)
-                        if not monitor.connected or monitor.generation != current:
-                            profile = None
-                            continue
-                        generation = current
-                        status(f"Target: {profile.os} ({profile.input})")
+                    profile, generation = _connected_profile(
+                        monitor, capture, executor, args.os, token, profile, generation, status)
                     if args.backend == "local":
                         status("Focus the target window; starting in 2 seconds.")
                         token.sleep(2)
@@ -107,9 +100,32 @@ def main(argv: list[str] | None = None) -> int:
                     previous_goal, correction = goal, True
                     status("Interrupted. Enter a correction or /new GOAL.")
     except Exception as exc:
-        # Do not echo API keys or raw provider request payloads.
-        status(f"Setup failed ({type(exc).__name__}). Check .env, model access, capture and UART settings.")
+        status(f"Setup failed: {describe(exc, 'setup')}")
         return 1
+
+
+def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: Executor,
+                       os_override: str | None, token: CancelToken, profile: DeviceProfile | None,
+                       generation: int, status: Callable[[str], None]) -> tuple[DeviceProfile, int]:
+    """Wait for a target and re-detect it if it changed. A disconnect during
+    detection retries instead of dropping the user's pending goal."""
+    while True:
+        if not monitor.connected:
+            status("Waiting for target…")
+        current = monitor.wait_connected()
+        token.reset()
+        if profile is not None and current == generation:
+            return profile, generation
+        try:
+            detected = detect_profile(capture, executor, os_override, cancel=token)
+        except Cancelled:
+            if monitor.connected:
+                raise  # a real interruption, not an unplug
+            continue
+        if monitor.connected and monitor.generation == current:
+            status(f"Target: {detected.os} ({detected.input})")
+            return detected, current
+        status("Target changed during detection; retrying.")
 
 
 if __name__ == "__main__":

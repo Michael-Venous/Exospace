@@ -22,6 +22,10 @@ BAR_MIN_FRACTION = 0.05  # pillarbox bars must each be at least this wide
 THUMB_SIZE = (64, 36)
 
 
+class CaptureError(RuntimeError):
+    """The capture card is missing or unusable."""
+
+
 class Capture(Protocol):
     def grab(self) -> Frame | None:
         """Latest frame, or None if there's no fresh signal."""
@@ -38,7 +42,7 @@ class V4L2Capture:
     def __init__(self, device: str, width: int, height: int) -> None:
         self._cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
         if not self._cap.isOpened():
-            raise RuntimeError(f"cannot open capture device {device}")
+            raise CaptureError(f"cannot open capture device {device}")
         self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"MJPG"))
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
