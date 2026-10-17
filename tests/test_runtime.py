@@ -179,7 +179,8 @@ class RuntimeTests(unittest.TestCase):
         self.hid.change = False
         self.fast.next_actions.return_value = Plan("launch", [Action("skill", name="open_app",
                                                                      args={"name": "video player"})], [])
-        with patch("brain.agent.loop.visibly_changed", return_value=True):  # each try flashed the launcher
+        with patch("brain.agent.loop.visibly_changed", return_value=True), \
+                patch("brain.skills.APP_START_S", 0.01):  # each try flashed the launcher; no window came
             result = self.agent().run("See the video", self.profile)
         self.assertEqual((result.status, result.message, result.steps), ("fail", "Stuck repeating the same action", 3))
 

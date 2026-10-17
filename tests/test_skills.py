@@ -1,6 +1,8 @@
 """Shortcut checks without model calls or real keyboard input."""
 
 import unittest
+
+import numpy as np
 from unittest.mock import Mock
 
 from brain.cancel import Cancelled, CancelToken
@@ -12,6 +14,7 @@ class SkillTests(unittest.TestCase):
     def setUp(self):
         self.controller = Mock()
         self.controller.cancel = CancelToken()
+        self.controller.capture.grab.return_value = None  # no frame: open_app skips waiting for the window
 
     def profile(self, os):
         return DeviceProfile(os, Rect(0, 0, 100, 100), "mouse", 0)
@@ -23,12 +26,19 @@ class SkillTests(unittest.TestCase):
                 self.controller.reset_mock()
                 run_skill("open_app", {"name": " Notes "}, self.profile(os), self.controller)
                 self.assertEqual(self.controller.method_calls, [
+                    unittest.mock.call.capture.grab(),
                     unittest.mock.call.hotkey(keys),
                     unittest.mock.call.wait_settled(),
                     unittest.mock.call.type_text("Notes"),
                     unittest.mock.call.wait_settled(),
                     unittest.mock.call.hotkey(["ENTER"]),
                 ])
+
+    def test_open_app_waits_for_the_window_not_just_the_launcher(self):
+        self.controller.capture.grab.return_value = np.zeros((10, 10, 3), np.uint8)
+        run_skill("open_app", {"name": "Notes"}, self.profile("macos"), self.controller)
+        self.assertEqual(self.controller.method_calls[-2:], [
+            unittest.mock.call.wait_settled(), unittest.mock.call.wait_for_change(4.0, since=unittest.mock.ANY)])
 
     def test_wait_only_watches_the_screen(self):
         run_skill("wait", {}, self.profile("windows"), self.controller)

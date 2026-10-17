@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 import math
 
+from brain.capture import thumbnail
 from brain.types import ActionError, DeviceProfile
 
 if TYPE_CHECKING:
@@ -15,6 +16,7 @@ class SkillUnavailable(ActionError):
     """The executor should fall back to ordinary screen actions."""
 
 
+APP_START_S = 4.0  # longest wait for a launched app's window to appear
 # The desktop launcher search; on phones and other targets the model uses the screen instead.
 OPEN_APP_KEYS: dict[str, list[str]] = {
     "macos": ["GUI", "SPACE"], "windows": ["GUI"], "linux": ["GUI"], "chromeos": ["GUI"],
@@ -51,6 +53,8 @@ def run_skill(
     if any(ord(char) < 32 or ord(char) == 127 for char in app):
         raise ActionError("open_app name must not contain control characters")
 
+    frame = controller.capture.grab()
+    start = thumbnail(frame) if frame is not None else None
     controller.hotkey(OPEN_APP_KEYS[profile.os])
     controller.wait_settled()
     controller.cancel.check()
@@ -58,3 +62,9 @@ def run_skill(
     controller.wait_settled()
     controller.cancel.check()
     controller.hotkey(["ENTER"])
+    # Apps take a second or two to map their window; the screen is "settled" before that, and a
+    # check on that screen saw no app and launched it again (measured: three KCalc instances).
+    # So wait until the screen differs from before the launch, not merely from the launcher.
+    if start is not None:
+        controller.wait_settled()
+        controller.wait_for_change(APP_START_S, since=start)

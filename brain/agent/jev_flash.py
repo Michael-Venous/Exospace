@@ -265,7 +265,7 @@ class JevFlashExecutor:
             if final:
                 # Judge the user's goal from the executed steps plus the screen; the
                 # planner's own completion wording can omit a required action.
-                score=self.jev.completion(image,ctx.goal,self.executed,run_id=ctx.run_id,step=ctx.step)
+                score=self.jev.completion(image,ctx.goal,self.executed,evidence=self.completion,run_id=ctx.run_id,step=ctx.step)
                 self.cancel.check()
                 if score>=COMPLETION_GATE:
                     self.pending=False

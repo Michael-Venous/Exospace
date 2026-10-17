@@ -53,6 +53,11 @@ COMPLETION_QUESTION = (
     "has the user's ENTIRE `goal` been accomplished? Every part of the goal must be covered by an "
     'executed step or be visibly true on the screen. A visible link, button or preview is not evidence '
     'that it was used; text typed but not submitted is not a completed search or send.')
+# With the planner's expected evidence, so Jev knows what to look for when it cannot work it out
+# itself (a calculator result scored 0.02 without it, 0.7 with it).
+COMPLETION_HINTED = COMPLETION_QUESTION + (
+    ' `expected_evidence` is what the planner expects the screen to show once the goal is done: use it '
+    'to know what to look for, but judge the goal itself against the steps and the screen, not the claim.')
 
 
 class JevVision:
@@ -136,14 +141,19 @@ class JevVision:
             return None  # padded region must never become a click
         return x,y
 
-    def completion(self, jpeg: bytes, goal: str, executed: list[str], *,
+    def completion(self, jpeg: bytes, goal: str, executed: list[str], *, evidence: str = '',
                    run_id: str = '', step: int = 0) -> float:
         """Probability the whole goal is done, judged from the executed steps AND the
         screen. History-dependent goals ("the first video") are covered by the steps;
-        skipped or unsubmitted steps are caught because they are absent from them."""
-        answers, _, _ = self.evaluate(jpeg, {'complete': {'type': 'noul', 'instructions': COMPLETION_QUESTION}},
-                                      run_id=run_id, step=step,
-                                      state={'goal': goal, 'executed_steps': executed})
+        skipped or unsubmitted steps are caught because they are absent from them.
+        `evidence` (the planner's expected end state) only tells Jev what to look for:
+        12/12 finished and 0/18 traps accepted, 12/15 and 0/15 held out (bench/arch/verify_study)."""
+        state = {'goal': goal, 'executed_steps': executed}
+        if evidence:
+            state['expected_evidence'] = evidence
+        answers, _, _ = self.evaluate(
+            jpeg, {'complete': {'type': 'noul', 'instructions': COMPLETION_HINTED if evidence else COMPLETION_QUESTION}},
+            run_id=run_id, step=step, state=state)
         return probability(answers['complete'].get('noul'))
 
     def close(self):

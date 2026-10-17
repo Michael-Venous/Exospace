@@ -7,6 +7,8 @@ import time
 import unicodedata
 from dataclasses import dataclass
 
+import numpy as np
+
 from brain.cancel import Cancelled, CancelToken
 from brain.capture import Capture, frame_change, is_blank, thumbnail
 from brain.hid import HID, HID_MAX, HIDError
@@ -144,13 +146,16 @@ class Controller:
                 return elapsed
             self.cancel.sleep(cfg.poll_s)
 
-    def wait_for_change(self) -> None:
-        """Block until the screen changes (a restart, boot or load progressing) or WAIT_S passes."""
-        frame = self.capture.grab()
-        if frame is None:
-            return
-        before = thumbnail(frame)
-        deadline = time.monotonic() + WAIT_S
+    def wait_for_change(self, timeout_s: float | None = None, since: np.ndarray | None = None) -> None:
+        """Block until the screen differs from `since` (a thumbnail; default: now), as a load,
+        restart or app start progresses, or `timeout_s` (default WAIT_S) passes."""
+        if since is None:
+            frame = self.capture.grab()
+            if frame is None:
+                return
+            since = thumbnail(frame)
+        before = since
+        deadline = time.monotonic() + (WAIT_S if timeout_s is None else timeout_s)
         while time.monotonic() < deadline:
             self.cancel.sleep(self.settle.poll_s)
             frame = self.capture.grab()

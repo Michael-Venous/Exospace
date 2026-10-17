@@ -96,6 +96,9 @@ def ask(jev: JevVision, jpeg: bytes, extra_state: dict, instructions: str) -> tu
     return float(response.json()["answers"]["q"]["noul"]), time.monotonic() - started
 
 
+from brain.agent.jev import COMPLETION_HINTED as HINTED  # noqa: E402  ledger + the planner's expected evidence
+
+
 def check(jev: JevVision, jpeg: bytes, kind: str, goal: str, steps: list[str], completion: str) -> tuple[float, float]:
     if kind == "wording":
         return ask(jev, jpeg, {}, "Based only on the visible `screen`, is this condition true? "
@@ -104,6 +107,8 @@ def check(jev: JevVision, jpeg: bytes, kind: str, goal: str, steps: list[str], c
                    f"Original user request: {goal}\nProposed completion evidence: {completion}")
     if kind == "concrete":
         return ask(jev, jpeg, {}, f"Based only on the visible `screen`, is this condition true? The screen shows this state: {completion}")
+    if kind == "hinted":
+        return ask(jev, jpeg, {"goal": goal, "executed_steps": steps, "expected_evidence": completion}, HINTED)
     return ask(jev, jpeg, {"goal": goal, "executed_steps": steps},
                "Considering the `executed_steps` (what was actually done) together with the current `screen`, "
                "has the user's ENTIRE `goal` been accomplished? Every part of the goal must be covered by an "
@@ -111,7 +116,7 @@ def check(jev: JevVision, jpeg: bytes, kind: str, goal: str, steps: list[str], c
                "that it was used; text typed but not submitted is not a completed search or send.")
 
 
-GATES = {"wording": 0.85, "concrete": 0.5, "ledger": 0.5}
+GATES = {"wording": 0.85, "concrete": 0.5, "ledger": 0.5, "hinted": 0.5}
 
 
 def main() -> None:
