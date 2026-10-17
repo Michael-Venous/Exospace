@@ -1,5 +1,30 @@
 # Exospace prototype handoff
 
+## Pure-Jev executor (`EXECUTOR=jev`, branch `jev-only`) — 2026-10-17
+
+`EXECUTOR=jev` is race with `JevOnlyPlanner` (`brain/agent/jev_only.py`) in place of the Flash
+planner: no Gemini or z.ai call anywhere, only `TYPESAFE_API_KEY`. Triage, quick commands, notes
+and the irreversible gate are unchanged. A request that needs a plan runs one batched Jev call
+per screen: completion (steps-aware, gate 0.3), the next action (click, double/right click, fill =
+click a field and type, type, Enter, scroll, or stuck), the target box (presence gate
+`JEV_MIN_PRESENCE`, no zoom), the text to type as one choice over runs of the request's own words
+(whole-span binding; Jev never writes text), and whether a filled single-line box needs CTRL+A
+first. OS detection is a Jev choice. Stuck, unclear targets, unbound text and a step with no
+visible effect fail and name `EXECUTOR=race`. `brain.doctor` accepts no language key in this mode.
+
+Measured end to end through the real factory, loop and controller on the execution benchmark's
+local headless-browser tasks (screenshot-only, DOM oracle, calendar excluded, one run each,
+per-step rows in `bench/results.csv` config `jev`): **8/12 with 0 language-model calls, 0 wrong
+clicks, 0 wrong text**. Passed: two clicks, URL fill, three fields, the paraphrased three-field
+and URL requests, the literal with page-text injection and existing field text, double-click,
+and the ambiguous Continue (declined before any input). Median pass **2.4 s**, first input
+**0.58 s**, Jev step **0.22 s** (p50 of 37). Failed safely: hover (no hover action), drag
+(one click on the item, then stopped), 17 × 3 + 8 (clicked Open calculator, then stopped without
+typing), and "the second result" (presence 0.31; its box was the first result).
+Before whole-span binding, separate first/last word choices typed the expression and an
+over-long URL span; `two_clicks` passed 2 of 3 runs at the 0.85 gate (second click 0.84).
+Not run: native apps, physical HID, phones, BIOS, voice, repeated trials.
+
 ## Overnight branch state — 2026-10-17 (`overnight-ultracode`)
 
 Built unattended on `overnight-ultracode`. `integrate/overnight-voice` is `main` merged with it;

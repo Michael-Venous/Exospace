@@ -75,7 +75,7 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
     if choice == "no_action":
         return Triage("none", None, irreversible)
     present = min(probability(answers["present"].get("noul")), probability(answers["unique"].get("noul")))
-    point = _box_center(answers["target"], size, padded)
+    point = box_center(answers["target"], size, padded)
     if choice != "act_now" or present < GATE or point is None:
         return Triage("plan", None, irreversible)
     cancel.check()
@@ -98,7 +98,7 @@ def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float],
                    "to click, tap or open."},
     }
     answers, size, padded = jev.evaluate(crop, questions, run_id=run_id, step=step, state={"utterance": target})
-    local = _box_center(answers["target"], size, padded)
+    local = box_center(answers["target"], size, padded)
     if local is None or probability(answers["present"].get("noul")) < GATE:
         return None
     return x0 + local[0] * (x1 - x0), y0 + local[1] * (y1 - y0)
@@ -125,7 +125,7 @@ def answer_to_pending(jev: JevVision, jpeg: bytes, pending: str, reply: str, *,
     return "other"
 
 
-def _box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float] | None:
+def box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float] | None:
     box = answer.get("box") or {}
     try:
         left, right, top, bottom = (probability(box.get(k)) for k in ("left", "right", "top", "bottom"))

@@ -20,6 +20,9 @@ class DoctorTests(unittest.TestCase):
         self.assertTrue(checks["ZAI_API_KEY or GEMINI_API_KEY"].ok)
         self.assertFalse({c.name: c for c in check_keys({})}["ZAI_API_KEY or GEMINI_API_KEY"].ok)
 
+    def test_jev_executor_needs_no_language_key(self):
+        self.assertTrue({c.name: c for c in check_keys({"EXECUTOR": "jev"})}["ZAI_API_KEY or GEMINI_API_KEY"].ok)
+
     def test_groups(self):
         checks = check_groups({"video"})
         self.assertEqual([c.ok for c in checks], [True, False])

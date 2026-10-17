@@ -29,8 +29,10 @@ class Check:
 
 def check_keys(env: dict[str, str]) -> list[Check]:
     language = [key for key in LANGUAGE_KEYS if env.get(key)]
-    checks = [Check("ZAI_API_KEY or GEMINI_API_KEY", bool(language),
-                    f"{language[0]} set" if language else "missing: add either one to .env")]
+    jev_only = env.get("EXECUTOR") == "jev"  # race with no language model
+    checks = [Check("ZAI_API_KEY or GEMINI_API_KEY", bool(language) or jev_only,
+                    f"{language[0]} set" if language else "not needed with EXECUTOR=jev" if jev_only
+                    else "missing: add either one to .env")]
     checks += [Check(key, bool(env.get(key)), "set" if env.get(key) else "missing: add it to .env")
                for key in REQUIRED_KEYS]
     checks += [Check(key, bool(env.get(key)), "set" if env.get(key) else

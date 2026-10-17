@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from brain.agent.executor import Plan, StepContext
-from brain.agent.jev_only import JevOnlyPlanner
+from brain.agent.jev_only import JevOnlyPlanner, spans
 from brain.agent.memory import Memory
 from brain.agent.race import RaceExecutor
 from brain.agent.triage import Triage, triage
@@ -187,17 +187,55 @@ if __name__ == "__main__":
 class JevOnlyTests(unittest.TestCase):
     def setUp(self):
         self.planner = object.__new__(JevOnlyPlanner)
-        self.planner.jev = Mock()
+        self.planner.jev = Mock(min_presence=.85)
+
+    def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note=""):
+        self.planner.jev.evaluate.return_value = ({
+            "complete": {"noul": complete}, "next": {"choice": next}, "present": {"noul": present},
+            "target": BOX, "text": {"choice": text}, "replace": {"noul": replace}}, (400, 300), (400, 300))
         profile = DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1)
-        self.ctx = StepContext("open calculator", profile, Mock(), ["skill open_app"], 2, 10)
+        return self.planner.next_actions(b"img", StepContext(goal, profile, Mock(), [], 2, 10, note=note)).actions
+
+    def step(self, goal, **answers):
+        return self.plan(goal, **answers)[0]
 
     def test_goal_jev_sees_done_is_done(self):
-        self.planner.jev.completion.return_value = .9
-        self.assertEqual(self.planner.next_actions(b"img", self.ctx).actions[0].type, "done")
+        self.assertEqual(self.step("open calculator", complete=.9).type, "done")
 
-    def test_plan_request_fails_without_a_language_model(self):
-        self.planner.jev.completion.return_value = .1
-        self.assertEqual(self.planner.next_actions(b"img", self.ctx).actions[0].type, "fail")
+    def test_next_click_lands_on_the_target(self):
+        action = self.step("open calculator, then click 7")
+        self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))
+
+    def test_unclear_target_fails_instead_of_guessing(self):
+        self.assertEqual(self.step("click the other one", present=.4).type, "fail")
+
+    def test_typed_text_is_a_run_of_the_goals_words(self):
+        goal = 'type "hello world", then press enter'
+        action = self.step(goal, next="type", text=str(spans(goal).index("hello world")))
+        self.assertEqual((action.type, action.text), ("type_text", "hello world"))
+        self.assertEqual(self.step("write a poem", next="type").type, "fail")
+        self.assertEqual(self.step("type hi", next="type", text="99").type, "fail")
+
+    def test_filled_box_is_selected_before_typing(self):
+        actions = self.plan("search for cats", next="type", text=str(spans("search for cats").index("cats")),
+                            replace=.9)
+        self.assertEqual([a.brief() for a in actions], ["hotkey(CTRL+A)", "type_text('cats')"])
+
+    def test_fill_clicks_the_field_then_types(self):
+        goal = 'enter "Morgan" in Name'
+        actions = self.plan(goal, next="fill", text=str(spans(goal).index("Morgan")))
+        self.assertEqual([a.type for a in actions], ["click", "type_text"])
+        self.assertEqual(self.step("enter it in Name", next="fill", present=.3).type, "fail")
+
+    def test_spans_are_unique_and_unquoted(self):
+        self.assertEqual(spans('enter "a b" here.'), ["enter", "a", "b", "here", 'enter "a', 'a b', 'b" here',
+                                                      'enter "a b', 'a b" here', 'enter "a b" here'])
+
+    def test_step_with_no_visible_effect_fails(self):
+        self.assertEqual(self.step("open it", note="Screen unchanged; try something different.").type, "fail")
+
+    def test_reasoning_needs_the_language_model(self):
+        self.assertIn("EXECUTOR=race", self.step("summarize this page", next="stuck").reason)
 
     def test_os_comes_from_a_jev_choice(self):
         self.planner.jev.evaluate.return_value = ({"os": {"choice": "android"}}, None, None)
