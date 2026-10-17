@@ -59,7 +59,9 @@ class Config:
             bench_csv=Path(env("BENCH_CSV", "bench/results.csv")),
             planner_model=env("PLANNER_MODEL", "gemini-4-argon"),
             planner_thinking=env("PLANNER_THINKING", "medium") or None,
-            model_timeout_s=float(env("MODEL_TIMEOUT_S", "30")),
+            # z.ai flashx, 1,299 calls: p99 14 s, and a hung call runs to the timeout. Cut at 12 s, 1.9% retry
+            # and a hang costs 12 s, not 30.
+            model_timeout_s=float(env("MODEL_TIMEOUT_S") or ("12" if env("ZAI_API_KEY") else "30")),
             planner_timeout_s=float(env("PLANNER_TIMEOUT_S", "120")),
             model_log=Path(env("MODEL_LOG", "bench/model_calls.jsonl")),
             # GLM cannot follow jev-flash's stage schema (bench/results.csv), so z.ai runs direct.

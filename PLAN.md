@@ -89,7 +89,9 @@ then presses ENTER); right_click, scroll and swipe are rejected.)*
 ```
 OS is detected **from the first frames** (USB can't reliably tell us). `bios` means a firmware
 setup or boot screen. Every executor step gets the OS with its keyboard conventions.
-*(2026-10-17: linux/chromeos/ios/bios added by user request to run on any OS and the boot screen.)*
+*(2026-10-17: linux/chromeos/ios/bios added by user request to run on any OS and the boot screen.
+A restart's boot logo can read as `bios`, so a `bios` profile is re-detected at each goal and
+when its screen changes a lot mid-run.)*
 
 ### 5.5 Memory (`session.json`, persists across swaps)
 ```json
@@ -102,8 +104,8 @@ Planner gets memory + device profile on every call.
 Triggers: Pico `unmounted` · capture no-signal/black > 300 ms · button press during execution (barge-in) · 3 failed verifications.
 Effect: Pico `release_all` → drop action queue → (if disconnect) wait for new device → build profile → planner resumes from memory.
 *(2026-10-17: resume implemented. After a disconnect or lost video the run waits up to 180 s for
-live video, tapping armed `boot_keys`, re-detects the profile if the connection changed and
-continues the same goal on the new screen.)*
+live video, tapping armed `boot_keys` once the Pico has unmounted (the restart), re-detects the
+profile if the connection changed and continues the same goal on the new screen.)*
 
 ### 5.7 Benchmark log (`bench/results.csv`)
 `run_id, config, device, task_id, step, t_capture, t_upload, t_model, t_execute, t_settle, success, total_s`

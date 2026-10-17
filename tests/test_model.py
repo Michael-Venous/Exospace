@@ -100,11 +100,11 @@ class ZaiTests(unittest.TestCase):
         self.assertEqual((log["role"], log["step"], log["status_code"], log["success"]),
                          ("fast", 3, 200, True))
 
-    def test_reply_without_object_is_retried_once(self):
-        self.replies += [(200, "no json here"), (200, "[1, 2]")]
+    def test_reply_without_object_is_retried(self):
+        self.replies += [(200, "no json here"), (200, "[1, 2]"), (200, "{bad}")]
         with patch.object(self.cancel, "sleep"), self.assertRaises(ValueError):
             self.client.generate(b"image", "goal", "system", {}, role="fast")
-        self.assertEqual(len(self.requests), 2)
+        self.assertEqual(len(self.requests), 3)
 
     def test_overload_is_retried_but_client_errors_are_not(self):
         self.replies += [(429, ""), (200, '{"ok": 1}')]
@@ -115,14 +115,14 @@ class ZaiTests(unittest.TestCase):
             self.client.generate(b"i", "g", "s", {}, role="fast")
         self.assertEqual(len(self.requests), 3)
 
-    def test_dropped_connection_is_retried_once(self):
-        self.replies += [(0, httpx.ReadTimeout("hung")), (200, '{"ok": 1}'),
-                         (0, httpx.ConnectError("down")), (0, httpx.ConnectError("down"))]
+    def test_dropped_connection_is_retried(self):
+        self.replies += [(200, "no json here"), (0, httpx.ReadTimeout("hung")), (200, '{"ok": 1}')]
+        self.replies += [(0, httpx.ConnectError("down"))] * 3
         with patch.object(self.cancel, "sleep"):
             self.assertEqual(self.client.generate(b"i", "g", "s", {}, role="fast"), {"ok": 1})
             with self.assertRaises(httpx.ConnectError):
                 self.client.generate(b"i", "g", "s", {}, role="fast")
-        self.assertEqual(len(self.requests), 4)
+        self.assertEqual(len(self.requests), 6)
 
     def test_shape_sketches_schema_without_valid_json(self):
         schema = {"type": "object", "required": ["a"], "properties": {

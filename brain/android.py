@@ -30,7 +30,11 @@ class AndroidTarget:
         self._size = tuple(map(int, sizes[-1]))  # an override size is listed last
 
     def grab(self):
-        frame = cv2.imdecode(np.frombuffer(self._run("exec-out", "screencap", "-p"), np.uint8), cv2.IMREAD_COLOR)
+        try:
+            png = self._run("exec-out", "screencap", "-p")
+        except HIDError:
+            return None  # the phone restarted or was unplugged: no signal, so the run waits for it
+        frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR) if png else None
         if frame is not None:
             self._size = frame.shape[1], frame.shape[0]  # follows rotation
         return frame

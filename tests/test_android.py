@@ -31,6 +31,16 @@ class AndroidTargetTests(unittest.TestCase):
             "input swipe 0 2399 0 0 300",
         ])
 
+    def test_lost_phone_gives_no_frame(self):
+        for code in (1, 0):  # adb fails ("no devices/emulators found"), or prints nothing
+            def run(args, **kwargs):
+                if args[1] == "exec-out":
+                    return subprocess.CompletedProcess(args, code, b"", b"error")
+                return subprocess.CompletedProcess(args, 0, b"Physical size: 1080x2400\n", b"")
+
+            with self.subTest(code=code), mock.patch("brain.android.subprocess.run", side_effect=run):
+                self.assertIsNone(AndroidTarget().grab())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -94,6 +94,10 @@ class ZaiJSON:
     """z.ai's OpenAI-compatible chat API. It has no schema mode, so the schema
     rides in the system prompt and the first JSON object in the reply is used."""
 
+    # In e2e runs 8 of 11 retried calls succeeded on the second try and the other 3 failed again,
+    # each ending its run. The third try is made only when the run would otherwise end.
+    ATTEMPTS = 3
+
     def __init__(
         self, api_key: str, model: str, thinking: str | None,
         cancel: CancelToken, timeout_s: float, log_path: Path, base_url: str,
@@ -124,7 +128,7 @@ class ZaiJSON:
                 ]},
             ],
         }
-        for attempt in range(1, 3):
+        for attempt in range(1, self.ATTEMPTS + 1):
             self.cancel.check()
             started = time.monotonic()
             success = False
@@ -142,15 +146,15 @@ class ZaiJSON:
             except httpx.HTTPStatusError as exc:
                 error = type(exc).__name__
                 retry_delay = 2.0
-                if exc.response.status_code not in RETRY_STATUS or attempt == 2:
+                if exc.response.status_code not in RETRY_STATUS or attempt == self.ATTEMPTS:
                     raise
             except (ValueError, TypeError, KeyError, IndexError) as exc:
                 error = type(exc).__name__
-                if attempt == 2:
+                if attempt == self.ATTEMPTS:
                     raise ValueError("model reply was not a usable JSON object") from exc
             except httpx.TransportError as exc:  # a hung or dropped call; 4 of ~680 ended whole runs
                 error = type(exc).__name__
-                if attempt == 2:
+                if attempt == self.ATTEMPTS:
                     raise
             except BaseException as exc:
                 error = type(exc).__name__

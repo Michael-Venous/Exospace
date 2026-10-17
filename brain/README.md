@@ -54,7 +54,9 @@ With `ZAI_API_KEY` set, the default is `EXECUTOR=direct`: GLM-4.6V-FlashX return
 step's actions and coordinates in one call (PLAN.md §13). GLM tends to claim `done` from
 its own history, so once a run has sent input, a short second call (about 1.7 s per `done`
 claim) must confirm that the screenshot shows the goal; if not, the run continues with what
-is missing. Otherwise the default is
+is missing. A step's actions run as one batch, but a click or swipe after the first input
+is skipped once the screen has changed (a tapped field opening the keyboard), since its
+coordinates came from the old screen. A z.ai call is tried up to three times. Otherwise the default is
 **Jev 1.14 + Gemini 3.8 Flash** (`EXECUTOR=jev-flash`).
 Set `GEMINI_API_KEY` and `TYPESAFE_API_KEY` in the ignored `.env`. Flash chooses
 semantic actions and writes content; Jev supplies pointer locations from the
@@ -94,19 +96,24 @@ completion claim should be measured against an independent task outcome.
 ## Restarts and firmware setup
 
 The `boot_keys` skill arms setup keys (F2, DELETE, ESC...) that the controller taps
-every 0.2 s while the target restarts and for 5 s after its video returns. Firmware
+every 0.2 s while the target restarts and for 5 s after its video returns. Taps start
+only once the Pico sees the USB reset, so a screen that merely blanks gets none. Firmware
 screens get the `bios` profile. They have no pointer, so a click presses DOWN/UP until
 the menu's highlight bar covers the clicked row; right-click, scroll and swipe are
-rejected. Test without hardware on a QEMU/OVMF virtual PC (Debian/Ubuntu packages
-`qemu-system-x86` and `ovmf`); every run starts from fresh firmware settings:
+rejected. A boot logo can read as firmware, so a `bios` profile is detected again
+when its screen changes a lot or a new goal starts. Test without hardware on a QEMU/OVMF
+virtual PC (Debian/Ubuntu packages `qemu-system-x86` and `ovmf`); every run starts from
+fresh firmware settings:
 
 ```sh
 .venv/bin/python -m brain --backend qemu
 ```
 
 Limits: Mac boot keys must be held, which taps cannot do. PCs with Fast Boot ignore USB
-keyboards during POST; use the OS's restart-to-firmware option there. Highlight
-detection needs a solid bar, so menus that only recolor text need arrow keys.
+keyboards during POST, and a restart that never resets USB (no `unmounted` from the Pico)
+gets no taps; use the OS's restart-to-firmware option there. Highlight
+detection needs a solid bar, so menus that only recolor text need arrow keys, as do
+one-row menus and a UEFI shell (UP/DOWN recall its history).
 
 ## Phone testing with an Android emulator
 

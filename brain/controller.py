@@ -47,6 +47,8 @@ class Controller:
         self.settle = settle
         self._boot_keys: list[str] = []
         self._boot_until = 0.0
+        self._restarted = False  # the target unmounted since boot keys were armed
+        hid.on_event(self._on_hid_event)
 
     # -- actions -----------------------------------------------------------
 
@@ -122,8 +124,11 @@ class Controller:
             after = self.capture.grab()
             band = None if after is None else highlight_rows(frame, after)
             if band is None:
+                if last is None and key == "DOWN":
+                    key = "UP"  # the highlight may sit on the last row of a menu that does not wrap round
+                    continue
                 if last is None:
-                    raise ActionError(f"pressed {key} but no menu highlight moved; use the arrow keys")
+                    raise ActionError("pressed DOWN and UP but no menu highlight moved; use the arrow keys")
                 return  # the end of a menu that does not wrap round: the row nearest the target
             frame = after
             if band[0] <= target <= band[1]:
@@ -142,12 +147,13 @@ class Controller:
     def arm_boot_keys(self, keys: list[str]) -> None:
         """Tap these firmware keys (e.g. F2) through the next restart; see `await_target`."""
         self._boot_keys, self._boot_until = keys, time.monotonic() + BOOT_KEY_TTL_S
+        self._restarted = False
 
     def await_target(self, timeout_s: float) -> bool:
         """After a restart, replug or blank screen: wait (while cancelled) until the target
-        is mounted with live video, tapping armed firmware keys. False on timeout."""
+        is mounted with live video, tapping armed firmware keys once it has unmounted (a USB
+        reset); before that the OS still runs, and a DELETE could delete. False on timeout."""
         armed = time.monotonic() < self._boot_until
-        self._boot_until = 0.0
         hold = BOOT_TAP_AFTER_S if armed else BOOT_TAP_S  # >= one monitor poll, so it has seen the return
         deadline = time.monotonic() + timeout_s
         live_since: float | None = None
@@ -157,8 +163,10 @@ class Controller:
             live = frame is not None and not is_blank(frame)
             live_since = (now if live_since is None else live_since) if live else None
             if live_since is not None and now - live_since >= hold:
+                if self._restarted:
+                    self._boot_until = 0.0  # used up by this restart; a blank screen alone keeps them armed
                 return True
-            if armed and mounted:
+            if armed and mounted and self._restarted:
                 for key in self._boot_keys:
                     try:
                         self.hid.send({"op": "key", "keys": [key]})
@@ -213,6 +221,10 @@ class Controller:
             frame = self.capture.grab()
             if frame is None or frame_change(before, thumbnail(frame)) >= self.settle.threshold:
                 return
+
+    def _on_hid_event(self, event: str) -> None:
+        if event == "unmounted":
+            self._restarted = True
 
     def _send(self, cmd: dict[str, object]) -> None:
         self.cancel.check()

@@ -18,6 +18,9 @@ from brain.verification import visibly_changed
 
 # A run survives these (PLAN.md §5.6): the target restarted, was replugged or blanked.
 RESUMABLE = frozenset({"target disconnected", "video lost"})
+# Thumbnail change that makes a firmware profile look again: >= 44 from firmware to any desktop
+# measured (QEMU/OVMF against Linux), while consecutive firmware screens rarely change this much.
+REDETECT_CHANGE = 40.0
 
 
 @dataclass(frozen=True)
@@ -32,14 +35,17 @@ class Agent:
     def __init__(self, executor: Executor, controller: Controller, memory: Memory,
                  telemetry: Telemetry, max_steps: int = 30,
                  on_status: Callable[[str], None] = lambda message: None,
-                 reconnect: Callable[[str], DeviceProfile | None] | None = None) -> None:
+                 reconnect: Callable[[str], DeviceProfile | None] | None = None,
+                 redetect: Callable[[], DeviceProfile | None] | None = None) -> None:
         """`reconnect(reason)` waits for the target to return and gives its new profile
-        (None if unchanged), or raises Cancelled; without it a disconnect ends the run."""
+        (None if unchanged), or raises Cancelled; without it a disconnect ends the run.
+        `redetect()` classifies the screen again (None if it cannot tell): a boot logo read
+        as firmware becomes a desktop without any reconnect."""
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
-        self.reconnect = reconnect
+        self.reconnect, self.redetect = reconnect, redetect
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
@@ -51,6 +57,7 @@ class Agent:
         note = ""
         failures = 0
         recovery_used = False
+        basis = None  # thumbnail of the screen the OS was classified on
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
         self.on_status("Working on your request…")
@@ -64,9 +71,15 @@ class Agent:
                     if frame is None or is_blank(frame):
                         token.cancel("video lost")
                         token.check()
-                    profile = replace(profile, rect=active_rect(frame))
                     before = thumbnail(frame)
                     times["t_capture"] = time.monotonic() - stamp
+                    if basis is None:
+                        basis = before
+                    elif self.redetect and profile.os == "bios" and frame_change(basis, before) >= REDETECT_CHANGE:
+                        stamp = time.monotonic()
+                        basis, profile = before, self.redetect() or profile
+                        times["t_model"] += time.monotonic() - stamp
+                    profile = replace(profile, rect=active_rect(frame))
                     stamp = time.monotonic()
                     jpeg = prepare(frame, profile.rect, grid=getattr(self.executor, "image_grid", True))
                     times["t_upload"] = time.monotonic() - stamp
@@ -76,7 +89,7 @@ class Agent:
                     try:
                         plan = self.executor.next_actions(jpeg, ctx)
                     finally:
-                        times["t_model"] = time.monotonic() - stamp
+                        times["t_model"] += time.monotonic() - stamp
                     token.check()
                     self.on_status(f"Step {step}: {plan.reasoning}")
                     if plan.refresh_screen:
@@ -91,7 +104,7 @@ class Agent:
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
                             continue
                     notes = list(plan.rejected)
-                    changed_input = False
+                    acted = sent_input = False
                     action_failed = bool(plan.rejected)
                     terminal = None
                     for action in plan.actions:
@@ -100,17 +113,24 @@ class Agent:
                             self.memory.remember(action.key, action.value)
                             history.append(action.brief())
                         elif action.type in TERMINAL_ACTIONS:
-                            if action.type == "done" and changed_input:
+                            if action.type == "done" and acted:
                                 notes.append("Verify the result on a fresh screen before returning done.")
                             else:
                                 terminal = action
                             break
                         else:
+                            if acted and action.x is not None:  # aimed at the screen the batch was planned on
+                                latest = ctl.capture.grab()  # e.g. a tapped field opened the keyboard over it
+                                if latest is None or frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                                    notes.append("The screen changed mid-batch, so the rest was skipped. "
+                                                 "Reground on this screen.")
+                                    break
                             stamp = time.monotonic()
                             try:
                                 ctl.execute(action, profile)
-                                # Waiting sends no input, so an unchanged screen is no failure.
-                                changed_input = changed_input or (action.type, action.name) != ("skill", "wait")
+                                acted = True
+                                # Waiting and arming boot keys send no input, so an unchanged screen is no failure.
+                                sent_input = sent_input or action.type != "skill" or action.name not in ("wait", "boot_keys")
                             except ActionError as exc:
                                 notes.append(f"Rejected action: {exc}. Try another action.")
                                 action_failed = True
@@ -126,7 +146,7 @@ class Agent:
                     acknowledge = getattr(self.executor, "acknowledge", None)
                     if callable(acknowledge):
                         acknowledge(bool(plan.actions) and not action_failed)
-                    if changed_input:
+                    if sent_input:
                         after = ctl.capture.grab()
                         if after is None or is_blank(after):
                             token.cancel("video lost")
@@ -157,7 +177,8 @@ class Agent:
                     if self.reconnect is None or exc.reason not in RESUMABLE:
                         raise
                     self.on_status(f"{exc.reason.capitalize()}; waiting for it to come back…")
-                    profile = self.reconnect(exc.reason) or profile
+                    if found := self.reconnect(exc.reason):
+                        profile, basis = found, None
                     note = "The target restarted, reconnected or blanked; continue from this screen."
                 finally:
                     self.telemetry.step(run_id, profile.os, task_id, step, **times)

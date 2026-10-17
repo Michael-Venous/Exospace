@@ -77,14 +77,21 @@ Your recent actions:
 {history}
 Note: {note}"""
 
+# Without this, GLM clicked dock icons and on-screen calculator keys (measured on a Linux desktop).
+_COMPUTER = (" Start apps with open_app and the goal's words for the app (e.g. \"text editor\"), never by "
+             "icons. In apps type rather than click keys: a whole sum at once, e.g. [type 12*34, ENTER].")
 # Keyboard conventions for the Device line; GUI is the Windows/Command/Search key.
 OS_HINTS = {
-    "windows": "CTRL shortcuts; GUI opens Start search.",
-    "macos": "GUI (Command) shortcuts where Windows uses CTRL, e.g. GUI+C, GUI+L, GUI+Q.",
-    "linux": "CTRL shortcuts; GUI opens the app launcher.",
-    "chromeos": "CTRL shortcuts; GUI (the Search key) opens the launcher.",
-    "android": ("Click taps (taps on the on-screen keyboard type); open apps with open_app. GUI+H goes "
-                "home; GUI+LEFT goes back, hides the keyboard and leaves a black screen an app hides."),
+    "windows": "CTRL shortcuts; GUI opens Start search." + _COMPUTER,
+    "macos": "GUI (Command) shortcuts where Windows uses CTRL, e.g. GUI+C, GUI+L, GUI+Q." + _COMPUTER,
+    # GTK save dialogs take a typed ~/ path; without it GLM browsed folders (measured with Xed/Mousepad).
+    "linux": ("CTRL shortcuts." + _COMPUTER + " Save in one batch: [CTRL+S, type a full path such as "
+              "~/notes.txt (~ is the home folder), ENTER]."),
+    "chromeos": "CTRL shortcuts; GUI (the Search key) opens the launcher." + _COMPUTER,
+    "android": ("Click taps (taps on the on-screen keyboard type). Start apps with open_app and the app's usual "
+                "name (e.g. \"settings\" for a system setting), never by icons or the search bar. GUI+H goes "
+                "home; GUI+LEFT goes back and hides the keyboard. A phone is never off or in firmware: a black "
+                "screen with a battery icon is an app hiding from capture, so press GUI+LEFT and try another way."),
     "ios": "GUI (Command) shortcuts; GUI+H goes home, GUI+SPACE searches.",
     "bios": ("Firmware or pre-OS screen (see FIRMWARE): a click only moves the highlight. A menu of entries like Device "
              "Manager and Boot Manager, or tabs like Main/Advanced/Boot/Exit, IS firmware setup: you are "

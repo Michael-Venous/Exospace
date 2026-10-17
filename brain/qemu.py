@@ -39,15 +39,19 @@ class QemuTarget:
     def __init__(self) -> None:
         self._dir = Path(tempfile.mkdtemp(prefix="exospace-qemu-"))
         vars_path, sock_path = self._dir / "vars.fd", self._dir / "qmp.sock"
-        shutil.copy(OVMF_VARS, vars_path)
-        self._proc = subprocess.Popen(
-            ["qemu-system-x86_64", "-machine", "q35,accel=kvm:tcg", "-m", "256",
-             "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
-             "-drive", f"if=pflash,format=raw,file={vars_path}",
-             "-display", "none", "-vga", "std", "-device", "qemu-xhci", "-device", "usb-tablet",
-             "-qmp", f"unix:{sock_path},server=on,wait=off", "-net", "none",
-             "-serial", "null", "-monitor", "none"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            shutil.copy(OVMF_VARS, vars_path)
+            self._proc = subprocess.Popen(
+                ["qemu-system-x86_64", "-machine", "q35,accel=kvm:tcg", "-m", "256",
+                 "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
+                 "-drive", f"if=pflash,format=raw,file={vars_path}",
+                 "-display", "none", "-vga", "std", "-device", "qemu-xhci", "-device", "usb-tablet",
+                 "-qmp", f"unix:{sock_path},server=on,wait=off", "-net", "none",
+                 "-serial", "null", "-monitor", "none"],
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except BaseException:  # no ovmf or qemu installed; close() needs the process
+            shutil.rmtree(self._dir, ignore_errors=True)
+            raise
         self._sock = socket.socket(socket.AF_UNIX)
         self._lock = threading.Lock()
         self._replies: queue.Queue[dict[str, Any]] = queue.Queue()

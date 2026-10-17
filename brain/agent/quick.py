@@ -1,6 +1,7 @@
-"""Model-free start: a goal that opens with unambiguous commands ("open calculator",
-"press ctrl c", 'type "hi"', "scroll down") acts at once, with no model call. The
-wrapped executor then checks the result and does the rest from the next step."""
+"""Model-free start: a goal made of unambiguous commands ("press ctrl c", 'type "hi"',
+"scroll down"), or one that starts by opening an app ("open calculator, then ..."), acts
+at once, with no model call. The wrapped executor then checks the result and does the
+rest from the next step."""
 
 from __future__ import annotations
 
@@ -19,15 +20,17 @@ _TYPE = re.compile(r'type\s+["“]([^"“”\n]+)["”]' + _END, re.I)
 _SCROLL = re.compile(r"scroll\s+(up|down)" + _END, re.I)
 _SEPARATOR = re.compile(r"\s*(?:[,;.!?]\s*)?(?:(?:and|then)\b\s*)*", re.I)
 # "open X" names something inside an app, or is vague, when X contains any of these.
+# shortcut: a word list misses other on-screen things ("open the invoice"); ask the model first if misfires show up.
 _NOT_APP = frozenset(
-    "a an my new up it this that these those some first last next previous another from with "
-    "in on to for of at by menu tab window folder file page dialog link email message document "
-    "url website site".split())
+    "a an my new up it its this that these those some first second third last next previous top "
+    "latest one them his her their your our another from with in on to for of at by menu tab window "
+    "folder file page dialog link email message document url website site result results "
+    "attachment history profile".split())
 
 
 def quick_actions(goal: str, os: OSName) -> list[Action]:
-    """Actions for the goal's leading clauses while each is an unambiguous command.
-    An app launch ends the run: what comes next depends on what the app shows."""
+    """Actions for a goal whose every clause is an unambiguous command, else [].
+    An app launch ends the list: what comes next depends on what the app shows."""
     actions: list[Action] = []
     rest = goal.strip()
     if "\n" in rest:  # a correction ("...\nUser correction: ...") can change the first command
@@ -35,7 +38,7 @@ def quick_actions(goal: str, os: OSName) -> list[Action]:
     while rest:
         action, end = _clause(rest, os)
         if action is None:
-            break
+            return []  # the rest may qualify what came before ("press delete, but only ...")
         actions.append(action)
         if action.type == "skill":
             break
@@ -50,10 +53,12 @@ def _clause(text: str, os: OSName) -> tuple[Action | None, int]:
             return Action("skill", name="open_app", args={"name": " ".join(words)}), match.end()
     elif match := _PRESS.match(text):
         if keys := _combo(match[1]):
+            if keys == ["HOME"] and os in ("android", "ios"):
+                keys = ["GUI", "H"]  # the phone's home screen, not the cursor key (OS_HINTS)
             return Action("hotkey", keys=tuple(keys)), match.end()
     elif match := _TYPE.match(text):
         return Action("type_text", text=match[1]), match.end()
-    elif match := _SCROLL.match(text):
+    elif (match := _SCROLL.match(text)) and os != "bios":  # firmware has no wheel
         return Action("scroll", dy=-5 if match[1].lower() == "up" else 5), match.end()
     return None, 0
 

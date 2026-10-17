@@ -34,13 +34,16 @@ class Capture:
 
 class HID:
     def __init__(self, capture, change=True):
-        self.commands = []
+        self.commands, self.callbacks = [], []
         self.capture, self.change = capture, change
 
     def send(self, command):
         self.commands.append(command)
         if self.change and command["op"] != "release_all":
             self.capture.frame[:] = 160 if self.capture.frame[0, 0, 0] == 80 else 80
+
+    def on_event(self, callback):
+        self.callbacks.append(callback)
 
     def is_mounted(self):
         return True
@@ -112,6 +115,31 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.memory.task["subtasks"], [])
         self.assertEqual(self.hid.commands, [{"op": "release_all"}])
 
+    def test_done_after_a_wait_must_show_on_screen(self):
+        self.fast.next_actions.side_effect = [
+            Plan("installing", [Action("skill", name="wait"), Action("done", summary="Installed")], []),
+            Plan("error dialog", [Action("ask_user", question="The install failed. Retry?")], []),
+        ]
+        with patch("brain.controller.WAIT_S", 0.01):
+            result = self.agent().run("Install the update", self.profile)
+        self.assertEqual(result.status, "ask_user")
+        self.assertIn("fresh screen", self.fast.next_actions.call_args.args[1].note)
+
+    def test_firmware_profile_is_redetected_once_the_screen_changes_a_lot(self):
+        bios = DeviceProfile("bios", Rect(0, 0, 160, 100), "mouse", 1)
+        redetect = Mock(return_value=DeviceProfile("windows", Rect(0, 0, 160, 100), "mouse", 2))
+        self.fast.next_actions.side_effect = [
+            Plan("boot logo", [Action("hotkey", keys=("ENTER",))], []),  # the fake screen changes by 80
+            Plan("desktop", [Action("done", summary="Booted")], []),
+            Plan("desktop", [Action("hotkey", keys=("ENTER",))], []),
+            Plan("desktop", [Action("done", summary="Booted")], []),
+        ]
+        agent = Agent(self.executor, self.controller, self.memory, self.telemetry, redetect=redetect)
+        self.assertEqual(agent.run("Boot Windows", bios).status, "done")
+        self.assertEqual(self.fast.next_actions.call_args.args[1].profile.os, "windows")
+        agent.run("Boot Windows", self.profile)  # another OS is never checked again
+        redetect.assert_called_once_with()
+
     def test_completion_requires_fresh_frame_after_input(self):
         self.fast.next_actions.side_effect = [
             Plan("type", [Action("type_text", text="hello"), Action("done")], []),
@@ -121,6 +149,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(result.steps, 2)
         self.assertIn("fresh screen", self.fast.next_actions.call_args.args[1].note)
+
+    def test_batch_stops_before_a_click_aimed_at_a_changed_screen(self):
+        clicks = [Action("click", x=.5, y=.5), Action("click", x=.5, y=.9)]
+        self.fast.next_actions.side_effect = [
+            Plan("form", clicks, []),  # the fake screen changes on the first click
+            Plan("keyboard up", [Action("done", summary="Tapped")], []),
+            Plan("form", clicks, []),
+            Plan("form", [Action("done", summary="Tapped")], []),
+        ]
+        self.assertEqual(self.agent().run("Fill the form", self.profile).status, "done")
+        self.assertIn("changed mid-batch", self.fast.next_actions.call_args.args[1].note)
+        self.hid.change = False  # a click that leaves the screen alone keeps the batch going
+        self.agent().run("Fill the form", self.profile)
+        self.assertEqual([c["y"] for c in self.hid.commands if c["op"] == "click"], [16384, 16384, 29490])
 
     def test_stalled_actions_replan_then_cancel(self):
         self.hid.change = False
@@ -246,6 +288,7 @@ class RuntimeTests(unittest.TestCase):
     def test_waiting_on_a_still_screen_is_not_a_failure(self):
         self.hid.change = False
         self.fast.next_actions.side_effect = [Plan("booting", [Action("skill", name="wait")], [])] * 3 + [
+            Plan("arming", [Action("skill", name="boot_keys", args={"keys": ["F2"]})], [])] * 3 + [
             Plan("booted", [Action("done", summary="Booted")], [])]
         with patch("brain.controller.WAIT_S", 0.01):
             result = self.agent().run("Wait for the boot", self.profile)
@@ -259,7 +302,7 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.hid.commands, [])
         with self.assertRaises(ActionError):  # a screen without a menu highlight
             self.controller.execute(Action("click", x=.5, y=.5), bios)
-        self.assertEqual(self.hid.commands, [{"op": "key", "keys": ["DOWN"]}])
+        self.assertEqual(self.hid.commands, [{"op": "key", "keys": ["DOWN"]}, {"op": "key", "keys": ["UP"]}])
 
     def test_boot_keys_reach_skill_args(self):
         for raw in ({"type": "skill", "name": "boot_keys", "keys": ["F2"]}, {"type": "boot_keys", "keys": ["F2"]}):
@@ -329,6 +372,9 @@ class Menu:
     def is_mounted(self):
         return True
 
+    def on_event(self, callback):
+        pass
+
     def send(self, command):
         self.commands.append(command)
         if command["op"] == "key" and command["keys"] in (["DOWN"], ["UP"]):
@@ -346,6 +392,9 @@ class FirmwareClickTests(unittest.TestCase):
             (0, True, 86, 2, "DOWN DOWN"),  # between rows 1 and 2, nearer 2
             (1, False, 228, 4, "DOWN DOWN DOWN DOWN"),  # below the menu: stops at its end
             (1, True, 228, 4, "DOWN DOWN DOWN DOWN UP"),  # or wraps round and steps back
+            (4, False, 146, 4, "DOWN UP DOWN"),  # from the end of a menu that does not wrap
+            (4, False, 50, 0, "DOWN UP UP UP UP"),
+            (4, False, 98, 2, "DOWN UP UP"),
         ):
             with self.subTest(start=start, wrap=wrap, y=y):
                 menu = Menu(start, wrap)
@@ -374,12 +423,21 @@ class AwaitTargetTests(unittest.TestCase):
                 raise HIDError("usb not up yet")
         self.hid.send = send
         self.controller.arm_boot_keys(["F2"])
+        self.hid.callbacks[0]("unmounted")
         self.assertTrue(self.controller.await_target(1))
         self.assertGreater(len(self.hid.commands), 2)
         self.assertTrue(all(c == {"op": "key", "keys": ["F2"]} for c in self.hid.commands))
         self.hid.commands.clear()
         self.assertTrue(self.controller.await_target(1))
         self.assertEqual(self.hid.commands, [])
+
+    def test_blank_screen_before_the_restart_taps_nothing(self):
+        self.controller.arm_boot_keys(["DELETE"])
+        self.assertTrue(self.controller.await_target(1))  # the OS blanked its screen, still running
+        self.assertEqual(self.hid.commands, [])
+        self.hid.callbacks[0]("unmounted")  # the restart itself
+        self.assertTrue(self.controller.await_target(1))
+        self.assertIn({"op": "key", "keys": ["DELETE"]}, self.hid.commands)
 
     def test_no_video_times_out(self):
         self.capture.frame[:] = 0

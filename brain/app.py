@@ -69,9 +69,19 @@ def main(argv: list[str] | None = None) -> int:
             profile: DeviceProfile | None = None
             generation = -1
 
+            def redetect() -> DeviceProfile | None:
+                """Classify the screen again; None keeps the OS when it cannot tell."""
+                nonlocal profile
+                try:
+                    profile = detect_profile(capture, executor, args.os, cancel=token)
+                except (RuntimeError, ValueError):  # e.g. an unclassifiable boot logo
+                    return None  # the model still sees the new screen
+                status(f"Target: {profile.os} ({profile.input})")
+                return profile
+
             def reconnect(reason: str) -> DeviceProfile | None:
                 """Resume a run once the target is back (PLAN.md §5.6); re-detect a new connection."""
-                nonlocal profile, generation
+                nonlocal generation
                 while True:
                     if not controller.await_target(RECONNECT_S):
                         raise Cancelled("target did not come back")
@@ -80,24 +90,22 @@ def main(argv: list[str] | None = None) -> int:
                     if current == generation:
                         return None
                     try:
-                        profile = detect_profile(capture, executor, args.os, cancel=token)
+                        found = redetect()
                     except Cancelled as exc:
                         if exc.reason not in RESUMABLE:
                             raise
                         continue  # it restarted again while coming back
-                    except (RuntimeError, ValueError):  # e.g. an unclassifiable boot logo
-                        generation = current
-                        return None  # keep the OS; the model still sees the new screen
                     generation = current
-                    status(f"Target: {profile.os} ({profile.input})")
-                    return profile
+                    return found
 
             agent = Agent(executor, controller, Memory.load(cfg.session_path),
                           Telemetry(cfg.bench_csv, args.config_name or cfg.executor), args.max_steps, status,
-                          reconnect)
+                          reconnect, redetect)
             previous_goal = ""
             correction = False
             status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
+            if cfg.executor == "jev-flash" and cfg.zai_api_key:
+                status("EXECUTOR=jev-flash makes GLM follow Jev's stages, slower and less reliable; clear it for direct.")
             while True:
                 try:
                     line = input("Correction (or /new GOAL)> " if correction else "Goal> ").strip()
@@ -128,6 +136,8 @@ def main(argv: list[str] | None = None) -> int:
                             continue
                         generation = current
                         status(f"Target: {profile.os} ({profile.input})")
+                    elif profile.os == "bios":
+                        redetect()  # a boot logo read as firmware may have become a desktop since
                     if args.backend == "local":
                         status("Focus the target window; starting in 2 seconds.")
                         token.sleep(2)

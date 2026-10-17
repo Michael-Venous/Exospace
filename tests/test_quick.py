@@ -28,7 +28,6 @@ class QuickActionTests(unittest.TestCase):
             "press ctrl a then press delete": ["hotkey(CTRL+A)", "hotkey(DELETE)"],
             'type "hello world" and press enter': ["type_text('hello world')", "hotkey(ENTER)"],
             "type “hi there”, then press tab.": ["type_text('hi there')", "hotkey(TAB)"],
-            "scroll up and click the first result": ["scroll(-5)"],
             "scroll down": ["scroll(5)"],
         }
         for goal, expected in cases.items():
@@ -41,7 +40,14 @@ class QuickActionTests(unittest.TestCase):
                      "press the button", "press enter to submit", "press and hold power",
                      "press a b", "type hello", "scroll down to the bottom", "Create the event",
                      "open four word app name here",
-                     "open calculator and type 2+2\nUser correction: I meant calendar"):
+                     "open calculator and type 2+2\nUser correction: I meant calendar",
+                     # half a combination, or a qualified command, must not act alone
+                     "press control and c", "press windows and r", "press alt and f4",
+                     "press delete, but only on the second email", "press enter, not yet",
+                     'type "cats", after clicking the search box', "scroll up and click the first result",
+                     # things on the screen, not apps
+                     "open the second result", "open the attachment", "open them", "open history",
+                     "open his profile"):
             with self.subTest(goal=goal):
                 self.assertEqual(quick_actions(goal, "windows"), [])
 
@@ -50,6 +56,8 @@ class QuickActionTests(unittest.TestCase):
         self.assertEqual(quick_actions("open calculator", "bios"), [])
         self.assertEqual(quick_actions("open calculator", "unknown"), [])
         self.assertEqual(briefs("press F10", "bios"), ["hotkey(F10)"])
+        self.assertEqual(quick_actions("scroll down", "bios"), [])
+        self.assertEqual(briefs("press home", "android"), ["hotkey(GUI+H)"])
 
 
 class QuickStartTests(unittest.TestCase):
