@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     if home_os not in (None, *OS_NAMES) or home_os in ("unknown", "bios"):
         parser.error("TARGET_OS must be one of windows, macos, linux, chromeos, android, ios")
     if not (cfg.gemini_api_key or cfg.uses_zai):
-        status("Set ZAI_API_KEY or GEMINI_API_KEY in the project .env (see .env.example); race and jev-flash need Gemini.")
+        status("Set ZAI_API_KEY or GEMINI_API_KEY in the project .env (see .env.example); either one works.")
         return 1
     try:
         with ExitStack() as cleanup:

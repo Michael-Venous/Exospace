@@ -10,10 +10,15 @@ from brain.doctor import check_capture, check_groups, check_keys, check_uart
 class DoctorTests(unittest.TestCase):
     def test_keys_report_presence_only(self):
         checks = {c.name: c for c in check_keys({"GEMINI_API_KEY": "secret-value"})}
-        self.assertTrue(checks["GEMINI_API_KEY"].ok)
+        self.assertTrue(checks["ZAI_API_KEY or GEMINI_API_KEY"].ok)
         self.assertFalse(checks["TYPESAFE_API_KEY"].ok)
         self.assertFalse(checks["DEEPGRAM_API_KEY"].ok)  # the voice service needs it
         self.assertNotIn("secret-value", " ".join(c.detail for c in checks.values()))
+
+    def test_zai_key_alone_is_enough(self):
+        checks = {c.name: c for c in check_keys({"ZAI_API_KEY": "secret-value"})}
+        self.assertTrue(checks["ZAI_API_KEY or GEMINI_API_KEY"].ok)
+        self.assertFalse({c.name: c for c in check_keys({})}["ZAI_API_KEY or GEMINI_API_KEY"].ok)
 
     def test_groups(self):
         checks = check_groups({"video"})

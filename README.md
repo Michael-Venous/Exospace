@@ -15,7 +15,7 @@ Built at SwampHacks XII (October 16–18, 2026).
 
 - **Pi 5 (brain):** captures the screen, listens to the user, keeps memory, runs the agent loop and controller. It has its own power, so swapping targets never reboots it.
 - **Pico (hands):** shows up on the target as a keyboard, absolute mouse and touchscreen, and runs commands from the Pi.
-- **Models:** with a z.ai key, GLM-4.6V-FlashX chooses and aims each step's actions in one hosted call. Without one, the race architecture runs: for every spoken request, Jev 1.14 and Gemini 3.8 Flash start at once. If Jev confidently sees one control to click, it acts in about a second and Flash's plan is thrown away; remarks are remembered without touching anything; everything else uses Flash's plan, grounded and checked step by step by Jev. Anything irreversible (send, delete, pay, BIOS changes) waits for a spoken "yes". Measured: 89% task success vs 53% for a Flash-planner-only agent, with 0 unsafe actions ([bench/arch/README.md](bench/arch/README.md)). No separate slow planner or B200 is required. Isolated local-browser, QEMU (UEFI firmware) and Android emulator backends support testing before the hardware adapter is available.
+- **Models (race architecture):** for every spoken request, Jev 1.14 and Gemini 3.8 Flash start at once. If Jev confidently sees one control to click, it acts in about a second and Flash's plan is thrown away; remarks are remembered without touching anything; everything else uses Flash's plan, grounded and checked step by step by Jev. Anything irreversible (send, delete, pay, BIOS changes) waits for a spoken "yes". Measured: 89% task success vs 53% for a Flash-planner-only agent, with 0 unsafe actions ([bench/arch/README.md](bench/arch/README.md)). No separate slow planner or B200 is required. Isolated local-browser, QEMU (UEFI firmware) and Android emulator backends support testing before the hardware adapter is available.
 - **Any screen:** the OS (Windows, macOS, Linux, ChromeOS, Android, iOS, or a BIOS/UEFI screen) is detected from the screen. A run survives restarts, so it can restart a PC into firmware setup and change settings there.
 - **Voice:** a push-to-talk page (one button or the Space bar, so a single accessibility switch works) sends what you say to the agent and speaks back its questions and results.
 
@@ -39,7 +39,7 @@ See [PLAN.md](PLAN.md) for the full architecture, shared contracts, owners and c
 
 ## Setup
 
-1. Copy `.env.example` to `.env` and fill in the keys (Gemini, TypeSafe/Jev, Deepgram for voice).
+1. Copy `.env.example` to `.env` and fill in the keys: z.ai or Gemini (interchangeable, either one runs everything), TypeSafe/Jev, and Deepgram for voice.
 2. Python 3.11+: `python3 -m venv .venv`, then `.venv/bin/python -m pip install -e '.[voice,browser]'`.
 3. Try it without hardware, on a web page in an isolated browser:
    ```sh

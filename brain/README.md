@@ -54,7 +54,7 @@ this prompt yet. `--max-steps` defaults to 30.
 
 ## Models and latency
 
-With `ZAI_API_KEY` set, the default is `EXECUTOR=direct`: GLM-4.6V-FlashX returns each
+The default is `EXECUTOR=race`, with or without `ZAI_API_KEY`. With `EXECUTOR=direct` and a z.ai key, GLM-4.6V-FlashX returns each
 step's actions and coordinates in one call (PLAN.md §13). GLM tends to claim `done` from
 its own history, so once a run has sent input, a short second call (about 1.7 s per `done`
 claim) must confirm that the screenshot shows the goal; if not, the run continues with what
@@ -71,11 +71,14 @@ Option: **direct** (`EXECUTOR=direct`): one vision-model call per step returns t
 and their coordinates. With `ZAI_API_KEY` set it uses z.ai GLM-4.6V-FlashX (p50 2.5 s per
 call over 1,299 calls; 12 s timeout, up to three tries), otherwise Gemini. After the run
 has sent input, a `done` claim costs one more call that must see the goal on screen.
-z.ai serves only this executor: GLM does not follow jev-flash's stage schema. Not yet
-compared with race end to end against independent checks.
+Not yet compared with race end to end against independent checks.
+
+z.ai and Gemini are interchangeable: either key serves every executor, z.ai when
+`ZAI_API_KEY` is set. Both have the same settings: model, thinking, a fallback model on
+503/429, and the planner model (see `.env.example`).
 
 Planner details (the race executor's plan path):
-Set `GEMINI_API_KEY` and `TYPESAFE_API_KEY` in the ignored `.env`. Flash chooses
+Set `ZAI_API_KEY` or `GEMINI_API_KEY`, and `TYPESAFE_API_KEY`, in the ignored `.env`. The language model chooses
 semantic actions and writes content; Jev supplies pointer locations from the
 same screenshot. There is no separate fast/slow language-model routing in this
 mode, and no B200 dependency. The old dual-model path is opt-in only.

@@ -7,12 +7,13 @@ where the two conflicted, overnight's behavior won, and where this section and t
 differ, this one holds there. After the merge, 197 unit tests pass on the laptop
 (`.venv/bin/python -m unittest discover -s tests`).
 
-Merged with `main` again at `46088d1` (PR #17). z.ai now serves only `direct` and `legacy-dual`;
-race and jev-flash always use Gemini, with the Flash-Lite fallback on 503/429. OS hints reach only
+Merged with `main` again at `46088d1` (PR #17). Race is always the default executor, and z.ai and
+Gemini are interchangeable: either key serves every executor, with the same settings (model,
+thinking, a fallback model on 503/429, planner model). OS hints reach only
 the one-call executor. The 180 s reconnect covers main's blank-screen resume, so its 10 s
 `_await_video` is gone. 227 tests pass.
 
-**Defaults and latency.** With `ZAI_API_KEY` in `.env`, `EXECUTOR=direct` runs
+**Latency of `direct` on z.ai.** With `ZAI_API_KEY` in `.env`, `EXECUTOR=direct` runs
 `glm-4.6v-flashx`: one call per step returns the actions and their coordinates. Measured
 over 1,299 logged calls: p50 2.5 s, p90 4.3 s, p99 14 s per call. Each call has a 12 s
 timeout (`MODEL_TIMEOUT_S`) and up to three tries, so a step whose calls all hang waits
@@ -52,7 +53,7 @@ with the alarm already set, so it is left out).
   - §5.4: the new OS names and bios re-detection
   - §5.6: resuming after a restart
   - §3: firmware is now in scope
-  - §13: `direct` is the default executor with z.ai
+  - §13: race is always the default executor; `direct` is opt-in
 - **Untested targets.** iOS and ChromeOS have not been tried at all. Android has only run on
   the emulator, where the on-screen keyboard covers form fields; a real phone typing
   through the Pico keyboard is untested. The OS hints were tuned on Linux and Android only,

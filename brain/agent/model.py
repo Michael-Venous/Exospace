@@ -1,6 +1,6 @@
 """Bounded JSON calls to the language model, with separate per-model latency records.
 
-`ZaiJSON` (z.ai GLM) serves EXECUTOR=direct and legacy-dual when ZAI_API_KEY is set; everything else uses `GeminiJSON`.
+z.ai and Gemini are interchangeable: `ZaiJSON` (z.ai GLM) serves every executor when ZAI_API_KEY is set, otherwise `GeminiJSON`.
 """
 
 from __future__ import annotations
@@ -108,10 +108,12 @@ class ZaiJSON:
     def __init__(
         self, api_key: str, model: str, thinking: str | None,
         cancel: CancelToken, timeout_s: float, log_path: Path, base_url: str,
+        fallback_model: str = "",
     ) -> None:
         if not api_key:
             raise RuntimeError("ZAI_API_KEY is not set (see .env.example)")
         self.model = model
+        self.fallback_model = fallback_model
         self.cancel = cancel
         self.thinking = thinking
         self.log_path = log_path
@@ -135,7 +137,9 @@ class ZaiJSON:
                 ]},
             ],
         }
+        model = self.model
         for attempt in range(1, self.ATTEMPTS + 1):
+            body["model"] = model
             self.cancel.check()
             started = time.monotonic()
             success = False
@@ -152,9 +156,11 @@ class ZaiJSON:
                 return data
             except httpx.HTTPStatusError as exc:
                 error = type(exc).__name__
-                retry_delay = 2.0
-                if exc.response.status_code not in RETRY_STATUS or attempt == self.ATTEMPTS:
+                retry_delay = 10.0 if status_code == 429 else 2.0
+                if status_code not in RETRY_STATUS or attempt == self.ATTEMPTS:
                     raise
+                if status_code in OVERLOADED and self.fallback_model:
+                    model, retry_delay = self.fallback_model, 0.0
             except (ValueError, TypeError, KeyError, IndexError) as exc:
                 error = type(exc).__name__
                 if attempt == self.ATTEMPTS:
@@ -167,7 +173,7 @@ class ZaiJSON:
                 error = type(exc).__name__
                 raise
             finally:
-                _log(self.log_path, run_id, step, role, self.model, attempt, started, success, error, status_code)
+                _log(self.log_path, run_id, step, role, model, attempt, started, success, error, status_code)
             self.cancel.sleep(retry_delay)
 
     def close(self) -> None:
@@ -242,8 +248,8 @@ def language_model(cfg: Config, cancel: CancelToken, *, planner: bool = False) -
     timeout = cfg.planner_timeout_s if planner else cfg.model_timeout_s
     if cfg.uses_zai:
         return ZaiJSON(cfg.zai_api_key, cfg.zai_planner_model if planner else cfg.zai_model,
-                       cfg.planner_thinking if planner else None, cancel, timeout, cfg.model_log,
-                       cfg.zai_base_url)
+                       cfg.planner_thinking if planner else cfg.zai_thinking, cancel, timeout,
+                       cfg.model_log, cfg.zai_base_url, "" if planner else cfg.zai_fallback_model)
     return GeminiJSON(cfg.gemini_api_key, cfg.planner_model if planner else cfg.gemini_model,
                       cfg.planner_thinking if planner else cfg.gemini_thinking, cancel, timeout,
                       cfg.model_log, "" if planner else cfg.fallback_model)

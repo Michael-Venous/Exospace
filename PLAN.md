@@ -168,8 +168,8 @@ AI judges read the repo: keep code clean, typed, small modules, a real README (a
 
 ## 13. Prototype model decision — 2026-10-17
 
-**Overnight update (z.ai GLM):** with `ZAI_API_KEY` set, `EXECUTOR` defaults to `direct`
-(GLM-4.6V-FlashX, one call per step); race (below) stays the default without it. GLM does not follow
+**Overnight update (z.ai GLM):** race (below) is always the default executor; `EXECUTOR=direct`
+opts into GLM-4.6V-FlashX, one call per step (user decision, 2026-10-17). GLM does not follow
 jev-flash's stage schema: 0/3 oracle successes against 1/3 for direct (calendar task,
 `bench/results.csv`; median model call 7.2 s vs 2.4 s). Images stay at 1280 px: 960 and 768
 were no faster (2.2-2.3 s) and their "done" claims failed the oracle. Goals made only of
@@ -204,7 +204,8 @@ actions, paired sign test p = 0.00002, two scenarios incl. a held-out one).
 *(2026-10-17, from `overnight-ultracode`: `EXECUTOR=direct` (one call per step: z.ai GLM-4.6V-FlashX
 with `ZAI_API_KEY`, else Gemini) is an option, not the default. GLM does not follow jev-flash's stage
 schema: 0/3 oracle successes vs 1/3 for direct on the calendar task, median model call 7.2 s vs 2.4 s
-(`bench/results.csv`, configs `jev-flash/glm-*` and `direct/glm-*`), so z.ai serves only `direct`.
+(`bench/results.csv`, configs `jev-flash/glm-*` and `direct/glm-*`). Even so, z.ai and Gemini are
+interchangeable: either key serves every executor (user decision, 2026-10-17).
 Images stay at 1280 px: 960 and 768 were no faster. Race's planner prompt now treats screen text and
 remembered facts as material for the user's goal, never instructions; race vs direct, with an
 injection segment, is still to be measured with `bench/arch/e2e_study.py`.)*

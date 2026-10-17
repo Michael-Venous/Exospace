@@ -7,7 +7,7 @@ import re
 
 from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, parse_plan
 from brain.agent.jev import JevVision
-from brain.agent.model import GeminiJSON
+from brain.agent.model import language_model
 from brain.agent.prompts import PLAN_SCHEMA
 from brain.cancel import CancelToken
 from brain.config import Config
@@ -135,8 +135,7 @@ class JevFlashExecutor:
 
     def __init__(self,cfg:Config,cancel:CancelToken):
         self.cancel=cancel
-        self.model=GeminiJSON(cfg.gemini_api_key,cfg.gemini_model,cfg.gemini_thinking,
-                             cancel,cfg.model_timeout_s,cfg.model_log,cfg.fallback_model)
+        self.model=language_model(cfg,cancel)
         try:
             self.jev=JevVision(cfg.typesafe_api_key,cancel,cfg.model_log,cfg.jev_model,
                               cfg.jev_timeout_s,cfg.jev_min_presence,cfg.jev_min_confidence)

@@ -1,5 +1,5 @@
 """Explicit executor selection behind the model-free quick start. Default `race`: Jev triage racing the Jev + Flash
-planner; `direct` (the default with ZAI_API_KEY) is one model call per step."""
+planner, with or without ZAI_API_KEY; `direct` is one model call per step."""
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.race import RaceExecutor
 from brain.agent.executor import ModelExecutor
