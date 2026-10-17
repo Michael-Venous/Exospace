@@ -1,7 +1,7 @@
 ## Summary
 <!-- Plain English: what does this change do, and why? A teammate outside your area should be able to follow it. -->
 
-Closes #
+Fixes [issue link]
 
 ## What changed
 <!-- Group by file or area. Say what each part does, not just its name. -->
