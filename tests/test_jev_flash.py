@@ -36,6 +36,42 @@ class SemanticTests(unittest.TestCase):
         self.executor.model.generate.assert_called_once()
         self.assertEqual(self.executor.jev.assess.call_count,4)
 
+    def test_already_complete_plan_requires_independent_jev_verification(self):
+        self.plan['steps']=[]
+        result=self.executor.next_actions(b'completed screen',self.ctx)
+        self.assertEqual(result.actions[0].type,'done')
+        self.executor.model.generate.assert_called_once()
+        checks=self.executor.jev.assess.call_args.args[1]
+        self.assertEqual(set(checks),{'complete'})
+        self.assertIn(self.ctx.goal,checks['complete'])
+        self.assertIn('saved summary visible',checks['complete'])
+
+    def test_completion_cannot_replace_the_original_goal_with_weaker_evidence(self):
+        from dataclasses import replace
+        ctx=replace(self.ctx,goal='Open the catalog then click the first result and verify it opened')
+        self.plan['steps']=[]
+        self.plan['completion']='The first result is visible'
+        def verify(image,checks,targets,**kwargs):
+            # The user required opening a result, whereas the screen only lists it.
+            values={key:float(ctx.goal not in condition) for key,condition in checks.items()}
+            return values,{}
+        self.executor.jev.assess.side_effect=verify
+        result=self.executor.next_actions(b'catalog list only',ctx)
+        self.assertFalse(result.actions)
+        self.assertTrue(result.rejected)
+
+    def test_empty_plan_cannot_claim_completion_when_jev_disagrees(self):
+        self.plan['steps']=[]
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: (
+            {k:0. for k in checks},{})
+        result=self.executor.next_actions(b'incomplete screen',self.ctx)
+        self.assertFalse(result.actions)
+        self.assertTrue(result.rejected)
+
+    def test_empty_plan_without_a_completion_criterion_is_invalid(self):
+        with self.assertRaises(ValueError):
+            validate_steps({'steps':[],'completion':''})
+
     def test_discarded_action_does_not_advance(self):
         first=self.executor.next_actions(b'image',self.ctx)
         second=self.executor.next_actions(b'new frame',self.ctx)

@@ -122,6 +122,57 @@ response latency, not GUI task success or time to first token:
 FAST_MODEL=gemini-3.8-flash .venv/bin/python -m brain.probe --runs 3
 ```
 
+Two opt-in comparisons use real API calls and independent exact-answer oracles:
+
+```sh
+# Separate task families for calibration and held-out evaluation. Preserve this order.
+.venv/bin/python -m brain.routing_benchmark prepare
+.venv/bin/python -m brain.routing_benchmark jev
+.venv/bin/python -m brain.routing_benchmark calibration
+.venv/bin/python -m brain.routing_benchmark freeze
+.venv/bin/python -m brain.routing_benchmark heldout
+.venv/bin/python -m brain.routing_benchmark report
+# Full short workflows: successive clicks, literal URL typing, and three fields.
+.venv/bin/python -m brain.sequence_benchmark --repeats 3 --output work/sequence-comparison-v2
+```
+
+The routing study freezes a hashed 36-task manifest before API calls and fits
+thresholds only on calibration outcomes. Held-out calls require a frozen policy.
+It compares 3.5 Flash-Lite/low, 3.8 Flash/low and 4 Argon/medium, including Jev
+latency in counterfactual routing results. These screenshot reasoning probes do
+not establish production reliability or price savings. The separate sequence
+suite uses screenshot-only agents, real pixel/keyboard input, and post-run DOM
+oracles. Its URL form is a local stand-in, not Chrome's address bar or YouTube.
+Reports retain failures; use a new output directory when changing prompts.
+Neither benchmark changes `.env` or enables model routing automatically.
+
+Semantic plans may contain zero stages only to request independent Jev completion
+verification against the original user goal as well as the proposed evidence.
+This avoids accepting a weaker model-written completion condition or inventing
+no-op actions after the goal is already done.
+The prompt batches a field click with its typing and checks visible values rather
+than keyboard focus, which is not reliable evidence in screenshots.
+
+A separate optional Live feasibility probe sends a synthetic screenshot and a
+typed request, then validates an inert function call. It does not control the
+device, record a microphone, or play audio:
+
+```sh
+.venv/bin/python -m brain.live_probe --runs 3 --output work/live-probe-new
+```
+
+Verified on 2026-10-17: `gemini-3.8-live` returned the exact code in 3/3 function
+calls in 0.51–0.73 s after sending, plus 0.38–0.55 s for a new connection. Sending
+image and text together in `send_client_content` worked. The initial approach
+sending a video frame separately followed immediately by a text turn failed all
+three probes; do not equate that failed integration with lack of image support.
+This establishes a small screenshot/tool-call path, not voice quality or reliable
+multi-step execution. Google documents image input, function calling, audio
+response mode and no strict structured-output mode for
+[3.8 Live](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live).
+A production voice adapter would still need session resumption, interruption,
+validated tool dispatch and stale-frame/action cancellation. It is not enabled.
+
 Offline tests send no real input and make no model requests:
 
 ```sh
@@ -189,3 +240,37 @@ Sources:
 - [OmniParser](https://github.com/microsoft/OmniParser)
 - [AnyJev](https://github.com/nokia-applied-research/AnyJev)
 - [AnyJev roadmap](https://github.com/nokia-applied-research/AnyJev/blob/main/ROADMAP.md)
+
+### Execution architecture experiments (2026-10-17)
+
+`brain.execution_benchmark` compares isolated screenshot-only browser workflows
+with exact post-run DOM oracles. Experimental executors do not change the active
+factory or `.env`. The same controller, settling and cancellation path are used.
+All API inputs are synthetic screenshots and task text. Direct Live uses the
+existing coordinate grid; Jev variants ground semantic targets without it.
+
+```bash
+# Prove supported routines finish without any LLM fallback:
+.venv/bin/python -m brain.execution_benchmark --output work/my-no-llm-test --repeats 2 --modes routine-refined --cases two_clicks type_url three_fields double_click hover_menu drag --no-llm
+
+# Compare direct Live, compact Live commands and Jev with narrow Live grounding:
+.venv/bin/python -m brain.execution_benchmark --output work/my-executor-test --repeats 2 --modes live-direct-v2 live-compact jev-live-ground --cases two_clicks type_url three_fields hover_menu drag ambiguous
+```
+
+Every study freezes source files and a manifest. Use a fresh output directory for
+changed code; `--only-pending-from <study>` runs just missing case/mode/repeat
+combinations into a new study after a harness repair. Warm Live connections are
+established before the task timer and reported separately; `--cold` includes
+connection time. No audio input or playback is used. The URL task is an in-page
+local form, not native browser navigation. `calendar` includes six fields, a popup,
+and time arithmetic. `overlap-refined` tests an explicit first action while Flash
+plans, retaining one HID writer and fresh-screen gates.
+
+Literal routines currently require bounded command syntax. Ordinary paraphrases
+may still need Flash. Low-confidence target boxes get one Jev control-type retry;
+`jev-live-ground` may then request coordinates from Live only when presence,
+uniqueness and stage checks pass. It cannot use Live to bypass ambiguous targets.
+Independent result checks and action traces are authoritative for benchmark
+success; a model saying done does not establish success. Shared telemetry CSV
+retains its existing runtime-status semantics. See HANDOFF.md for results and
+known failures before considering any default routing changes.

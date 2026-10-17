@@ -154,6 +154,23 @@ AI judges read the repo: keep code clean, typed, small modules, a real README (a
 
 ## 13. Prototype model decision — 2026-10-17
 
+**Execution reassessment:** user requested a pause on model tuning to address
+unnecessary planner calls. Next priority is bounded Jev-controlled recipes for
+literal typing and explicit multi-step commands, with Flash reserved for missing
+reasoning, content generation and recovery. Explore concurrent execution of an
+explicit independent prefix with background planning only after recipe validation.
+This is a proposed direction, not implemented behavior or a measured speedup.
+See HANDOFF.md's execution reassessment for boundaries and evaluation criteria.
+Runtime remains Jev + 3.8 Flash; shared §5 contracts are unchanged.
+
+**Latest measured decision:** keep Jev + 3.8 Flash. The calibrated three-model
+router matched Flash's held-out accuracy but was about 12% slower on the sample;
+Lite also falsely declared completion on one basic workflow. Automatic Lite/Argon
+routing remains disabled. Completion now checks the original user goal as well
+as model-proposed evidence. Gemini 3.8 Live passed a small screenshot/function-call
+probe, but is not integrated. See HANDOFF.md for exact configurations, preserved
+failures, intervals and scope. Shared §5 contracts remain unchanged.
+
 **Current user-selected implementation:** Jev 1.14 + Gemini 3.8 Flash; no separate
 slow/fast LLM routing and no B200. Jev has an explicit `execute` / `ask_flash`
 choice. Explicit pointer requests can execute without Flash; predictable sequences

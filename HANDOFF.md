@@ -1,12 +1,216 @@
 # Exospace prototype handoff
 
-## Current verified state — 2026-10-17 (supersedes historical snapshot below)
+## Execution architecture benchmark in progress — 2026-10-17
+
+User requested benchmarking all practical avenues after the architecture reassessment.
+Experimental code only; active `.env` and executor factory are unchanged. Added a
+literal recipe compiler, stagewise Jev routine executor, persistent Gemini Live
+function-call adapter, direct Live executor with hover/drag, compact semantic Live
+commands, and explicit-prefix/background-Flash prototype. Shared contracts unchanged.
+`brain/execution_benchmark.py` runs isolated screenshot-only browser fixtures with
+independent DOM end-state checks; `brain/execution_report.py` aggregates successes,
+failures, timing and instruction-compliance adjudication. No microphone/audio,
+physical target/HID, native browser address bar, B200, or deployment used.
+
+Initial smoke evidence: `work/execution-smoke-v1`, `work/recipe-diagnostic-v1`,
+`work/execution-smoke-v2`. Retained failures exposed vague field targets and a
+leftover Live turn-complete event; adapter now waits for the matching request ID.
+Main v1 study: `work/execution-comparison-v1`, 7 tasks × 4 modes × 2 repeats.
+Frozen original sources are saved under its `frozen_source/` before subsequent
+experimental changes. v1 Live-direct lacked explicit hover support and clicked
+Tools instead: end-state-only passes must be adjudicated as instruction failures.
+Later fixtures explicitly detect that error. Broad semantic Live plans also
+sometimes omitted field-focusing clicks; compact commands make those mechanical
+steps deterministic. Jev whole-goal checks often rejected correctly completed
+screens because earlier actions were no longer visible; stagewise routines retain
+verified transitions and require final-effect evidence instead of re-inferring
+history from the last image. No probability threshold was lowered.
+
+90 offline tests currently pass. A preliminary authored language-coverage probe
+compiled only 5/12 phrasings (`work/execution-language-coverage.json`); this narrow
+grammar is not evidence for 90% real-world coverage. v1 is complete; follow-up study `work/execution-comparison-v2` is running.
+Remaining queued studies: `execution-no-llm-v1`, `execution-heldout-v1`,
+`execution-overlap-v1`, `execution-cold-v1`, `execution-grounding-v1`, and
+`execution-calendar-v1` under work/. The last study reuses the six-field calendar
+with popup and time arithmetic. Grounding recovery uses Live only for missing
+coordinates after Jev confirms presence, uniqueness and stage readiness; ambiguous
+targets cannot use it. A bounded Jev control-type refinement is tested first.
+All test versions freeze source and manifests. Report failures and bounded
+recommendations after these finish. Do not switch defaults on these exploratory results.
+
+
+## Execution architecture reassessment — 2026-10-17
+
+User asked to pause and reassess the reliance on ~5-second LLM calls for ordinary
+multi-step commands. This turn is a design review: no runtime, model configuration,
+threshold, or shared §5 contract changes. Existing model comparisons remain evidence,
+but optimizing model routing is no longer the next priority.
+
+Code inspection confirms the architectural bottleneck: `direct_command` only
+accepts a single pointer command (including double-click). Unsupported requests
+first make an empty-proposal Jev assessment and then unconditionally call Flash.
+The controller already supports typing, hotkeys, double-click, hover and drag;
+the missing layer is a bounded way to compose them from explicit user instructions.
+In `work/sequence-comparison-v2/type_url-flash-1/model_calls.jsonl`, Flash consumed
+4.060 s and individual Jev calls 0.151–0.191 s. This was a synthetic local URL form,
+not native Chrome navigation. Removing that planner call has not yet been tested.
+
+Recommended next architecture: Jev selects and verifies small executable recipes;
+Flash supplies missing reasoning/content or recovery plans. Action count alone
+must not cause escalation. Candidate recipes: explicit click sequences, literal
+field fills, browser URL navigation, open-app, double-click, hover then submenu
+click, and named-source/named-destination drag. Recipes bind arguments to exact
+user-provided spans (quoted strings, URLs, explicit targets). For broader language,
+bounded span candidates can be offered to Jev with an abstain option; do not assume
+it generates arbitrary strings or free-form plans. Reject unsupported grammar,
+ambiguous argument binding, implicit reasoning, and conflicting instructions.
+Do not split `and` inside literal text or silently omit clauses. Existing HID
+ASCII folding means exact non-ASCII typing is not yet supported and must not be
+claimed as verified literal entry.
+
+Each recipe is a small state machine, not a blind macro. On a fresh frame, Jev
+checks prior outcome and selects/grounds the next allowed action. Dependent menu
+items are grounded only after the menu opens. Batch checks and candidates that
+share the same frame, but never treat independently answered questions as a
+sequential plan. A field click plus exact typing can be one bounded stage; check
+the visible value, not an invisible caret. Preserve original-goal completion,
+single HID writer, execution acknowledgement, stale-frame checks, cancellation,
+and existing evidence thresholds. Platform-specific shortcuts belong in adapters;
+screen-based target descriptions and recipe semantics remain portable. Neither
+the 90% coverage estimate nor production reliability has been established.
+
+For longer tasks, explore overlap only after the direct recipe path is validated:
+execute an explicit, independently justified prefix while Flash plans the remainder.
+Example: open Chrome for an explicit request to open Chrome and then compare items.
+Do not let Jev and Flash separately write HID. Track goal/device/session and action
+versions internally; supply completed actions and current observations to the
+planner. Accept only still-applicable remainder steps, reground on the current
+frame, discard obsolete proposals, and do not repeat completed actions. Stop at
+the first choice requiring missing reasoning. This improves time to first useful
+action; it does not guarantee a shorter full task or justify speculative actions.
+
+Next implementation/evaluation order: (1) bounded literal recipe compiler and Jev
+selection, (2) withheld paraphrases, literal-text edge cases, ambiguous/conditional
+requests, negative cases, and true end-state oracles, (3) execution tests with Flash
+disabled to prove zero-call coverage, (4) measure first useful input and full-task
+p50/p95, fallback rate, wrong actions and false completion, (5) background planning
+with cancellation, screen-change, duplicate-action and stale-result tests. Compare
+the existing two-click/typing/field fixtures, then native browser/device paths when
+available. Do not infer a new latency result by subtracting Flash time from an old run.
+
+Primary reference rechecked: https://docs.typesafe.ai/primitives and
+https://docs.typesafe.ai/primitives/choice . These document fixed-choice judgments,
+independent batched questions and composition in application code. Recipe control
+and argument binding above are our proposed architecture, not demonstrated vendor
+capabilities or implemented runtime behavior.
+
+## Current routing and Live evaluation — 2026-10-17
+
+**Decision:** keep **Jev 1.14 + Gemini 3.8 Flash** as the active executor. No
+automatic Lite/Flash/Argon model router is enabled; `.env` was not changed. User
+prioritizes reliability over a small speed gain, permits Lite only for extremely
+basic literal sequences, and wants it removed from automatic routing if Jev
+admits complex tasks. No complex false admission was observed in this pilot,
+but Lite also produced a false completion on a basic task. Keep it experimental.
+B200 remains deferred. Latest model/verification changes are local; no deployment
+or push was performed by this agent. Baseline commit `f45eeb2` appeared during
+this session; preserve it and other contributors' work.
+
+### Measured model/routing comparison
+
+`brain/routing_benchmark.py` freezes a hashed 36-case manifest, with different
+calibration and held-out task families. Calibration used one call/model/case;
+held-out used two repeats. Models saw screenshots and requests only. Exact
+oracles were independently checked with dynamic programming, Decimal, and datetime.
+Configs: 3.5 Flash-Lite/low, 3.8 Flash/low, 4 Argon/medium. All endpoints worked.
+
+- Jev: 32/32 structural labels correct on first pass, repeated choices stable;
+  median request ~0.16 s. It falsely marked four clear menu tasks ambiguous.
+  This is a synthetic pilot, not broad reliability or calibrated correctness.
+- Calibration: Lite 10/18; Flash and Argon 18/18 each.
+- Held-out: Lite **20/36**, Flash **36/36**, Argon **36/36**; these are 18 distinct
+  tasks repeated twice. Mean full response time: **1.46 / 7.11 / 12.35 s**.
+- Frozen candidate: complexity score <1.5 → Lite; <2 → Flash; otherwise Argon;
+  ambiguity/API failure → Flash. This improved calibration mean to 5.45 s, but
+  held-out mean was **7.94 s vs Flash 7.11 s**, about 12% slower, same accuracy.
+  Task-cluster bootstrap 95% interval for router-minus-Flash latency is
+  [-0.54, 2.51] s: no established latency benefit. Do not enable those thresholds.
+- Challenge set: 22 further tasks, two repeats. The original frozen Lite boundary
+  admitted 12/12 literal trials and **0/32 nonliteral/ambiguous trials**. A stricter
+  confidence overlay also admitted zero unsafe tasks but rejected all literal
+  tasks, so it offered no useful coverage. Confidence is not a correctness guarantee.
+
+Evidence: `work/routing-benchmark-v1/`, `work/lite-gate-v1/`. The gate challenge
+uses one request phrasing with the actual requirements on screen, including hidden
+arithmetic, translation, summary, constraints, missing preferences and quoted text.
+No confidence/localization threshold or shared §5 contract was relaxed.
+
+### Full short workflows and fixes
+
+`brain/sequence_benchmark.py` runs real Jev + Gemini plans through screenshot-only
+browser input. Post-run DOM checks are independent. The URL fixture is a local
+form; it is NOT Chrome's native address bar or the actual YouTube site.
+
+- Initial baseline (`work/sequence-comparison-v1/`): Lite 4/6, Flash 6/6.
+- Diagnostic run proved invisible focus checks were causing unnecessary replans.
+- After the plan-contract correction (`work/sequence-comparison-v2/`, 3 runs/case):
+  Lite 8/9, Flash 9/9. Median end-to-end times (including failed runs):
+  two clicks **6.72 / 9.58 s** (Lite 2/3, Flash 3/3); URL typing **4.93 / 6.42 s**
+  (both 3/3); three fields **6.54 / 14.68 s** (both 3/3).
+- One Lite failure falsely declared done after opening the catalog but BEFORE
+  clicking its first result. Jev accepted Lite's weaker completion wording (0.96).
+  This is more serious than a timeout and remains preserved in the reports.
+
+Corrections applied in `brain/agent/jev_flash.py`: batch field click + literal
+input; forbid keyboard focus/caret as visual conditions; permit empty semantic
+plans only for independent completion verification; and judge completion against
+**the original user goal plus the model's proposed evidence**, so a weaker plan
+cannot silently redefine success. Presence/uniqueness/coordinate gates unchanged.
+
+Latest validation:
+- **59 offline tests pass**, compileall and git diff --check pass.
+- Exact false-positive screenshot replay: false done prevented **3/3**; new Jev
+  completion scores 0–0.01 (`work/goal-verification-replay/`). Fixed weak completion
+  proposal was replayed, not a real Gemini generation; no input was executed.
+- Following the goal-verification fix: two clicks **2/2 per model**, Lite median
+  6.04 s, Flash 9.11 s (`work/goal-verification-regression/`).
+- Ambiguous Continue: asked the user, no click, **3.09 s**.
+- Calendar with popup, six exact saved fields and computed end time: **passed in
+  31.37 s**, 5 Flash calls / 14 Jev calls. See `work/goal-verification-calendar/`.
+- These small regression checks do not establish production reliability.
+
+### Gemini Live feasibility
+
+User asked whether Live supports images and whether its protocol is practical.
+Official docs: https://ai.google.dev/gemini-api/docs/models/gemini-3.8-live and
+https://ai.google.dev/gemini-api/docs/live-api/capabilities . It accepts images,
+text/audio/video and supports function calls; strict structured outputs are not
+supported. Response modality is audio; text is available via transcription.
+
+`brain/live_probe.py` now tests an inert screenshot-reading function, without a
+microphone, audio playback or HID. Initial separate video-frame + immediate text
+turn approach failed 3/3 (`work/live-probe-v1/`); do not attribute that alone to
+model vision capability. Sending image + text in ONE client-content turn passed
+**3/3** (`work/live-probe-v2/`), with correct function calls **0.51–0.73 s** after
+sending; fresh connection setup added **0.38–0.55 s**. This establishes small API
+feasibility, not voice quality, warm-session performance or multi-step planning.
+No Live runtime adapter is enabled. Potential next step: evaluate Live as voice,
+acknowledgement and interruption interface that dispatches validated high-level
+tasks to the existing executor. Preserve single-writer HID, cancellation, freshness
+checks, session resumption and deduplication before any real integration.
+
+User-facing combined evidence is exported under
+`/home/mike/Documents/Codex/2026-10-17/con/outputs/`. All benchmark requests were
+synthetic; secrets remain only in the ignored `.env`. Hardware/voice/Pi deployment
+and cross-device limitations from the earlier checkpoint still apply.
+
+## Earlier prototype verification — 2026-10-17 (superseded by study above)
 
 User selected **Jev 1.14 + Gemini 3.8 Flash**, deferred B200, and requested local
 end-to-end testing while mic, speaker and adapter are unavailable. Both keys are
 in the ignored owner-only `.env`; never print or copy them into reports. The first
 Gemini key exhausted its 20-request free quota; user replaced it and subsequent
-live calls worked. No Argon calls were made. User is now considering optional
+live calls worked. At this earlier checkpoint no Argon calls had been made. The user was considering optional
 `ask_argon` for difficult reasoning; this is a recommendation under discussion,
 NOT enabled or implemented. Current routing choices are `execute` and `ask_flash`.
 
@@ -239,3 +443,15 @@ Sources checked:
 - https://benchmarkheaven.com/image-jev-bench#box-track
 - https://github.com/fstandhartinger/jevbench/blob/main/datasets/imagejev-box-v0.1/METHOD.md
 - https://huggingface.co/SeanLiu/Jev-Vision
+
+## Claude review (2026-10-17): open findings, highest priority first
+All 77 tests pass (`.venv/bin/python -m unittest discover -s tests`). No secrets are tracked, and `.env` is ignored.
+
+1. **The Pico firmware doesn't exist yet.** `firmware/pico/` contains only a README. The whole hardware path (`--backend pi`) is blocked on it. The spec is in the earlier "To do next" item 5.
+2. ✅ **Fixed.** **Animated screens can stall the agent** (`brain/agent/loop.py:83`). If the screen changes while the model is thinking, the actions are discarded and the step restarts. On a screen that never stops changing (a playing video, a spinner, an animated ad), every step is discarded until `max_steps` runs out, at roughly 2.5 s of settle timeout plus a model call each time. Fix: after 1–2 discards in a row, act anyway, or compare only the region around the target.
+3. ✅ **Fixed.** **A typed goal can be silently dropped** (`brain/app.py:88-94`). If the target disconnects during `detect_profile`, the code calls `continue`, which discards the goal and goes back to the prompt. Fix: keep the goal and retry once the target reconnects.
+4. ✅ **Fixed.** **Errors are unreadable when debugging.** `loop.py:154` and `app.py:109` replace every exception with a generic message, and no traceback is logged anywhere. Hardware errors (`HIDError`, a capture card that won't open, a bad serial port) contain no secrets but are hidden too. Fix: print `str(exc)` for local errors (HID, capture, serial, `OSError`), and write tracebacks to a log file under `work/`.
+5. **Experiment code is mixed into the runtime package.** `brain/agent/*_experiment.py` and `brain/*_benchmark.py` sit in the shipped package. CLAUDE.md says code quality is judged and to avoid dead code. Move experiments to `bench/` or delete them before submission, so `brain/` holds only the runtime.
+6. **`jev_flash.py` style doesn't match the rest of the codebase.** It uses dense one-liners, no spaces after commas, missing type hints, and imports inside functions. The AI-track judges read the code, so run `ruff format` and add types.
+7. **Most work is uncommitted.** The only commit is `f45eeb2`; many modified and untracked files exist only on this laptop. Commit to a branch (e.g. `agent/prototype`) so work isn't lost and teammates can pull it.
+8. **Low priority:** `jev_flash.py:249` checks whether the fallback screenshot changed by comparing JPEG bytes for exact equality. Real capture-card frames are never byte-identical, so the check always reports "changed." That currently only triggers after a discarded step, where replanning is correct anyway, but compare thumbnails if it's ever used elsewhere.

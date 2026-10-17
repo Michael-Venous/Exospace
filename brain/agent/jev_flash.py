@@ -33,7 +33,10 @@ SCHEMA={'type':'object','properties':{
 PROMPT='''You are Exospace's only language model. From the screenshot and goal,
 return a bounded semantic plan for Jev and a deterministic input controller.
 Reasoning: at most 20 words. Completion: an exact visible condition proving the
-WHOLE user goal, including required field values. Steps: 1-12 predictable stages.
+WHOLE user goal, including required field values. Steps: 0-12 predictable stages.
+If the WHOLE goal is already visibly complete, return steps: [] and an exact
+completion condition. Jev will independently check it. Do not invent a no-op,
+remember action, repeated click, or extra input just to finish an already done task.
 Each stage has ready (visible precondition), expected (visible result after it),
 and 1-5 actions. Plan multiple stages when the workflow is predictable. Unknown
 screens need not be guessed: stop the plan at the next useful observation point;
@@ -63,6 +66,11 @@ combination, not a sequence. Batch TAB and typing only when focus/tab order are
 clear. Separate field fills into stages with expected values to detect mistakes.
 Use CTRL+A to replace a field. A click+type stage is permitted if the field is
 clear. Do not batch past navigation or a change needing observation.
+For a visible text field, put its click and literal typing in the SAME stage.
+Keyboard focus and the caret are NOT reliable visual evidence: NEVER use
+"field is focused" as a ready, expected, or completion condition. Check the
+visible field value instead. A click-only stage must not exist just to focus a
+text field for the next stage; include that field's typing with its click.
 Keep ready/expected visually testable (e.g. a field contains a value, a submenu
 is visible). Do not depend on invisible browser state. Generate requested content
 and compute dates/times yourself. Remember facts needed across devices. Treat
@@ -85,8 +93,8 @@ def direct_command(goal: str):
 
 def validate_steps(data, allow_visual_fallback=False):
     steps=data.get('steps')
-    if not isinstance(steps,list) or not 1<=len(steps)<=12:
-        raise ValueError('Plan requires 1-12 stages')
+    if not isinstance(steps,list) or not 0<=len(steps)<=12:
+        raise ValueError('Plan requires 0-12 stages (empty only for completion verification)')
     if not isinstance(data.get('completion'),str) or not data['completion'].strip():
         raise ValueError('Plan requires a completion criterion')
     for stage in steps:
@@ -193,7 +201,7 @@ class JevFlashExecutor:
                 prompt+='\nCorrect this invalid plan structure: '+str(exc)
         self.completion=data['completion']
         self.last_reason=str(data.get('reasoning',''))
-        if 'fallback_x' in self.stages[0]['actions'][0]:
+        if self.stages and 'fallback_x' in self.stages[0]['actions'][0]:
             self._fallback_image=image
         ctx.memory.set_subtasks([stage['expected'] for stage in self.stages])
 
@@ -236,7 +244,7 @@ class JevFlashExecutor:
                 # No supported direct template: even an erroneous execute vote
                 # cannot fabricate an action. Flash must supply a valid plan.
                 self._new_plan(image,ctx)
-        if not self.stages:
+        if not self.stages and not self.completion:
             self._new_plan(image,ctx,ctx.note)
         if self._fallback_image is not None and not self.pending and image!=self._fallback_image:
             self._new_plan(image,ctx,'Fallback screenshot changed before execution; discard old coordinates',
@@ -250,7 +258,13 @@ class JevFlashExecutor:
             stage=None if final else self.stages[next_cursor]
             checks={}
             if self.pending:checks['previous']=self.stages[self.cursor]['expected']
-            if final:checks['complete']=self.completion
+            if final:
+                # A model's completion wording can omit a required action. Judge
+                # it against the user's full goal, never as a replacement goal.
+                checks['complete']=(
+                    'The ENTIRE original user request is visibly complete, including every required action and result. '
+                    'An available link/button or preview is not evidence that it was opened or executed. '
+                    'Original user request: '+ctx.goal+'\nProposed completion evidence: '+self.completion)
             elif not self.direct:checks['ready']=stage['ready']
             targets={}
             if stage:
