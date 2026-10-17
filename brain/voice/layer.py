@@ -8,7 +8,9 @@ Hold the button (or Space) and speak. Each finished utterance goes to the agent'
 POST /goal; starting to speak while the agent is busy sends POST /stop first, so the
 next utterance becomes a correction ("actually go back"). Narration comes from the
 agent's event stream: questions (including irreversible-action confirmations) are
-always spoken, plan stages briefly, then the result. This process never writes HID.
+always spoken, plan stages briefly, then the result. The page can also show the
+target's live screen, relayed from the agent's GET /screen.jpg. This process never
+writes HID.
 
 Mic audio is relayed to Deepgram server-side, so DEEPGRAM_API_KEY never reaches
 the browser. The page and relay only answer to this machine.
@@ -72,6 +74,14 @@ class Agent:
     def submit(self, text: str) -> None:
         self.post("/goal", {"text": text})
 
+    def screen(self) -> bytes | None:
+        """The latest capture-card frame as JPEG, or None when the agent has none or is down."""
+        try:
+            with urllib.request.urlopen(self.base + "/screen.jpg", timeout=2) as response:
+                return response.read() or None  # 204: no frame yet
+        except OSError:
+            return None
+
     def interrupt(self) -> None:
         if self.busy:
             self.post("/stop", {})
@@ -115,6 +125,12 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
                 self._reply(200, page.encode(), "text/html; charset=utf-8")
             elif self.path == "/narration":
                 self._narration()
+            elif self.path.split("?", 1)[0] == "/screen.jpg":
+                jpeg = agent.screen()
+                if jpeg:
+                    self._reply(200, jpeg, "image/jpeg")
+                else:
+                    self._reply(503, b"no screen yet", "text/plain")
             else:
                 self._reply(404, b"not found")
 
@@ -161,6 +177,7 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 

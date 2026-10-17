@@ -67,6 +67,12 @@ class AgentLinkTests(unittest.TestCase):
         self.assertEqual(lines.get(timeout=2), "This can't be undone. Should I go ahead?")
         self.assertFalse(self.agent.busy)
 
+    def test_screen_is_the_latest_frame(self):
+        self.assertIsNone(self.agent.screen())
+        self.bus.set_frame(b"jpeg")
+        self.assertEqual(self.agent.screen(), b"jpeg")
+        self.assertIsNone(Agent("http://127.0.0.1:9").screen())
+
 
 class PageServerTests(unittest.TestCase):
     def setUp(self):
@@ -98,6 +104,15 @@ class PageServerTests(unittest.TestCase):
     def test_talk_barges_in(self):
         self.assertEqual(self.post("/talk", {}), 200)
         self.agent.interrupt.assert_called_once()
+
+    def test_screen_is_relayed(self):
+        self.agent.screen.return_value = b"jpeg"
+        with urllib.request.urlopen(self.base + "/screen.jpg?t=1", timeout=2) as response:
+            self.assertEqual((response.headers["Content-Type"], response.read()), ("image/jpeg", b"jpeg"))
+        self.agent.screen.return_value = None
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(self.base + "/screen.jpg", timeout=2)
+        self.assertEqual(caught.exception.code, 503)
 
     def test_cross_site_and_empty_requests_are_refused(self):
         self.assertEqual(self.post("/segment", {"text": "send it"}, origin=False), 403)
