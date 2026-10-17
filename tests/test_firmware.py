@@ -66,6 +66,12 @@ class CommandTests(unittest.TestCase):
         self.run_cmd(op="swipe", x1=0, y1=1, x2=2, y2=3, ms=300)
         self.touch.swipe.assert_called_once_with(0, 1, 2, 3, 300, self.commands._should_abort)
 
+    def test_swipe_duration_is_clamped(self):
+        self.run_cmd(op="swipe", x1=0, y1=1, x2=2, y2=3, ms=9999)
+        self.assertEqual(self.touch.swipe.call_args.args[4], 2000)
+        self.run_cmd(op="swipe", x1=0, y1=1, x2=2, y2=3, ms=0)
+        self.assertEqual(self.touch.swipe.call_args.args[4], 1)
+
     def test_aborted_swipe_is_an_error(self):
         self.touch.swipe.return_value = False
         reply = self.run_cmd(op="swipe", x1=0, y1=1, x2=2, y2=3, ms=300)
@@ -85,7 +91,7 @@ class CommandTests(unittest.TestCase):
             {"op": "click", "x": 0, "y": 0, "count": 3},
             {"op": "click", "x": 0, "y": 0, "button": "middle"},
             {"op": "key", "keys": []},
-            {"op": "swipe", "x1": 0, "y1": 0, "x2": 1, "y2": 1, "ms": 9999},
+            {"op": "swipe", "x1": 0, "y1": 0, "x2": 1, "y2": 1, "ms": "slow"},
         ):
             reply = self.run_cmd(**cmd)
             self.assertFalse(reply["ok"], cmd)

@@ -96,8 +96,9 @@ class Commands:
 
     def _swipe(self, cmd) -> None:
         ms = cmd["ms"]
-        if not isinstance(ms, int) or not 0 < ms <= MAX_SWIPE_MS:
-            raise ValueError("ms must be an int in 1-%d" % MAX_SWIPE_MS)
+        if not isinstance(ms, int):
+            raise ValueError("ms must be an int")
+        ms = max(1, min(MAX_SWIPE_MS, ms))  # the Pi's model picks ms; keep it usable
         done = self._touch.swipe(
             _coord(cmd["x1"]), _coord(cmd["y1"]), _coord(cmd["x2"]), _coord(cmd["y2"]),
             ms, self._should_abort,
