@@ -271,6 +271,9 @@ It never writes HID. Its only controls, all through the commit gate (§13):
 | `confirm(action_id, yes/no)` | answers an irreversible-action prompt; bound to that action and generation, so a late "yes" can't approve anything else |
 | `answer(question_id, text)` | replies to a planner `ask_user` |
 
+Built: `brain/voice/layer.py` (see `brain/voice/README.md`). Talk = `submit_segment`, talking while busy =
+`interrupt`, and confirmations/answers are the next utterance (the race executor checks approval with Jev).
+
 Output: it subscribes to the agent **event stream** (`brain/events.py`, shared with the touch
 display) and narrates intent and results ("Opening Janet's email… done"), not keystrokes.
 - Acknowledge within ~300 ms; speech never blocks execution; mute output when the user speaks.

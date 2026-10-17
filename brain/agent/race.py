@@ -70,7 +70,8 @@ class RaceExecutor:
                 self.mode = "none"
                 return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
             utterance, confirmed = pending, True
-        self._settle_speculation()
+        # The single planner worker queues this behind any discarded speculation, so triage
+        # (the fast path) never waits for an old plan to finish.
         self._plan = self._pool.submit(self.planner.next_actions, image, ctx)
         result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, run_id=ctx.run_id))
         if result.irreversible and not confirmed:
