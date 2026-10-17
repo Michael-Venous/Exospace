@@ -4,7 +4,7 @@ import csv
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -16,8 +16,9 @@ from brain.agent.quick import QuickStart
 from brain.cancel import Cancelled, CancelToken
 from brain.controller import Controller, SettleConfig
 from brain.device import detect_profile
+from brain.hid import HIDError
 from brain.telemetry import Telemetry
-from brain.types import Action, DeviceProfile, Rect
+from brain.types import Action, ActionError, DeviceProfile, Rect
 
 
 class Capture:
@@ -220,6 +221,55 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(self.hid.commands, [{"op": "release_all"}])
 
+    def test_restart_resumes_on_the_new_screen(self):
+        def send(command):
+            HID.send(self.hid, command)
+            if command == {"op": "key", "keys": ["ENTER"]}:
+                self.cancel.cancel("target disconnected")
+        self.hid.send = send
+        bios = DeviceProfile("bios", Rect(0, 0, 160, 100), "mouse", 2)
+        reconnect = Mock(side_effect=lambda reason: self.cancel.reset() or bios)
+        self.fast.next_actions.side_effect = [
+            Plan("restart", [Action("skill", name="boot_keys", args={"keys": ["F2"]}),
+                             Action("hotkey", keys=("ENTER",))], []),
+            Plan("in setup", [Action("done", summary="In setup")], []),
+        ]
+        agent = Agent(self.executor, self.controller, self.memory, self.telemetry, reconnect=reconnect)
+        result = agent.run("Open firmware setup", self.profile)
+        self.assertEqual(result.status, "done")
+        reconnect.assert_called_once_with("target disconnected")
+        ctx = self.fast.next_actions.call_args.args[1]
+        self.assertEqual(ctx.profile.os, "bios")
+        self.assertIn("restarted", ctx.note)
+        self.assertEqual(ctx.history[-1], "hotkey(ENTER)")
+
+    def test_waiting_on_a_still_screen_is_not_a_failure(self):
+        self.hid.change = False
+        self.fast.next_actions.side_effect = [Plan("booting", [Action("skill", name="wait")], [])] * 3 + [
+            Plan("booted", [Action("done", summary="Booted")], [])]
+        with patch("brain.controller.WAIT_S", 0.01):
+            result = self.agent().run("Wait for the boot", self.profile)
+        self.assertEqual(result.status, "done")
+
+    def test_firmware_rejects_pointer_input(self):
+        bios = DeviceProfile("bios", Rect(0, 0, 160, 100), "mouse", 1)
+        for action in (Action("right_click", x=.5, y=.5), Action("scroll", dy=3)):
+            with self.subTest(action=action.type), self.assertRaises(ActionError):
+                self.controller.execute(action, bios)
+        self.assertEqual(self.hid.commands, [])
+        with self.assertRaises(ActionError):  # a screen without a menu highlight
+            self.controller.execute(Action("click", x=.5, y=.5), bios)
+        self.assertEqual(self.hid.commands, [{"op": "key", "keys": ["DOWN"]}])
+
+    def test_boot_keys_reach_skill_args(self):
+        for raw in ({"type": "skill", "name": "boot_keys", "keys": ["F2"]}, {"type": "boot_keys", "keys": ["F2"]}):
+            result = parse_plan({"actions": [raw]})
+            self.assertEqual((result.actions[0].name, result.actions[0].args), ("boot_keys", {"name": "", "keys": ["F2"]}))
+
+    def test_key_press_named_key_becomes_hotkey(self):
+        for raw in ({"type": "key", "keys": ["DOWN"]}, {"type": "key", "key": "DOWN"}):
+            self.assertEqual(parse_plan({"actions": [raw]}).actions[0].keys, ("DOWN",))
+
     def test_semantic_executor_checks_covered_result_without_double_counting(self):
         self.hid.change=False
         executor=Mock()
@@ -233,6 +283,89 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status,'done')
         self.assertEqual(executor.acknowledge.call_count,3)
 
+
+class Menu:
+    """Firmware menu video and keyboard: five rows of dense text, the selected row drawn
+    inverse on a solid bar, rows 24 px apart from y=40."""
+
+    def __init__(self, selected, wrap):
+        self.frame = np.full((240, 320, 3), 152, dtype=np.uint8)
+        self.selected, self.wrap, self.commands = selected, wrap, []
+        self.draw()
+
+    def draw(self):
+        self.frame[:] = 152
+        letters = [x for x in range(24, 196) if x % 4 < 2]
+        for row in range(5):
+            top, chosen = 40 + 24 * row, row == self.selected
+            if chosen:
+                self.frame[top:top + 20, 20:200] = 0
+            self.frame[top + 4:top + 16, letters] = 152 if chosen else 0
+
+    def grab(self):
+        return self.frame.copy()
+
+    def signal_present(self):
+        return True
+
+    def is_mounted(self):
+        return True
+
+    def send(self, command):
+        self.commands.append(command)
+        if command["op"] == "key" and command["keys"] in (["DOWN"], ["UP"]):
+            moved = self.selected + (1 if command["keys"] == ["DOWN"] else -1)
+            self.selected = moved % 5 if self.wrap else min(max(moved, 0), 4)
+            self.draw()
+
+
+class FirmwareClickTests(unittest.TestCase):
+    def test_click_moves_the_highlight_to_the_nearest_row(self):
+        bios = DeviceProfile("bios", Rect(0, 0, 320, 240), "mouse", 1)
+        for start, wrap, y, row, keys in (
+            (0, True, 122, 3, "DOWN DOWN DOWN"),
+            (3, True, 74, 1, "DOWN UP UP UP"),
+            (0, True, 86, 2, "DOWN DOWN"),  # between rows 1 and 2, nearer 2
+            (1, False, 228, 4, "DOWN DOWN DOWN DOWN"),  # below the menu: stops at its end
+            (1, True, 228, 4, "DOWN DOWN DOWN DOWN UP"),  # or wraps round and steps back
+        ):
+            with self.subTest(start=start, wrap=wrap, y=y):
+                menu = Menu(start, wrap)
+                controller = Controller(menu, menu, CancelToken(),
+                                        SettleConfig(min_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
+                controller.execute(Action("click", x=.5, y=y / 240), bios)
+                self.assertEqual(menu.selected, row)
+                self.assertEqual(" ".join(c["keys"][0] for c in menu.commands), keys)
+        controller.execute(Action("double_click", x=.5, y=50 / 240), bios)
+        self.assertEqual((menu.selected, menu.commands[-1]), (0, {"op": "key", "keys": ["ENTER"]}))
+
+
+class AwaitTargetTests(unittest.TestCase):
+    def setUp(self):
+        self.capture = Capture()
+        self.hid = HID(self.capture, change=False)
+        self.controller = Controller(self.hid, self.capture, CancelToken())
+        patcher = patch.multiple("brain.controller", BOOT_TAP_S=0.001, BOOT_TAP_AFTER_S=0.02)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_armed_keys_tap_through_one_restart(self):
+        def send(command):
+            HID.send(self.hid, command)
+            if len(self.hid.commands) == 1:
+                raise HIDError("usb not up yet")
+        self.hid.send = send
+        self.controller.arm_boot_keys(["F2"])
+        self.assertTrue(self.controller.await_target(1))
+        self.assertGreater(len(self.hid.commands), 2)
+        self.assertTrue(all(c == {"op": "key", "keys": ["F2"]} for c in self.hid.commands))
+        self.hid.commands.clear()
+        self.assertTrue(self.controller.await_target(1))
+        self.assertEqual(self.hid.commands, [])
+
+    def test_no_video_times_out(self):
+        self.capture.frame[:] = 0
+        self.assertFalse(self.controller.await_target(0.05))
 
 
 if __name__ == "__main__":

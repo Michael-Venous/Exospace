@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 import math
 
+from brain.keys import canonical
 from brain.types import ActionError, DeviceProfile
 
 if TYPE_CHECKING:
@@ -20,6 +21,8 @@ OPEN_APP_KEYS: dict[str, list[str]] = {
     "macos": ["GUI", "SPACE"], "ios": ["GUI", "SPACE"],
     "windows": ["GUI"], "linux": ["GUI"], "chromeos": ["GUI"], "android": ["GUI"],
 }
+# Setup and boot-menu keys only: tapped dozens of times, ENTER or letters could change settings.
+BOOT_KEYS = frozenset({"ESC", "DELETE", *(f"F{n}" for n in range(1, 13))})
 
 
 def run_skill(
@@ -28,8 +31,21 @@ def run_skill(
     profile: DeviceProfile,
     controller: Controller,
 ) -> None:
-    """Open an app through OS search, checking cancellation between stages."""
+    """Run a named skill (hover, wait, boot_keys, open_app), checking cancellation between stages."""
     controller.cancel.check()
+    if name == "wait":
+        controller.wait_for_change()
+        return
+    if name == "boot_keys":
+        keys = args.get("keys") or args.get("name")  # models also put the key in "text"
+        try:
+            keys = [canonical(key) for key in ([keys] if isinstance(keys, str) else keys)]
+        except (AttributeError, TypeError, ValueError):
+            keys = []
+        if not 1 <= len(keys) <= 3 or not set(keys) <= BOOT_KEYS:
+            raise ActionError("boot_keys needs 1-3 keys from ESC, DELETE, F1-F12")
+        controller.arm_boot_keys(keys)
+        return
     if name == "hover":
         if profile.input == "touch":
             raise SkillUnavailable("Hover is unavailable on touch targets")

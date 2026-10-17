@@ -15,7 +15,8 @@ Built at SwampHacks XII (October 16–18, 2026).
 
 - **Pi 5 (brain):** captures the screen, listens to the user, keeps memory, runs the agent loop and controller. It has its own power, so swapping targets never reboots it.
 - **Pico (hands):** shows up on the target as a keyboard, absolute mouse and touchscreen, and runs commands from the Pi.
-- **Models:** Jev 1.14 grounds screen targets; Gemini 3.8 Flash chooses actions, writes content and handles recovery. Both use hosted APIs. No separate slow planner or B200 is required. An isolated local-browser backend supports testing before the hardware adapter is available.
+- **Models:** with a z.ai key, GLM-4.6V-FlashX chooses and aims each step's actions in one hosted call. Without one, Jev 1.14 grounds screen targets and Gemini 3.8 Flash chooses actions, writes content and handles recovery. No separate slow planner or B200 is required. Isolated local-browser, QEMU (UEFI firmware) and Android emulator backends support testing before the hardware adapter is available.
+- **Any screen:** the OS (Windows, macOS, Linux, ChromeOS, Android, iOS, or a BIOS/UEFI screen) is detected from the screen. A run survives restarts, so it can restart a PC into firmware setup and change settings there.
 
 See [PLAN.md](PLAN.md) for the full architecture, shared contracts, owners and checkpoints.
 

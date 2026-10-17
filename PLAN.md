@@ -74,9 +74,14 @@ Model output (any space) → **normalized [0,1] within the active screen rect** 
 {"type":"type_text","text":"..."}
 {"type":"hotkey","keys":["CMD","SPACE"]}
 {"type":"skill","name":"open_app","args":{"name":"Notes"}}
+{"type":"skill","name":"wait"}                 // until the screen changes, at most 10 s
+{"type":"skill","name":"boot_keys","args":{"keys":["F2"]}}  // tap firmware keys through the next restart
 {"type":"scroll","dy":-3}
 {"type":"done"} | {"type":"ask_user","question":"..."} | {"type":"fail","reason":"..."}
 ```
+*(2026-10-17: `wait` and `boot_keys` added by user request for restarts and firmware setup. On a
+`bios` profile a click or double_click moves the menu highlight with arrow keys (double_click
+then presses ENTER); right_click, scroll and swipe are rejected.)*
 
 ### 5.4 Device profile (set on every connect)
 ```json
@@ -96,6 +101,9 @@ Planner gets memory + device profile on every call.
 ### 5.6 Cancellation — ONE path for everything
 Triggers: Pico `unmounted` · capture no-signal/black > 300 ms · button press during execution (barge-in) · 3 failed verifications.
 Effect: Pico `release_all` → drop action queue → (if disconnect) wait for new device → build profile → planner resumes from memory.
+*(2026-10-17: resume implemented. After a disconnect or lost video the run waits up to 180 s for
+live video, tapping armed `boot_keys`, re-detects the profile if the connection changed and
+continues the same goal on the new screen.)*
 
 ### 5.7 Benchmark log (`bench/results.csv`)
 `run_id, config, device, task_id, step, t_capture, t_upload, t_model, t_execute, t_settle, success, total_s`

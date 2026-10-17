@@ -16,6 +16,9 @@ from brain.telemetry import Telemetry
 from brain.types import ActionError, DeviceProfile, TERMINAL_ACTIONS
 from brain.verification import visibly_changed
 
+# A run survives these (PLAN.md §5.6): the target restarted, was replugged or blanked.
+RESUMABLE = frozenset({"target disconnected", "video lost"})
+
 
 @dataclass(frozen=True)
 class TaskResult:
@@ -28,11 +31,15 @@ class TaskResult:
 class Agent:
     def __init__(self, executor: Executor, controller: Controller, memory: Memory,
                  telemetry: Telemetry, max_steps: int = 30,
-                 on_status: Callable[[str], None] = lambda message: None) -> None:
+                 on_status: Callable[[str], None] = lambda message: None,
+                 reconnect: Callable[[str], DeviceProfile | None] | None = None) -> None:
+        """`reconnect(reason)` waits for the target to return and gives its new profile
+        (None if unchanged), or raises Cancelled; without it a disconnect ends the run."""
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
+        self.reconnect = reconnect
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
@@ -91,6 +98,7 @@ class Agent:
                         token.check()
                         if action.type == "remember":
                             self.memory.remember(action.key, action.value)
+                            history.append(action.brief())
                         elif action.type in TERMINAL_ACTIONS:
                             if action.type == "done" and changed_input:
                                 notes.append("Verify the result on a fresh screen before returning done.")
@@ -101,15 +109,16 @@ class Agent:
                             stamp = time.monotonic()
                             try:
                                 ctl.execute(action, profile)
-                                changed_input = True
+                                # Waiting sends no input, so an unchanged screen is no failure.
+                                changed_input = changed_input or (action.type, action.name) != ("skill", "wait")
                             except ActionError as exc:
                                 notes.append(f"Rejected action: {exc}. Try another action.")
                                 action_failed = True
                                 break
                             finally:
                                 times["t_execute"] += time.monotonic() - stamp
+                            history.append(action.brief())  # before settling: a restart lands there
                             times["t_settle"] += ctl.wait_settled()
-                        history.append(action.brief())
                     if terminal is not None:
                         status = terminal.type
                         message = terminal.summary or terminal.question or terminal.reason or status
@@ -144,6 +153,12 @@ class Agent:
                     else:
                         failures, recovery_used = 0, False
                     note = "\n".join(notes)
+                except Cancelled as exc:
+                    if self.reconnect is None or exc.reason not in RESUMABLE:
+                        raise
+                    self.on_status(f"{exc.reason.capitalize()}; waiting for it to come back…")
+                    profile = self.reconnect(exc.reason) or profile
+                    note = "The target restarted, reconnected or blanked; continue from this screen."
                 finally:
                     self.telemetry.step(run_id, profile.os, task_id, step, **times)
         except KeyboardInterrupt:

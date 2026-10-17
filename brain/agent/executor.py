@@ -8,7 +8,7 @@ from typing import Any, Protocol, cast
 
 from brain.agent.memory import Memory
 from brain.agent.model import GeminiJSON, ZaiJSON, language_model
-from brain.agent.prompts import OS_HINTS, OS_PROMPT, OS_SCHEMA, PLAN_SCHEMA, SYSTEM_PROMPT, USER_TEMPLATE
+from brain.agent.prompts import OS_HINTS, OS_PROMPT, OS_SCHEMA, PLAN_SCHEMA, SKILLS, SYSTEM_PROMPT, USER_TEMPLATE
 from brain.cancel import CancelToken
 from brain.config import Config
 from brain.types import OS_NAMES, Action, ActionError, DeviceProfile, OSName
@@ -132,6 +132,10 @@ def parse_plan(data: dict[str, Any]) -> Plan:
 
 
 def _to_contract(raw: dict[str, Any]) -> dict[str, Any]:
+    if raw.get("type") in SKILLS:  # GLM often names the skill as the action type
+        raw = {**raw, "type": "skill", "name": raw["type"]}
+    elif raw.get("type") == "key":  # and a key press as "key"
+        raw = {**raw, "type": "hotkey", "keys": raw.get("keys") or [raw.get("key", "")]}
     out: dict[str, Any] = {"type": raw.get("type")}
     for axis in ("x", "y", "x2", "y2"):
         if axis in raw:
@@ -147,6 +151,8 @@ def _to_contract(raw: dict[str, Any]) -> dict[str, Any]:
     if kind == "skill":
         out["name"] = raw.get("name", "")
         out["args"] = {"name": raw.get("text", "")}
+        if "keys" in raw:
+            out["args"]["keys"] = raw["keys"]  # boot_keys
     elif kind == "remember":
         out["key"] = raw.get("key", "")
         out["value"] = raw.get("text", "")

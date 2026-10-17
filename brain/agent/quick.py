@@ -30,6 +30,8 @@ def quick_actions(goal: str, os: OSName) -> list[Action]:
     An app launch ends the run: what comes next depends on what the app shows."""
     actions: list[Action] = []
     rest = goal.strip()
+    if "\n" in rest:  # a correction ("...\nUser correction: ...") can change the first command
+        return []
     while rest:
         action, end = _clause(rest, os)
         if action is None:

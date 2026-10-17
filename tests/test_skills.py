@@ -49,6 +49,21 @@ class SkillTests(unittest.TestCase):
                 run_skill("open_app", {"name": name}, self.profile("macos"), self.controller)
         self.assertEqual(self.controller.method_calls, [])
 
+    def test_boot_keys_arm_only_firmware_keys(self):
+        for args, keys in (({"name": "", "keys": ["f2", "Del"]}, ["F2", "DELETE"]), ({"name": "esc"}, ["ESC"])):
+            with self.subTest(args=args):
+                run_skill("boot_keys", args, self.profile("windows"), self.controller)
+                self.controller.arm_boot_keys.assert_called_with(keys)
+        self.controller.reset_mock()
+        for keys in (["ENTER"], ["A"], [], ["F1", "F2", "F10", "ESC"], None, [5], "F2, DEL"):
+            with self.subTest(keys=keys), self.assertRaises(ActionError):
+                run_skill("boot_keys", {"name": "", "keys": keys}, self.profile("windows"), self.controller)
+        self.assertEqual(self.controller.method_calls, [])
+
+    def test_wait_only_waits(self):
+        run_skill("wait", {"name": ""}, self.profile("bios"), self.controller)
+        self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change()])
+
     def test_cancel_after_search_prevents_typing(self):
         self.controller.wait_settled.side_effect = lambda: self.controller.cancel.cancel("barge-in")
         with self.assertRaises(Cancelled):

@@ -6,7 +6,7 @@ import argparse
 from contextlib import ExitStack
 
 from brain.agent.factory import build_executor
-from brain.agent.loop import Agent
+from brain.agent.loop import RESUMABLE, Agent
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled, CancelToken
 from brain.capture import ScreenCapture, V4L2Capture
@@ -16,12 +16,14 @@ from brain.device import detect_profile
 from brain.hid import LocalHID, PicoHID
 from brain.monitor import ConnectionMonitor
 from brain.telemetry import Telemetry
-from brain.types import OS_NAMES
+from brain.types import OS_NAMES, DeviceProfile
+
+RECONNECT_S = 180.0  # restarting a PC into firmware setup can take minutes
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", choices=["local", "pi", "browser"], default="pi")
+    parser.add_argument("--backend", choices=["local", "pi", "browser", "qemu", "android"], default="pi")
     parser.add_argument("--url", help="Browser target URL (isolated profile)")
     parser.add_argument("--headed", action="store_true", help="Show browser target")
     parser.add_argument("--os", choices=[os for os in OS_NAMES if os != "unknown"])
@@ -49,6 +51,12 @@ def main(argv: list[str] | None = None) -> int:
                 if not args.url:
                     parser.error("--backend browser requires --url")
                 capture = hid = BrowserTarget(args.url, headed=args.headed)
+            elif args.backend == "qemu":
+                from brain.qemu import QemuTarget
+                capture = hid = QemuTarget()
+            elif args.backend == "android":
+                from brain.android import AndroidTarget
+                capture = hid = AndroidTarget()
             else:
                 capture = ScreenCapture()
                 cleanup.callback(capture.close)
@@ -58,10 +66,35 @@ def main(argv: list[str] | None = None) -> int:
             cleanup.callback(controller.release_all)
             monitor = ConnectionMonitor(capture, hid, token.cancel)
             cleanup.callback(monitor.close)
-            agent = Agent(executor, controller, Memory.load(cfg.session_path),
-                          Telemetry(cfg.bench_csv, args.config_name or cfg.executor), args.max_steps, status)
-            profile = None
+            profile: DeviceProfile | None = None
             generation = -1
+
+            def reconnect(reason: str) -> DeviceProfile | None:
+                """Resume a run once the target is back (PLAN.md §5.6); re-detect a new connection."""
+                nonlocal profile, generation
+                while True:
+                    if not controller.await_target(RECONNECT_S):
+                        raise Cancelled("target did not come back")
+                    token.reset()
+                    current = monitor.generation
+                    if current == generation:
+                        return None
+                    try:
+                        profile = detect_profile(capture, executor, args.os, cancel=token)
+                    except Cancelled as exc:
+                        if exc.reason not in RESUMABLE:
+                            raise
+                        continue  # it restarted again while coming back
+                    except (RuntimeError, ValueError):  # e.g. an unclassifiable boot logo
+                        generation = current
+                        return None  # keep the OS; the model still sees the new screen
+                    generation = current
+                    status(f"Target: {profile.os} ({profile.input})")
+                    return profile
+
+            agent = Agent(executor, controller, Memory.load(cfg.session_path),
+                          Telemetry(cfg.bench_csv, args.config_name or cfg.executor), args.max_steps, status,
+                          reconnect)
             previous_goal = ""
             correction = False
             status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")

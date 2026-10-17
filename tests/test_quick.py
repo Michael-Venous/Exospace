@@ -40,7 +40,8 @@ class QuickActionTests(unittest.TestCase):
                      "open the file menu", "open my documents", "open it", "press enter twice",
                      "press the button", "press enter to submit", "press and hold power",
                      "press a b", "type hello", "scroll down to the bottom", "Create the event",
-                     "open four word app name here"):
+                     "open four word app name here",
+                     "open calculator and type 2+2\nUser correction: I meant calendar"):
             with self.subTest(goal=goal):
                 self.assertEqual(quick_actions(goal, "windows"), [])
 

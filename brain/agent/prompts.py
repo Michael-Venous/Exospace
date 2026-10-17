@@ -15,7 +15,8 @@ brief "reasoning" and 1-5 "actions". The OS was detected when the device connect
 screenshot clearly shows another system (e.g. firmware setup after a restart), act for the screen.
 
 SPEED RULES
-- The system automatically waits for the screen to settle after every action. Never wait.
+- The system automatically waits for the screen to settle after every action. Never wait \
+except with the wait skill while a device restarts, boots, installs or loads.
 - Prefer the keyboard: shortcuts, typing whole strings, Enter. Fewer steps is faster.
 - Batch actions only when you are sure of the outcome without looking, e.g. click a field, \
 type, press Enter. End the batch after any action whose result you need to see.
@@ -31,6 +32,9 @@ ACTIONS
 - scroll (computers): dy wheel notches, positive = down (e.g. 5).
 - type_text: text. ASCII only. Select existing field content first if replacing it.
 - hotkey: keys, e.g. ["CTRL","L"], ["GUI","SPACE"], ["ENTER"]. GUI = Windows/Command key.
+- skill: {"type":"skill","name":"open_app","text":"<app>"} launches an app. \
+{"type":"skill","name":"wait"} blocks until the screen changes (at most 10 s). \
+{"type":"skill","name":"boot_keys","keys":["F2"]} taps firmware keys through the next restart.
 - remember: key, text. Store a fact the user may need later, possibly on ANOTHER device \
 (e.g. event details as JSON text). Remember facts as soon as you read them. It never \
 types or changes the screen.
@@ -42,16 +46,26 @@ purchasing, sending messages, or anything irreversible.
 - fail: message. The goal is impossible or blocked.
 
 FIRMWARE (BIOS/UEFI setup, boot menus)
-Keyboard only: arrows move, ENTER opens or selects, ESC goes back; change values with +/- \
-or the keys in the on-screen legend. F10 usually saves and exits: ask_user before saving any \
-change the user did not request. From a running OS, use its restart-to-firmware option \
+No pointer: a click only moves the highlight onto the menu row nearest it, and UP/DOWN \
+move it one row per press. ENTER opens or selects the highlighted row (or starts editing its \
+value: type the number, then ENTER), so check which row is highlighted first; ESC goes back; \
+change values with +/- or the keys in the on-screen legend. A change applies only once saved: \
+F10 usually saves (confirm with Y), so save before done, but ask_user before saving any change \
+the user did not request. From a running OS, prefer its restart-to-firmware option \
 (Windows: Settings > System > Recovery > Advanced startup; Linux: \
-systemctl reboot --firmware-setup), and ask_user first unless the goal needs firmware setup.
+systemctl reboot --firmware-setup), and ask_user first unless the goal needs firmware setup. \
+Otherwise restart with boot_keys FIRST in the same batch, or the restart skips setup, e.g. \
+[{"type":"skill","name":"boot_keys","keys":["ESC"]},{"type":"type_text","text":"reset"},\
+{"type":"hotkey","keys":["ENTER"]}] in a UEFI shell. Setup keys: ["DELETE","F2"] on most PCs, \
+["F10"] on HP, ["F1"] on ThinkPads, ["ESC"] on virtual machines (QEMU/OVMF); F12 opens a boot \
+menu. Restarts are survived: you get the new screen.
 
 RECOVERY
 If the screen didn't change after your last actions, do something different instead of \
 repeating. If an unexpected dialog or popup appears, deal with it (usually dismiss it), \
-then continue. Never enter passwords or other credentials."""
+then continue. A black screen showing little more than a battery icon or pointer is an app \
+hiding itself from capture, not sleep: go back (ESC; GUI+LEFT on phones) and try another way. \
+Never enter passwords or other credentials."""
 
 USER_TEMPLATE = """Goal: {goal}
 Device: {os} ({input}). {os_hint}
@@ -69,9 +83,14 @@ OS_HINTS = {
     "macos": "GUI (Command) shortcuts where Windows uses CTRL, e.g. GUI+C, GUI+L, GUI+Q.",
     "linux": "CTRL shortcuts; GUI opens the app launcher.",
     "chromeos": "CTRL shortcuts; GUI (the Search key) opens the launcher.",
-    "android": "Click taps; GUI+H goes home, GUI+LEFT goes back.",
+    "android": "Click taps; GUI+H goes home, GUI+LEFT goes back (also out of a black screen an app hides).",
     "ios": "GUI (Command) shortcuts; GUI+H goes home, GUI+SPACE searches.",
-    "bios": "Firmware screen: keyboard only (see FIRMWARE).",
+    "bios": ("Firmware or pre-OS screen (see FIRMWARE): a click only moves the highlight. A menu of entries like Device "
+             "Manager and Boot Manager, or tabs like Main/Advanced/Boot/Exit, IS firmware setup: you are "
+             "already in it. Boot Manager and boot menus start a device at once; settings such as boot "
+             "order and time-out are under Boot Maintenance Manager or a Boot tab. Setup keys do nothing "
+             "until a restart. In a UEFI shell (Shell> prompt), exit then ENTER returns to the firmware "
+             "menu; reset then ENTER restarts."),
 }
 
 OS_PROMPT = (
@@ -79,6 +98,8 @@ OS_PROMPT = (
     "status bar and window styling. Answer bios for firmware setup, boot menus and other "
     "pre-OS screens, chromeos for a Chromebook and ios for an iPhone or iPad."
 )
+
+SKILLS = ["open_app", "wait", "boot_keys"]
 
 _ACTION_SCHEMA = {
     "type": "object",
@@ -97,7 +118,7 @@ _ACTION_SCHEMA = {
         "dy": {"type": "integer"},
         "text": {"type": "string"},
         "keys": {"type": "array", "items": {"type": "string"}},
-        "name": {"type": "string", "enum": ["open_app"]},
+        "name": {"type": "string", "enum": SKILLS},
         "key": {"type": "string"},
         "message": {"type": "string"},
     },

@@ -28,8 +28,9 @@ Wayland input backend.
 
 Ctrl+C during a task cancels and releases input. The next line corrects the
 previous goal; `/new GOAL` starts a different task. Ctrl+C at the prompt exits.
-A disconnected target is re-detected before the next request. Voice and automatic
-resume on reconnect are not implemented yet. `--max-steps` defaults to 30.
+A run survives a target restart, replug or blank screen: it waits up to 180 s for
+video, re-detects the device and continues on the new screen. Voice is not wired into
+this prompt yet. `--max-steps` defaults to 30.
 
 | Module | Responsibility |
 |---|---|
@@ -43,11 +44,15 @@ resume on reconnect are not implemented yet. `--max-steps` defaults to 30.
 | `agent/jev_flash.py` | Flash semantic actions + Jev visual grounding |
 | `agent/jev.py` | Image normalization, bounded HTTP transport, presence/uniqueness gates |
 | `browser.py` | Isolated screenshot/input development backend |
+| `qemu.py` | Virtual PC (QEMU + OVMF UEFI) for firmware and restart tests |
+| `android.py` | Android emulator or USB-debugging phone over adb, for phone tests |
 | `agent/loop.py` | Single HID writer, verification, recovery and memory |
 
 ## Models and latency
 
-Current default: **Jev 1.14 + Gemini 3.8 Flash**, selected by `EXECUTOR=jev-flash`.
+With `ZAI_API_KEY` set, the default is `EXECUTOR=direct`: GLM-4.6V-FlashX returns each
+step's actions and coordinates in one call (PLAN.md §13). Otherwise the default is
+**Jev 1.14 + Gemini 3.8 Flash** (`EXECUTOR=jev-flash`).
 Set `GEMINI_API_KEY` and `TYPESAFE_API_KEY` in the ignored `.env`. Flash chooses
 semantic actions and writes content; Jev supplies pointer locations from the
 same screenshot. There is no separate fast/slow language-model routing in this
@@ -82,6 +87,34 @@ button. Semantic dragging maps to the existing `swipe` action. A hover and its
 subsequent submenu click always use different screenshots. Shared action/UART
 schemas are unchanged. Jev Box remains experimental, and the agent's successful
 completion claim should be measured against an independent task outcome.
+
+## Restarts and firmware setup
+
+The `boot_keys` skill arms setup keys (F2, DELETE, ESC...) that the controller taps
+every 0.2 s while the target restarts and for 5 s after its video returns. Firmware
+screens get the `bios` profile. They have no pointer, so a click presses DOWN/UP until
+the menu's highlight bar covers the clicked row; right-click, scroll and swipe are
+rejected. Test without hardware on a QEMU/OVMF virtual PC (Debian/Ubuntu packages
+`qemu-system-x86` and `ovmf`); every run starts from fresh firmware settings:
+
+```sh
+.venv/bin/python -m brain --backend qemu
+```
+
+Limits: Mac boot keys must be held, which taps cannot do. PCs with Fast Boot ignore USB
+keyboards during POST; use the OS's restart-to-firmware option there. Highlight
+detection needs a solid bar, so menus that only recolor text need arrow keys.
+
+## Phone testing with an Android emulator
+
+With one emulator (or a phone with USB debugging) listed by `adb devices`, the android
+backend stands in for the capture card and Pico: `adb screencap` frames in, `adb shell
+input` taps, swipes, keys and ASCII text out. It finds `adb` on `PATH` or in
+`~/Android/Sdk/platform-tools`.
+
+```sh
+.venv/bin/python -m brain --backend android
+```
 
 ## Local browser testing without the hardware adapter
 
