@@ -2,9 +2,11 @@
 """Voice demo at http://127.0.0.1:8766: speak, Deepgram transcribes, Jev pulls out the app name,
 and the OS launcher's own search opens it, checked on screen by Jev. No installed-app list."""
 import asyncio
+import glob
 import json
 import re
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -15,20 +17,21 @@ from pathlib import Path
 
 import gi
 import websockets
-from Xlib import X, XK, display
-from Xlib.ext import xtest
 
 gi.require_version("Gdk", "3.0")
 from gi.repository import Gdk, GdkPixbuf  # noqa: E402
 
-ENV = Path(__file__).resolve().parents[2] / ".env"
+REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO))  # python3 -I leaves the repo off the import path
+from brain.hid import HIDError, PicoHID  # noqa: E402
+
+ENV = REPO / ".env"
 PORT = 8766
 WS_PORT = 8767
 DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=300&smart_format=true"
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
-# Cinnamon ignores a faked Super press (the Pico is a real USB keyboard, so the box is fine). To test on this laptop,
-# bind a second menu shortcut such as Ctrl+Esc and put it here; until then the launcher check stops before typing.
-LAUNCHER = ("Super_L",)
+# The Pico's command port from brain/voice/pico/boot.py; if00 is its REPL console. Cinnamon ignores faked Super, not the Pico's.
+PICO_PORTS = "/dev/serial/by-id/usb-Raspberry_Pi_Pico*-if02"
 
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Exospace Voice</title>
@@ -124,7 +127,6 @@ def env(name: str) -> str:
 
 KEY = env("TYPESAFE_API_KEY")
 DG_KEY = env("DEEPGRAM_API_KEY")
-DPY = display.Display()
 ACTIONS = {"open_app": "Open or launch an app or program.",
            "open_tab": "Open a new tab in the Chrome browser that is already open.",
            "none_here": "Anything else, or the request is unclear."}
@@ -152,28 +154,21 @@ def jev(questions: dict, state: dict, frame: bytes | None = None) -> tuple[dict,
 
 
 def screenshot() -> bytes:
-    """The primary monitor, where Cinnamon's menu opens, as PNG at its logical size."""
-    g = Gdk.Display.get_default().get_primary_monitor().get_geometry()
-    shot = Gdk.pixbuf_get_from_window(Gdk.get_default_root_window(), g.x, g.y, g.width, g.height)
-    return shot.scale_simple(g.width, g.height, GdkPixbuf.InterpType.BILINEAR).save_to_bufferv("png", [], [])[1]
-
-
-def press(*keys: str) -> None:
-    """Press keysyms together, then release, like the Pico's `key` op; XTest stands in for its USB keyboard."""
-    codes = [DPY.keysym_to_keycode(XK.string_to_keysym(k)) for k in keys]
-    for c in codes:
-        xtest.fake_input(DPY, X.KeyPress, c)
-    DPY.sync()
-    time.sleep(0.01)
-    for c in reversed(codes):
-        xtest.fake_input(DPY, X.KeyRelease, c)
-    DPY.sync()
+    """Every monitor as one PNG at logical size; on this Zenbook Duo the menu opens on the lower screen."""
+    root = Gdk.get_default_root_window()
+    # The root window reports device pixels; capture takes logical ones.
+    w, h = root.get_width() // root.get_scale_factor(), root.get_height() // root.get_scale_factor()
+    shot = Gdk.pixbuf_get_from_window(root, 0, 0, w, h)
+    # Jev rejects 1280x1600 and larger ("Invalid image dimensions"); one 1440x900 screen's worth of pixels passes.
+    f = min(1, (1440 * 900 / (w * h)) ** 0.5)
+    return shot.scale_simple(round(w * f), round(h * f), GdkPixbuf.InterpType.BILINEAR).save_to_bufferv("png", [], [])[1]
 
 
 def open_app(name: str) -> dict:
     """PLAN §6 keyboard skill: open the OS launcher, type the name, Jev checks the top result, Enter, Jev verifies."""
     # Only letters, digits and spaces are typed, so spoken text can't become a shortcut or a command.
-    query = re.sub(r"[^a-z0-9 ]", "", name.lower())[:40].strip()
+    # 32 characters is the Pico `type` op's limit (PLAN §5.1).
+    query = re.sub(r"[^a-z0-9 ]", "", name.lower())[:32].strip()
     steps = []
 
     def check(label: str, question: str, wait: float) -> bool:
@@ -184,20 +179,26 @@ def open_app(name: str) -> dict:
 
     if not query:
         return {"steps": ["Nothing typeable in the name"]}
-    press(*LAUNCHER)
-    # Typing before the launcher is confirmed open would type into whatever window has focus.
-    if not check("Launcher open?", "Is an app launcher or start menu with a search box open in `screen`?", 0.4):
-        return {"steps": steps}
-    for ch in query:
-        press("space" if ch == " " else ch)
-    if not check(f"Typed '{query}', top result matches?",
-                 f"In `screen`, does the highlighted top result of the app menu search match what the user asked "
-                 f"to open: {name!r}?", 0.4):
-        press("Escape")
-        return {"steps": steps}
-    press("Return")
-    check("Opened?", f"Is the app the user asked for with {name!r} open in `screen`?", 1.5)
-    return {"steps": steps, "opened": True}
+    if not (ports := glob.glob(PICO_PORTS)):
+        return {"steps": ["Pico not plugged in"]}
+    # Opened per command so unplugging and replugging the Pico between commands just works.
+    pico = PicoHID(ports[0], 115200)
+    try:
+        pico.send({"op": "key", "keys": ["GUI"]})
+        # Typing before the launcher is confirmed open would type into whatever window has focus.
+        if not check("Launcher open?", "Is an app launcher or start menu with a search box open in `screen`?", 0.4):
+            return {"steps": steps}
+        pico.send({"op": "type", "text": query})
+        if not check(f"Typed '{query}', top result matches?",
+                     f"In `screen`, does the highlighted top result of the app menu search match what the user "
+                     f"asked to open: {name!r}?", 0.4):
+            pico.send({"op": "key", "keys": ["ESC"]})
+            return {"steps": steps}
+        pico.send({"op": "key", "keys": ["ENTER"]})
+        check("Opened?", f"Is the app the user asked for with {name!r} open in `screen`?", 1.5)
+        return {"steps": steps, "opened": True}
+    finally:
+        pico.close()
 
 
 def handle(text: str) -> dict:
@@ -271,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
             result = handle(text)
         except urllib.error.HTTPError as e:
             result = {"error": f"HTTP {e.code}: {e.read().decode(errors='replace')[:300]}"}
-        except OSError as e:
+        except (OSError, HIDError) as e:
             result = {"error": str(e)}
         self.reply(200, "application/json", json.dumps(result).encode())
 
