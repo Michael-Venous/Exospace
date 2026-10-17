@@ -75,6 +75,8 @@ class ZaiTests(unittest.TestCase):
     def _reply(self, request):
         self.requests.append(request)
         status, content = self.replies.pop(0)
+        if isinstance(content, Exception):
+            raise content
         return httpx.Response(status, json={"choices": [{"message": {"content": content}}]})
 
     def test_request_shape_fenced_reply_and_private_log(self):
@@ -112,6 +114,15 @@ class ZaiTests(unittest.TestCase):
         with self.assertRaises(httpx.HTTPStatusError):
             self.client.generate(b"i", "g", "s", {}, role="fast")
         self.assertEqual(len(self.requests), 3)
+
+    def test_dropped_connection_is_retried_once(self):
+        self.replies += [(0, httpx.ReadTimeout("hung")), (200, '{"ok": 1}'),
+                         (0, httpx.ConnectError("down")), (0, httpx.ConnectError("down"))]
+        with patch.object(self.cancel, "sleep"):
+            self.assertEqual(self.client.generate(b"i", "g", "s", {}, role="fast"), {"ok": 1})
+            with self.assertRaises(httpx.ConnectError):
+                self.client.generate(b"i", "g", "s", {}, role="fast")
+        self.assertEqual(len(self.requests), 4)
 
     def test_shape_sketches_schema_without_valid_json(self):
         schema = {"type": "object", "required": ["a"], "properties": {

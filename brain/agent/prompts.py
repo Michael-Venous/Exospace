@@ -49,9 +49,8 @@ FIRMWARE (BIOS/UEFI setup, boot menus)
 No pointer: a click only moves the highlight onto the menu row nearest it, and UP/DOWN \
 move it one row per press. ENTER opens or selects the highlighted row (or starts editing its \
 value: type the number, then ENTER), so check which row is highlighted first; ESC goes back; \
-change values with +/- or the keys in the on-screen legend. A change applies only once saved: \
-F10 usually saves (confirm with Y), so save before done, but ask_user before saving any change \
-the user did not request. From a running OS, prefer its restart-to-firmware option \
+change values with +/- or the keys in the on-screen legend. F10 usually saves and exits: \
+ask_user before saving any change the user did not request. From a running OS, prefer its restart-to-firmware option \
 (Windows: Settings > System > Recovery > Advanced startup; Linux: \
 systemctl reboot --firmware-setup), and ask_user first unless the goal needs firmware setup. \
 Otherwise restart with boot_keys FIRST in the same batch, or the restart skips setup, e.g. \
@@ -88,9 +87,10 @@ OS_HINTS = {
     "bios": ("Firmware or pre-OS screen (see FIRMWARE): a click only moves the highlight. A menu of entries like Device "
              "Manager and Boot Manager, or tabs like Main/Advanced/Boot/Exit, IS firmware setup: you are "
              "already in it. Boot Manager and boot menus start a device at once; settings such as boot "
-             "order and time-out are under Boot Maintenance Manager or a Boot tab. Setup keys do nothing "
-             "until a restart. In a UEFI shell (Shell> prompt), exit then ENTER returns to the firmware "
-             "menu; reset then ENTER restarts."),
+             "order and time-out are under Boot Maintenance Manager or a Boot tab. A change is lost unless "
+             "saved (F10, then Y): never done while 'Configuration changed' or a like notice shows. "
+             "Setup keys do nothing until a restart. In a UEFI shell (Shell> prompt), exit then ENTER "
+             "returns to the firmware menu; reset then ENTER restarts."),
 }
 
 OS_PROMPT = (

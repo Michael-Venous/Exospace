@@ -148,6 +148,10 @@ class ZaiJSON:
                 error = type(exc).__name__
                 if attempt == 2:
                     raise ValueError("model reply was not a usable JSON object") from exc
+            except httpx.TransportError as exc:  # a hung or dropped call; 4 of ~680 ended whole runs
+                error = type(exc).__name__
+                if attempt == 2:
+                    raise
             except BaseException as exc:
                 error = type(exc).__name__
                 raise
