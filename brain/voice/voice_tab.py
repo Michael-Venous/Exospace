@@ -49,6 +49,9 @@ body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:c
 #log{width:min(640px,90vw);margin:0;padding:0;list-style:none;text-align:left;font-size:17px}
 #log>li{padding:12px 0;border-top:1px solid #e8e8ed}
 #log .why li{padding:3px 0;white-space:pre-wrap}
+#log .why details ul{margin:2px 0 6px 18px;padding:0;list-style:none}
+#log .why summary{cursor:pointer;color:#1d1d1f}
+#log .why summary:hover{color:#7d93ff}
 #log .said{color:#86868b}
 #log .did{display:inline}
 #log .did::before{content:"✓ ";color:#1a7f37}
@@ -123,6 +126,14 @@ function answerRows(id, a, words) {
   }
   return [line("", `${id} · ${JSON.stringify(a)}`)];
 }
+// The one-line gist of a call's answers, shown while it's collapsed.
+function headline(answers) {
+  const f = n => typeof n === "number" ? n.toFixed(2) : "—";
+  return Object.entries(answers).map(([id, a]) =>
+    a.type === "noul" ? `${id} ${f(a.noul)}`
+    : a.type === "choice" ? `${id} ${a.choice} ${f(a.confidence)}`
+    : a.type === "box" || a.type === "score" ? `${id} ${a.type} ${f(a.confidence)}` : id).join(" · ");
+}
 function callRows(calls, text) {
   // The server names word options w0, w1, ... in transcript order (Python's \\w+).
   const words = Object.fromEntries((text.match(/[\\p{L}\\p{N}_]+/gu) || []).map((w, i) => ["w" + i, w]));
@@ -131,11 +142,16 @@ function callRows(calls, text) {
   for (const c of calls) {
     const u = c.usage || {}, input = u.input_tokens || 0;
     tokens += input; ms += c.ms;
-    const head = line("", `${c.label} — ${c.model || "?"} · ${c.ms} ms · ${input} in / ${u.output_tokens || 0} out tokens`
-      + (c.image ? ` · image ${c.image[0]}×${c.image[1]}` : ""));
-    head.style.cssText = "margin-top:8px;color:#1d1d1f;font-weight:600";
-    rows.push(head);
-    for (const [id, a] of Object.entries(c.answers || {})) rows.push(...answerRows(id, a, words));
+    // Each call is collapsed to one line; click it to see every answer field.
+    const item = document.createElement("li"), box = document.createElement("details");
+    const summary = document.createElement("summary"), fields = document.createElement("ul");
+    summary.textContent = `${c.label} — ${c.ms} ms · ${headline(c.answers || {})}`;
+    fields.append(line("", `${c.model || "?"} · ${input} in / ${u.output_tokens || 0} out tokens`
+      + (c.image ? ` · image ${c.image[0]}×${c.image[1]}` : "")));
+    for (const [id, a] of Object.entries(c.answers || {})) fields.append(...answerRows(id, a, words));
+    box.append(summary, fields);
+    item.append(box);
+    rows.push(item);
   }
   if (calls.length) {
     const total = line("", `${calls.length} Jev calls · ${ms} ms in Jev · ${tokens} input tokens · ≈ $${(tokens * PRICE_PER_TOKEN).toFixed(6)}`);
