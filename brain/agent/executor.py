@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from typing import Any, Protocol, cast
 
 from brain.agent.memory import Memory
-from brain.agent.model import language_model
-from brain.agent.prompts import OS_PROMPT, OS_SCHEMA, PLAN_SCHEMA, SYSTEM_PROMPT, USER_TEMPLATE
+from brain.agent.model import GeminiJSON, ZaiJSON, language_model
+from brain.agent.prompts import OS_HINTS, OS_PROMPT, OS_SCHEMA, PLAN_SCHEMA, SYSTEM_PROMPT, USER_TEMPLATE
 from brain.cancel import CancelToken
 from brain.config import Config
-from brain.types import Action, ActionError, DeviceProfile, OSName
+from brain.types import OS_NAMES, Action, ActionError, DeviceProfile, OSName
 
 
 @dataclass(frozen=True)
@@ -82,19 +82,24 @@ class ModelExecutor:
         return parse_plan(data)
 
     def classify_os(self, image_jpeg: bytes) -> OSName:
-        data = self.model.generate(image_jpeg, OS_PROMPT, OS_PROMPT, OS_SCHEMA, role="device")
-        os = data.get("os", "unknown")
-        if os not in {"windows", "macos", "linux", "android", "unknown"}:
-            raise ValueError("invalid operating system classification")
-        return cast(OSName, os)
+        return detect_os(self.model, image_jpeg)
 
     def close(self) -> None:
         self.model.close()
 
 
+def detect_os(model: GeminiJSON | ZaiJSON, image_jpeg: bytes) -> OSName:
+    """One model call naming the screen's OS, or "bios" for firmware screens (PLAN.md §5.4)."""
+    os = model.generate(image_jpeg, OS_PROMPT, OS_PROMPT, OS_SCHEMA, role="device").get("os", "unknown")
+    if os not in OS_NAMES:
+        raise ValueError("invalid operating system classification")
+    return cast(OSName, os)
+
+
 def context_prompt(ctx: StepContext) -> str:
     return USER_TEMPLATE.format(
         goal=ctx.goal, os=ctx.profile.os, input=ctx.profile.input,
+        os_hint=OS_HINTS.get(ctx.profile.os, ""),
         step=ctx.step, max_steps=ctx.max_steps,
         conversation=_lines(f"{t['role']}: {t['text']}" for t in ctx.memory.recent_turns()),
         facts=json.dumps(ctx.memory.facts) if ctx.memory.facts else "(none)",

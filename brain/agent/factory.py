@@ -1,10 +1,15 @@
-"""Explicit executor selection: jev-flash (default), direct, or legacy-dual."""
+"""Explicit executor selection (jev-flash, direct or legacy-dual) behind the model-free quick start."""
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.executor import ModelExecutor
 from brain.agent.orchestrator import ModelPlanner, Orchestrator
+from brain.agent.quick import QuickStart
 
 
 def build_executor(cfg, token, cleanup, status):
+    return QuickStart(_executor(cfg, token, cleanup, status))
+
+
+def _executor(cfg, token, cleanup, status):
     if cfg.executor == 'jev-flash':
         executor = JevFlashExecutor(cfg, token)
         cleanup.callback(executor.close)

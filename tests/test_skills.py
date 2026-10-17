@@ -17,7 +17,8 @@ class SkillTests(unittest.TestCase):
         return DeviceProfile(os, Rect(0, 0, 100, 100), "mouse", 0)
 
     def test_platform_shortcuts(self):
-        for os, keys in (("macos", ["GUI", "SPACE"]), ("windows", ["GUI"]), ("linux", ["GUI"])):
+        for os, keys in (("macos", ["GUI", "SPACE"]), ("ios", ["GUI", "SPACE"]), ("windows", ["GUI"]),
+                         ("linux", ["GUI"]), ("chromeos", ["GUI"])):
             with self.subTest(os=os):
                 self.controller.reset_mock()
                 run_skill("open_app", {"name": " Notes "}, self.profile(os), self.controller)
@@ -29,8 +30,13 @@ class SkillTests(unittest.TestCase):
                     unittest.mock.call.hotkey(["ENTER"]),
                 ])
 
+    def test_android_picks_the_app_not_a_web_search(self):
+        run_skill("open_app", {"name": "Clock"}, self.profile("android"), self.controller)
+        self.assertEqual(self.controller.method_calls[-2:], [
+            unittest.mock.call.hotkey(["DOWN"]), unittest.mock.call.hotkey(["ENTER"])])
+
     def test_unsupported_has_no_input(self):
-        for os in ("android", "unknown"):
+        for os in ("bios", "unknown"):
             with self.assertRaises(SkillUnavailable):
                 run_skill("open_app", {"name": "Notes"}, self.profile(os), self.controller)
         with self.assertRaises(SkillUnavailable):

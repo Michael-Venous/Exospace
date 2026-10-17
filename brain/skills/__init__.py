@@ -15,6 +15,13 @@ class SkillUnavailable(ActionError):
     """The executor should fall back to ordinary screen actions."""
 
 
+# Each OS's own launcher search: the one name-based app launcher every OS has.
+OPEN_APP_KEYS: dict[str, list[str]] = {
+    "macos": ["GUI", "SPACE"], "ios": ["GUI", "SPACE"],
+    "windows": ["GUI"], "linux": ["GUI"], "chromeos": ["GUI"], "android": ["GUI"],
+}
+
+
 def run_skill(
     name: str,
     args: dict[str, Any],
@@ -34,7 +41,7 @@ def run_skill(
         return
     if name != "open_app":
         raise SkillUnavailable(f"Unknown skill: {name!r}")
-    if profile.os not in ("macos", "windows", "linux"):
+    if profile.os not in OPEN_APP_KEYS:
         raise SkillUnavailable(f"open_app is unavailable on {profile.os}; use screen actions")
     app = args.get("name")
     if not isinstance(app, str) or not app.strip():
@@ -42,10 +49,12 @@ def run_skill(
     if any(ord(char) < 32 or ord(char) == 127 for char in app):
         raise ActionError("open_app name must not contain control characters")
 
-    controller.hotkey(["GUI", "SPACE"] if profile.os == "macos" else ["GUI"])
+    controller.hotkey(OPEN_APP_KEYS[profile.os])
     controller.wait_settled()
     controller.cancel.check()
     controller.type_text(app.strip())
     controller.wait_settled()
     controller.cancel.check()
+    if profile.os == "android":
+        controller.hotkey(["DOWN"])  # ENTER alone starts a web search; DOWN focuses the top app
     controller.hotkey(["ENTER"])

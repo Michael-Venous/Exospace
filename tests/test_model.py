@@ -127,8 +127,13 @@ class ZaiTests(unittest.TestCase):
         self.assertEqual(first_json_object('see {bad} then [1] then {"b": 2} {"c": 3}'), {"b": 2})
         self.assertEqual(first_json_object('{"a": [{"b": "}"}}], "c": 1}'), {"a": [{"b": "}"}], "c": 1})
         self.assertEqual(first_json_object('{"a": [{"b": 1}'), {"a": [{"b": 1}]})
+        self.assertEqual(first_json_object('{"a": [{"b": 1}}, "c": "d"}', ("a", "c")),
+                         {"a": [{"b": 1}], "c": "d"})
         with self.assertRaises(ValueError):
             first_json_object("[1, 2]")
+        reply = '{"reasoning": "r", "actions": [{"type": "click", "y": 0.2"}, {"type": "type_text"}]}'
+        with self.assertRaises(ValueError):
+            first_json_object(reply, ("reasoning", "actions"))
 
 
 if __name__ == "__main__":

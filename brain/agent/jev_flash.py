@@ -4,12 +4,11 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 import re
-from typing import cast
 
-from brain.agent.executor import Plan, StepContext, context_prompt, parse_plan
+from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, parse_plan
 from brain.agent.jev import JevVision
 from brain.agent.model import language_model
-from brain.agent.prompts import OS_PROMPT, OS_SCHEMA, PLAN_SCHEMA
+from brain.agent.prompts import PLAN_SCHEMA
 from brain.cancel import CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
@@ -287,10 +286,7 @@ class JevFlashExecutor:
         raise AssertionError('unreachable')
 
     def classify_os(self,image:bytes)->OSName:
-        result=self.model.generate(image,OS_PROMPT,OS_PROMPT,OS_SCHEMA,role='device')
-        name=result.get('os','unknown')
-        if name not in {'windows','macos','linux','android','unknown'}:raise ValueError('Invalid OS')
-        return cast(OSName,name)
+        return detect_os(self.model,image)
 
     def close(self):
         self.jev.close()

@@ -16,6 +16,7 @@ from brain.device import detect_profile
 from brain.hid import LocalHID, PicoHID
 from brain.monitor import ConnectionMonitor
 from brain.telemetry import Telemetry
+from brain.types import OS_NAMES
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,9 +24,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend", choices=["local", "pi", "browser"], default="pi")
     parser.add_argument("--url", help="Browser target URL (isolated profile)")
     parser.add_argument("--headed", action="store_true", help="Show browser target")
-    parser.add_argument("--os", choices=["macos", "windows", "linux", "android"])
+    parser.add_argument("--os", choices=[os for os in OS_NAMES if os != "unknown"])
     parser.add_argument("--task-id", default="interactive")
-    parser.add_argument("--config-name", default="jev-flash")
+    parser.add_argument("--config-name", help="Benchmark label (default: the executor)")
     parser.add_argument("--max-steps", type=int, default=30)
     args = parser.parse_args(argv)
     if args.max_steps < 1:
@@ -58,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
             monitor = ConnectionMonitor(capture, hid, token.cancel)
             cleanup.callback(monitor.close)
             agent = Agent(executor, controller, Memory.load(cfg.session_path),
-                          Telemetry(cfg.bench_csv, args.config_name), args.max_steps, status)
+                          Telemetry(cfg.bench_csv, args.config_name or cfg.executor), args.max_steps, status)
             profile = None
             generation = -1
             previous_goal = ""

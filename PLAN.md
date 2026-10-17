@@ -19,7 +19,7 @@ A portable box that plugs into a computer or phone over one USB-C cable, **sees 
 Positioning vs accessibility devices: we *complement* head mice/switches (they replace the mouse; we replace the steps). Say "designed for limited hand mobility," never "validated."
 
 ## 3. Non-goals (do NOT build)
-BIOS repair, scheduling, a large dashboard, fine-tuning (unless the benchmark shows one specific weakness), fully-offline claims. These overlap with prior art or eat time.
+BIOS repair (changing settings in the firmware setup screen is in scope, by user request 2026-10-17), scheduling, a large dashboard, fine-tuning (unless the benchmark shows one specific weakness), fully-offline claims. These overlap with prior art or eat time.
 
 ## 4. Architecture
 ```
@@ -80,9 +80,11 @@ Model output (any space) → **normalized [0,1] within the active screen rect** 
 
 ### 5.4 Device profile (set on every connect)
 ```json
-{"os":"windows|macos|android","rect":[x0,y0,x1,y1],"input":"mouse|touch","connected_at":ts}
+{"os":"windows|macos|linux|chromeos|android|ios|bios","rect":[x0,y0,x1,y1],"input":"mouse|touch","connected_at":ts}
 ```
-OS is detected **from the first frames** (USB can't reliably tell us).
+OS is detected **from the first frames** (USB can't reliably tell us). `bios` means a firmware
+setup or boot screen. Every executor step gets the OS with its keyboard conventions.
+*(2026-10-17: linux/chromeos/ios/bios added by user request to run on any OS and the boot screen.)*
 
 ### 5.5 Memory (`session.json`, persists across swaps)
 ```json
@@ -153,6 +155,14 @@ Cite KaiVM and other agent KVMs as prior work. Say "models run on our own GPU se
 AI judges read the repo: keep code clean, typed, small modules, a real README (architecture, how to run, benchmark results). No dead code, no committed secrets.
 
 ## 13. Prototype model decision — 2026-10-17
+
+**Overnight update (z.ai GLM):** with `ZAI_API_KEY` set, `EXECUTOR` defaults to `direct`
+(GLM-4.6V-FlashX, one call per step); jev-flash stays the Gemini default. GLM does not follow
+jev-flash's stage schema: 0/3 oracle successes against 1/3 for direct (calendar task,
+`bench/results.csv`; median model call 7.2 s vs 2.4 s). Images stay at 1280 px: 960 and 768
+were no faster (2.2-2.3 s) and their "done" claims failed the oracle. Unambiguous leading
+commands ("open calculator", "press ctrl c", 'type "hi"', "scroll down") run with no model
+call (`brain/agent/quick.py`); the model checks the result on the next step.
 
 **Current user-selected implementation:** Jev 1.14 + Gemini 3.8 Flash; no separate
 slow/fast LLM routing and no B200. Jev has an explicit `execute` / `ask_flash`

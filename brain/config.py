@@ -62,7 +62,8 @@ class Config:
             model_timeout_s=float(env("MODEL_TIMEOUT_S", "30")),
             planner_timeout_s=float(env("PLANNER_TIMEOUT_S", "120")),
             model_log=Path(env("MODEL_LOG", "bench/model_calls.jsonl")),
-            executor=env("EXECUTOR", "jev-flash"),
+            # GLM cannot follow jev-flash's stage schema (bench/results.csv), so z.ai runs direct.
+            executor=env("EXECUTOR") or ("direct" if env("ZAI_API_KEY") else "jev-flash"),
             typesafe_api_key=env("TYPESAFE_API_KEY", ""),
             jev_model=env("JEV_MODEL", "jev-1.14.0"),
             jev_timeout_s=float(env("JEV_TIMEOUT_S", "20")),

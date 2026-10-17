@@ -9,7 +9,7 @@ import base64
 import json
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import httpx
 
@@ -135,7 +135,8 @@ class ZaiJSON:
                 response = self.cancel.run(lambda: self.client.post("chat/completions", json=body))
                 status_code = response.status_code
                 response.raise_for_status()
-                data = first_json_object(response.json()["choices"][0]["message"]["content"] or "")
+                data = first_json_object(response.json()["choices"][0]["message"]["content"] or "",
+                                         schema.get("required", ()))
                 success = True
                 return data
             except httpx.HTTPStatusError as exc:
@@ -176,24 +177,27 @@ def shape(schema: dict[str, Any]) -> str:
     return kind or "any"
 
 
-def first_json_object(text: str) -> dict[str, Any]:
-    """GLM may wrap JSON in prose, code fences or box tokens; take the first object."""
+def first_json_object(text: str, required: Iterable[str] = ()) -> dict[str, Any]:
+    """GLM may wrap JSON in prose, code fences or box tokens; take the first object
+    with the required keys (a malformed reply must not yield one of its inner objects)."""
     decoder = json.JSONDecoder()
     for start, char in enumerate(text):
         if char != "{":
             continue
-        for candidate in (text[start:], _balanced(text[start:])):
+        for candidate in (text[start:], _balanced(text[start:], swap=False),
+                          _balanced(text[start:], swap=True)):
             try:
                 value, _ = decoder.raw_decode(candidate)
             except ValueError:
                 continue
-            if isinstance(value, dict):
+            if isinstance(value, dict) and all(key in value for key in required):
                 return value
     raise ValueError("model reply has no JSON object")
 
 
-def _balanced(text: str) -> str:
-    """Drop stray closing brackets and add missing ones; GLM sometimes writes '}}]'."""
+def _balanced(text: str, swap: bool) -> str:
+    """Repair GLM's bracket slips: a wrong closer is dropped ('}}]') or swapped for the
+    expected one ('}}, "next": ...'), and missing closers are added at the end."""
     out: list[str] = []
     expected: list[str] = []
     in_string = escaped = False
@@ -205,8 +209,12 @@ def _balanced(text: str) -> str:
         elif char in "{[":
             expected.append("}" if char == "{" else "]")
         elif char in "}]":
-            if not expected or char != expected[-1]:
+            if not expected:
                 continue
+            if char != expected[-1]:
+                if not swap:
+                    continue
+                char = expected[-1]
             expected.pop()
             if not expected:
                 return "".join(out) + char

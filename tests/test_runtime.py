@@ -8,10 +8,11 @@ from unittest.mock import Mock
 
 import numpy as np
 
-from brain.agent.executor import Plan, StepContext, parse_plan
+from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, parse_plan
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
 from brain.agent.orchestrator import Guidance, Orchestrator
+from brain.agent.quick import QuickStart
 from brain.cancel import Cancelled, CancelToken
 from brain.controller import Controller, SettleConfig
 from brain.device import detect_profile
@@ -154,6 +155,26 @@ class RuntimeTests(unittest.TestCase):
         self.fast.next_actions.return_value = Plan("done", [Action("done")], [])
         self.executor.next_actions(b"image", StepContext("new", self.profile, self.memory, [], 1, 5, run_id="b"))
         self.assertEqual(self.fast.next_actions.call_args.args[1].guidance, "")
+
+    def test_quick_command_acts_before_any_model_call(self):
+        self.fast.next_actions.side_effect = lambda image, ctx: (
+            self.assertEqual(self.hid.commands[:2], [{"op": "key", "keys": ["CTRL", "A"]},
+                                                     {"op": "type", "text": "hi"}])
+            or Plan("verified", [Action("done", summary="ok")], []))
+        result = self.agent(QuickStart(self.fast)).run('press ctrl a, then type "hi"', self.profile)
+        self.assertEqual(result.status, "done")
+        self.assertEqual(self.fast.next_actions.call_args.args[1].step, 2)
+
+    def test_os_detection_and_prompt_hint(self):
+        model = Mock()
+        for answer in ("bios", "ios", "chromeos"):
+            model.generate.return_value = {"os": answer}
+            self.assertEqual(detect_os(model, b"jpeg"), answer)
+        model.generate.return_value = {"os": "Windows 11"}
+        with self.assertRaises(ValueError):
+            detect_os(model, b"jpeg")
+        prompt = context_prompt(StepContext("copy", self.profile, self.memory, [], 1, 5))
+        self.assertIn("Device: macos (mouse). GUI (Command) shortcuts", prompt)
 
     def test_device_detection_uses_override_without_model(self):
         profile = detect_profile(self.capture, self.fast, "android", cancel=self.cancel)
