@@ -37,6 +37,7 @@ class Config:
     zai_planner_model: str = "glm-4.6v"
     zai_base_url: str = "https://api.z.ai/api/paas/v4"
     target_os: str = ""
+    local_keyboard: str = ""
 
     @property
     def model_name(self) -> str:
@@ -77,4 +78,5 @@ class Config:
             zai_planner_model=env("ZAI_PLANNER_MODEL", "glm-4.6v"),
             zai_base_url=env("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
             target_os=env("TARGET_OS", ""),
+            local_keyboard=env("LOCAL_KEYBOARD", ""),
         )

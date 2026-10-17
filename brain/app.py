@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from contextlib import ExitStack
 from typing import cast
 from dataclasses import replace
@@ -65,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 capture = ScreenCapture()
                 cleanup.callback(capture.close)
-                hid = LocalHID()
+                hid = LocalHID(PicoHID(cfg.local_keyboard, cfg.pico_baud) if cfg.local_keyboard else None)
             cleanup.callback(hid.close)
             controller = Controller(hid, capture, token)
             cleanup.callback(controller.release_all)
@@ -145,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                             continue
                         generation = current
                         status(f"Target: {profile.os} ({profile.input})")
-                    if args.backend == "local":
+                    if args.backend == "local" and sys.stdin.isatty():  # voice sends goals through a pipe
                         status("Focus the target window; starting in 2 seconds.")
                         token.sleep(2)
                     result = agent.run(goal, profile, args.task_id)
