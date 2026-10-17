@@ -15,7 +15,8 @@ from pathlib import Path
 
 from brain.config import Config
 
-REQUIRED_KEYS = ("GEMINI_API_KEY", "TYPESAFE_API_KEY")
+LANGUAGE_KEYS = ("ZAI_API_KEY", "GEMINI_API_KEY")  # interchangeable: either one serves every executor
+REQUIRED_KEYS = ("TYPESAFE_API_KEY",)
 OPTIONAL_KEYS = ("DEEPGRAM_API_KEY",)  # voice layer
 
 
@@ -27,8 +28,11 @@ class Check:
 
 
 def check_keys(env: dict[str, str]) -> list[Check]:
-    checks = [Check(key, bool(env.get(key)), "set" if env.get(key) else "missing: add it to .env")
-              for key in REQUIRED_KEYS]
+    language = [key for key in LANGUAGE_KEYS if env.get(key)]
+    checks = [Check("ZAI_API_KEY or GEMINI_API_KEY", bool(language),
+                    f"{language[0]} set" if language else "missing: add either one to .env")]
+    checks += [Check(key, bool(env.get(key)), "set" if env.get(key) else "missing: add it to .env")
+               for key in REQUIRED_KEYS]
     checks += [Check(key, bool(env.get(key)), "set" if env.get(key) else
                      "missing: the voice service (exospace-voice) won't start without it")
                for key in OPTIONAL_KEYS]

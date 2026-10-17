@@ -53,8 +53,9 @@ class AgentLinkTests(unittest.TestCase):
         self.agent.interrupt()
         self.stop.assert_called_once_with("barge-in")
 
-    def test_follow_tracks_busy_state_and_narrates(self):
+    def test_follow_tracks_busy_state_and_narrates_only_new_events(self):
         lines: queue.Queue[str] = queue.Queue()
+        self.bus.publish("result", status="fail", message="before the layer connected")
         threading.Thread(target=self.agent.follow, args=(lines,), daemon=True).start()
         time.sleep(0.2)
         self.bus.publish("run", goal="delete the downloads folder")

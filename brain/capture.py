@@ -82,7 +82,7 @@ class V4L2Capture:
 
 
 class ScreenCapture:
-    """Development stand-in: captures this machine's primary display."""
+    """Development stand-in: captures this machine's whole desktop."""
 
     def __init__(self) -> None:
         import mss  # optional dependency, only needed for the local backend
@@ -95,7 +95,13 @@ class ScreenCapture:
         sct = getattr(self._local, "sct", None)
         if sct is None:
             sct = self._local.sct = self._mss.mss()
-        shot = sct.grab(sct.monitors[1])
+        try:
+            shot = sct.grab(sct.monitors[0])  # every monitor, the same space LocalHID's clicks map onto
+        except self._mss.exception.ScreenShotError:
+            # The handle caches the monitor layout; a screen added or removed makes that area invalid.
+            sct.close()
+            sct = self._local.sct = self._mss.mss()
+            shot = sct.grab(sct.monitors[0])
         return np.ascontiguousarray(np.asarray(shot)[:, :, :3])
 
     def signal_present(self) -> bool:

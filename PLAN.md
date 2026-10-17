@@ -21,13 +21,15 @@ A portable box that plugs into a computer or phone over one USB-C cable, **sees 
 We *complement* head mice and switches: they replace the mouse; we replace the steps.
 
 ## 3. Non-goals (do NOT build)
-BIOS repair, scheduling, a large dashboard, fine-tuning, fully-offline claims, hard-coded phrase/site workflows (regex recipes). These overlap with prior art, eat time, or break universality.
+Scheduling, a large dashboard, fine-tuning, fully-offline claims. These overlap with prior art or eat time.
+
+Firmware/BIOS screens are not a non-goal: today's firmware path (arrow-key menus, `boot_keys`) is experimental, and we may return to it if Jev control generalizes to screens without a mouse.
 
 ## 4. Architecture
 ```
             ┌──────────── Pi 5 ("brain") — own power, never reboots ────────────┐
  user ─────►│ voice page (Talk / Space) + mic + speaker   memory (session.json) │◄──► hosted APIs
- target ───►│ capture card (/dev/video*)   race executor + agent loop + controller │   (Jev, Gemini, Deepgram)
+ target ───►│ capture card (/dev/video*)   race executor + agent loop + controller │   (Jev, Gemini or z.ai, Deepgram)
  screen     └───────────────┬───────────────────────────────────────────────────┘
                             │ UART JSON lines (§5.1)
                             ▼
@@ -39,7 +41,7 @@ BIOS repair, scheduling, a large dashboard, fine-tuning, fully-offline claims, h
 
 **Layers (top → bottom):**
 - **Voice layer** (`brain/voice/`): decides *what* the user wants, never *how*; never writes HID (§11).
-- **Race executor** (`brain/agent/race.py`): every request starts Jev triage and a Jev + Gemini 3.8 Flash plan at once (§10).
+- **Race executor** (`brain/agent/race.py`): every request starts Jev triage and a Jev + language-model plan at once (§10).
 - **Agent loop + controller** (deterministic Python): the single HID writer; runs actions, skills, typing, settle detection, cancellation, coordinate mapping.
 - **Pico firmware**: dumb, fast HID. No logic beyond the protocol.
 
@@ -78,17 +80,18 @@ Model output (any space) → **normalized [0,1] within the active screen rect** 
 {"type":"skill","name":"open_app","args":{"name":"Notes"}}
 {"type":"skill","name":"hover","args":{"x":..,"y":..}}   // pointer move, no button
 {"type":"skill","name":"wait"}                 // until the screen changes, at most 10 s; sends no input
+{"type":"skill","name":"boot_keys","args":{"keys":["F2"]}}  // tap firmware keys through the next restart
 {"type":"scroll","dy":-3}                      // wheel notches
 {"type":"remember","key":"...","value":...}
 {"type":"done"} | {"type":"ask_user","question":"..."} | {"type":"fail","reason":"..."}
 ```
-`wait` is offered to the direct executor only; race gets it once measured end to end.
+On a `bios` profile a click or double_click moves the menu highlight with arrow keys (double_click then presses ENTER); right_click, scroll and swipe are rejected. `boot_keys` accepts 1–3 of ESC, DELETE, F1–F12.
 
 ### 5.4 Device profile (set on every connect)
 ```json
-{"os":"windows|macos|linux|android|unknown","rect":[x0,y0,x1,y1],"input":"mouse|touch","connected_at":ts}
+{"os":"windows|macos|linux|chromeos|android|ios|bios|unknown","rect":[x0,y0,x1,y1],"input":"mouse|touch","connected_at":ts}
 ```
-OS is detected **from the first frames** (USB can't reliably tell us). `unknown` (firmware, boot splash, a failed classification) still works as keyboard + mouse. `--os` overrides detection.
+OS is detected **from the first frames** (USB can't reliably tell us). `bios` is a firmware setup or boot screen; `unknown` (a failed classification) still works as keyboard + mouse. A boot logo can read as `bios`, so a `bios` profile is re-detected once its screen has changed a lot since it was classified, mid-run or between goals (`connected_at` stays). `--os` overrides detection; `TARGET_OS` pins the OS for every screen except firmware.
 
 ### 5.5 Memory (`session.json`, persists across swaps)
 ```json
@@ -100,7 +103,7 @@ The planner gets memory + device profile on every call.
 ### 5.6 Cancellation — ONE path for everything
 Triggers: Pico `unmounted` · capture no-signal/black > 300 ms · Talk/STOP during execution (barge-in) · 3 failed verifications.
 Effect: Pico `release_all` → drop action queue → (if disconnect) wait for new device → build profile → planner resumes from memory.
-If the screen blanks mid-run but the Pico stays mounted (same machine), the run waits up to 10 s for video and continues the same goal. An unplug ends the run: the next device may be another one, so the user gives its goal; memory carries over.
+Resume: after a disconnect, restart or lost video, the run waits up to 180 s for live video, taps armed `boot_keys` once the Pico has unmounted (the restart), re-detects the profile if the connection changed and continues the same goal on the new screen.
 
 ### 5.7 Benchmark log (`bench/results.csv`)
 `run_id, config, device, task_id, step, t_capture, t_upload, t_model, t_execute, t_settle, success, total_s`
@@ -132,14 +135,17 @@ AI judges read the repo: keep code clean, typed, small modules, a real README (a
 
 ## 10. Model decision (2026-10-17, final)
 **Race + steps-aware completion**, measured in [`bench/arch/README.md`](bench/arch/README.md): 89% end-to-end vs 53% for the previous runtime, 0 vs 5 unsafe actions (paired sign test p = 0.00002, two scenarios incl. a held-out one).
-- Every request starts **Jev triage** (one call: act_now / plan / no_action, target box, gesture, irreversible?) and **Flash 3.8** (low thinking, with screenshot) at the same time.
+- Race is the default executor with either language-model key. **z.ai and Gemini are interchangeable** (user decision): `ZAI_API_KEY`, when set, serves every executor (GLM-4.6V-FlashX), otherwise Gemini 3.8 Flash; each has the same settings (model, thinking, fallback on 503/429, planner model).
+- Every request starts **Jev triage** (one call: act_now / plan / no_action, target box, gesture, irreversible?) and **the language model's plan** (low thinking, with screenshot) at the same time.
 - A confident Jev act (presence/uniqueness ≥ 0.5, zoom-refined box) wins and Flash's plan is discarded; no_action goes to memory with no input; otherwise Flash's plan runs, each stage grounded and checked by Jev.
 - **Irreversible** requests (Jev ≥ 0.5: send, delete, pay, submit, format, BIOS changes, public account actions such as starring or following) never run without a spoken "yes", on both paths. The previous prompt-only rule deleted a folder in 3/3 runs.
 - **Completion** is one Jev call judging goal + executed steps + screen (gate 0.3); it alone decides.
 - **One commit gate** (`brain/arbiter.py`) is the only path to HID for pipelined voice: one winner per segment, spoken-order commit, generation bump on interruption, stale-screen proposals re-grounded.
-- **Fallback:** a 503/429 from Flash retries once on `FALLBACK_MODEL` (Flash-Lite 3.5). Lite planned worse, so this is degraded mode, not a default.
-- **Options, not defaults:** `EXECUTOR=direct` (one call per step: z.ai GLM-4.6V-FlashX with `ZAI_API_KEY`, else Gemini); `EXECUTOR=jev-flash` (planner only).
-- **Rejected, with measurements in `bench/`:** Flash-Lite, Gemini Live and text-only planning as the planner (about 2× the wrong moves, no time saved); regex `direct_command` and recipe grammars; three-model routing (no accuracy gain, ~12% slower); GPT-6 Luna and Claude Haiku 5.5 (unsafe on messy speech). The B200 / self-hosted models are deferred.
+- **Fallback:** a 503/429 retries once on the provider's fallback model (Flash-Lite 3.5 / GLM-4.6V). Lite planned worse, so this is degraded mode, not a default.
+- **Quick start** (`brain/agent/quick.py`, reintroduced from `overnight-ultracode`): goals made only of unambiguous commands ("press ctrl c", 'type "hi"'), or that start by opening an app or scrolling, take their first step with no model call; the model checks the result next step. It decides with a word list.
+- **Options, not defaults:** `EXECUTOR=direct` (one call per step; a `done` claim after input is checked on screen), `jev-flash` (planner only), `legacy-dual`.
+- **Measured:** race on Gemini, 89% (above). Race on z.ai alone, workstation study, one repeat: 7/10 by the fixture's oracle, 0 unsafe; GLM does not follow the stage schema as well (0/3 vs 1/3 for direct on the calendar task).
+- **Rejected, with measurements in `bench/`:** Flash-Lite, Gemini Live and text-only planning as the planner (about 2× the wrong moves, no time saved); regex `direct_command` and recipe grammars (the quick start above is the one word-list path left); three-model routing (no accuracy gain, ~12% slower); GPT-6 Luna and Claude Haiku 5.5 (unsafe on messy speech). The B200 / self-hosted models are deferred.
 
 ## 11. Voice layer
 The voice layer sits **on top** of the pipeline: it decides *what* the user wants, never *how*.

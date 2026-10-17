@@ -117,6 +117,19 @@ class ZaiTests(unittest.TestCase):
             self.client.generate(b"image", "goal", "system", {}, role="fast")
         self.assertEqual(len(self.requests), 3)
 
+    def test_high_demand_switches_to_fallback_like_gemini(self):
+        self.client.fallback_model = "glm-fallback"
+        for code in (503, 429):
+            with self.subTest(code=code):
+                self.requests.clear()
+                self.replies += [(code, "busy"), (200, '{"ok": true}')]
+                with patch.object(self.cancel, "sleep") as sleep:
+                    result = self.client.generate(b"image", "goal", "system", {}, role="fast")
+                self.assertEqual(result, {"ok": True})
+                self.assertEqual([json.loads(r.content)["model"] for r in self.requests],
+                                 ["glm-test", "glm-fallback"])
+                sleep.assert_called_once_with(0.0)
+
     def test_overload_is_retried_but_client_errors_are_not(self):
         self.replies += [(429, ""), (200, '{"ok": 1}')]
         with patch.object(self.cancel, "sleep"):
@@ -160,20 +173,21 @@ class ZaiTests(unittest.TestCase):
 
 
 class ProviderTests(unittest.TestCase):
-    def test_zai_serves_only_the_direct_executor(self):
+    def test_zai_serves_every_executor(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         log = Path(temp.name) / "calls.jsonl"
         base = Config("offline-gemini-key", "gemini-test", None, "", 0, "", 0, 0, log, log,
                       model_log=log, zai_api_key="offline-zai-key")
-        for executor, kind in (("direct", ZaiJSON), ("race", GeminiJSON), ("jev-flash", GeminiJSON)):
+        for executor in ("direct", "legacy-dual", "race", "jev-flash"):
             with self.subTest(executor=executor):
                 cfg = replace(base, executor=executor)
                 client = language_model(cfg, CancelToken())
                 self.addCleanup(client.close)
-                self.assertIsInstance(client, kind)
-                self.assertEqual(cfg.model_name, "glm-4.6v-flashx" if kind is ZaiJSON else "gemini-test")
-        client = language_model(replace(base, executor="direct", zai_api_key=""), CancelToken())
+                self.assertIsInstance(client, ZaiJSON)
+                self.assertEqual(cfg.model_name, "glm-4.6v-flashx")
+                self.assertEqual(client.fallback_model, "glm-4.6v")
+        client = language_model(replace(base, executor="race", zai_api_key=""), CancelToken())
         self.addCleanup(client.close)
         self.assertIsInstance(client, GeminiJSON)
 

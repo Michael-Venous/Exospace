@@ -1,36 +1,59 @@
 <!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Exospace Voice</title>
 <style>
-:root{--bg:#fff;--fg:#1d1d1f;--dim:#86868b;--accent:#5e6ad2;--err:#d70015}
-@media (prefers-color-scheme:dark){:root{--bg:#000;--fg:#f5f5f7;--dim:#98989d;--accent:#7d93ff}}
-body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:40px;padding:16px;
-  box-sizing:border-box;background:var(--bg);color:var(--fg);font:20px system-ui,sans-serif;text-align:center}
-#talk{width:200px;height:200px;border-radius:50%;border:0;background:var(--accent);color:#fff;font:600 22px system-ui;
-  cursor:pointer;transform:scale(calc(1 + var(--lvl,0) * .25));transition:transform .08s}
-body.on #talk{box-shadow:0 0 0 14px color-mix(in srgb,var(--accent) 30%,transparent)}
-#said{min-height:1.4em;max-width:min(680px,92vw)}#live{color:var(--dim);min-height:1.2em}
-#says{color:var(--dim);font-size:18px;min-height:1.2em;max-width:min(680px,92vw)}.err{color:var(--err)}
+body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:100px;padding:16px;box-sizing:border-box;
+  background:#fff;color:#1d1d1f;font:500 22px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;text-align:center}
+#talk{width:150px;height:150px;border:0;border-radius:50%;cursor:pointer;
+  background:radial-gradient(circle at 34% 28%,#fff 0,#cfe0ff 18%,#7d93ff 52%,#b77bff 80%,#ff9ad5 100%);
+  box-shadow:0 18px 50px rgb(125 147 255/.35),0 0 0 calc(var(--lvl,0)*36px) rgb(125 147 255/.12);
+  transform:scale(calc(1 + var(--lvl,0)*.55));transition:transform 90ms ease-out,box-shadow 90ms ease-out;animation:breathe 4s ease-in-out infinite}
+#talk:focus-visible{outline:2px solid #7d93ff;outline-offset:8px}
+.on #talk{animation:breathe 4s ease-in-out infinite,drift 6s linear infinite}
+#heard{max-width:min(640px,90vw);min-height:2.8em;margin:0}
+#live,#says{color:#86868b}
+#said:empty~#live:empty::before{content:"Hold to talk";color:#a1a1a6}
+#says{font-size:18px;min-height:1.2em;max-width:min(640px,90vw)}
+.err{color:#d70015}
+#mics{position:fixed;bottom:16px;left:50%;translate:-50%;max-width:calc(100vw - 32px);
+  font:inherit;font-size:15px;color:#86868b;background:none;border:0;cursor:pointer}
+@keyframes breathe{50%{scale:1.04}}
+@keyframes drift{to{filter:hue-rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
-<button id=talk aria-pressed=false>Talk</button>
-<div><div id=said></div><div id=live></div></div>
+<button id=talk aria-label="Hold to talk" aria-pressed=false></button>
+<p id=heard aria-live=polite><span id=said></span> <span id=live></span></p>
 <div id=says aria-live=polite></div>
+<select id=mics aria-label=Microphone></select>
 <script>
 let stopListening = null;
 const post = (path, body = {}) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
   body: JSON.stringify(body)}).then(r => r.json()).catch(err => ({error: err.message}));
 function showError(text) { said.className = "err"; said.textContent = text; }
 
+// Mic switcher. Chrome hides device names until the first mic grant, so the list is refilled after it.
+async function listMics() {
+  const found = (await navigator.mediaDevices.enumerateDevices())
+    .filter(d => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default");
+  let saved = ""; try { saved = localStorage.mic || ""; } catch {}
+  mics.replaceChildren(new Option("Default microphone", ""),
+    ...found.map((d, i) => new Option(d.label || `Microphone ${i + 1}`, d.deviceId)));
+  mics.value = found.some(d => d.deviceId === saved) ? saved : "";
+}
+mics.onchange = () => { try { localStorage.mic = mics.value; } catch {} if (stopListening) stopListening(); };
+navigator.mediaDevices.ondevicechange = listMics;
+listMics();
+
 // Narration: speak the agent's questions and results, but never over the user. Lines that
 // arrive while the mic is open are held and spoken when the user stops, so a confirmation
 // question is never lost.
-let held = [];
+let unspoken = [];
 const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 new EventSource("/narration").onmessage = e => {
   const {say} = JSON.parse(e.data);
   says.textContent = say;
-  if (stopListening) held.push(say); else speak(say);
+  if (stopListening) unspoken.push(say); else speak(say);
 };
-function speakHeld() { if (held.length) { speak(held.at(-1)); held = []; } }
+function speakHeld() { if (unspoken.length) { speak(unspoken.at(-1)); unspoken = []; } }
 
 async function send(text) {
   const r = await post("/segment", {text});
@@ -44,8 +67,10 @@ async function start() {
   speechSynthesis.cancel();  // the user is talking: stop speaking at once
   post("/talk");             // barge in on whatever the agent is doing
   let mic;
-  try { mic = await navigator.mediaDevices.getUserMedia({audio: true}); }
+  try { mic = await navigator.mediaDevices.getUserMedia({audio: mics.value ? {deviceId: {exact: mics.value}} : true}); }
   catch (err) { starting = false; return showError("Microphone blocked: " + err.message); }
+  if (!held) { starting = false; return mic.getTracks().forEach(t => t.stop()); }  // let go before the mic opened
+  listMics();
   const rec = new MediaRecorder(mic), sock = new WebSocket(`ws://${location.hostname}:__WS_PORT__`);
   let done = "";
   const ctx = new AudioContext(), an = ctx.createAnalyser(), buf = new Uint8Array(512);
@@ -64,7 +89,7 @@ async function start() {
   sock.onopen = () => {
     starting = false;
     rec.start(100);
-    document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.textContent = "Listening";
+    document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Listening";
     said.className = ""; said.textContent = ""; live.textContent = "";
   };
   sock.onmessage = e => {
@@ -82,15 +107,20 @@ async function start() {
     if (rec.state !== "inactive") rec.stop();
     mic.getTracks().forEach(t => t.stop());
     ctx.close();
-    document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.textContent = "Talk";
+    document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Hold to talk";
     live.textContent = "";
     speakHeld();
     if (done) send(done);
     if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
   };
 }
-const toggle = () => stopListening ? stopListening() : start();
-talk.onclick = toggle;
-// Space works as a big switch: one press to talk, one to finish (accessibility switches send keys too).
-addEventListener("keydown", e => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); toggle(); } });
+// Push to talk: listen only while the orb or Space is held, so speech meant for someone else is never acted on.
+let held = false;
+function press() { if (!held && !stopListening) { held = true; start(); } }
+function release() { if (held) { held = false; if (stopListening) stopListening(); } }
+talk.onpointerdown = e => { talk.setPointerCapture(e.pointerId); press(); };
+talk.onpointerup = talk.onpointercancel = release;
+addEventListener("keydown", e => { if (e.code === "Space" && e.target !== mics) { e.preventDefault(); if (!e.repeat) press(); } });
+addEventListener("keyup", e => { if (e.code === "Space" && e.target !== mics) release(); });
+addEventListener("blur", release);  // the keyup goes to another window
 </script>

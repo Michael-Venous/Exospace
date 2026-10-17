@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 import numpy as np
 from numpy.typing import NDArray
 
 Frame = NDArray[np.uint8]  # BGR image, shape (height, width, 3)
-OSName = Literal["windows", "macos", "linux", "android", "unknown"]
+# "bios" covers firmware setup, boot menus and other pre-OS screens.
+OSName = Literal["windows", "macos", "linux", "chromeos", "android", "ios", "bios", "unknown"]
+OS_NAMES: tuple[OSName, ...] = get_args(OSName)
 InputMode = Literal["mouse", "touch"]
 
 

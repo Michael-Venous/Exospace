@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Voice demo at http://127.0.0.1:8766: speak, Deepgram transcribes, Jev pulls out the app name,
-and the OS launcher's own search opens it, checked on screen by Jev. No installed-app list."""
+and the OS launcher's own search opens it, checked on screen by Jev. No installed-app list.
+Anything more goes to the screenshot agent (brain.app) driving this laptop."""
 import asyncio
 import glob
 import json
+import os
 import re
 import struct
 import subprocess
@@ -33,6 +35,10 @@ DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&end
 JEV_URL = "https://api.typesafe.ai/v1/systemone"
 # The Pico's command port from brain/voice/pico/boot.py; if00 is its REPL console. Cinnamon ignores faked Super, not the Pico's.
 PICO_PORTS = "/dev/serial/by-id/usb-Raspberry_Pi_Pico*-if02"
+# Linux is fixed so the agent skips its OS-detection call.
+AGENT_CMD = [str(REPO / ".venv/bin/python"), "-m", "brain", "--backend", "local", "--os", "linux"]
+# brain.app ends each run with "<status>: <message>"; input() prompts ("Goal> ") have no newline.
+AGENT_RESULT = re.compile(r"(?:^|> )(done|fail|ask_user|cancelled): (.*)")
 
 PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Exospace Voice</title>
@@ -85,9 +91,11 @@ function listening(on) {
   orb.ariaLabel = on ? "Stop listening" : "Start listening";
 }
 // What each command did. Simple by default; "Show details" adds Jev's choice, confidence and each check.
-const DID = {open_tab: () => "Opened a new tab", none_here: () => "No action: didn't match a command"};
+const DID = {open_tab: () => "Opened a new tab"};
 function outcome(r) {
   if (r.error) return {ok: false, text: r.error};
+  // The agent's last line: what it did, or its question.
+  if (r.choice === "agent") return {ok: r.status === "done", text: r.reply || (r.steps || []).at(-1) || "No answer"};
   if (r.opened) return {ok: true, text: r.label ? "Opened " + r.label : DID[r.choice]()};
   if (DID[r.choice]) return {ok: false, text: DID[r.choice]()};
   const last = (r.steps || []).at(-1) || "", app = r.label || "the app";
@@ -257,9 +265,9 @@ def env(name: str) -> str:
 
 KEY = env("TYPESAFE_API_KEY")
 DG_KEY = env("DEEPGRAM_API_KEY")
-ACTIONS = {"open_app": "Open or launch an app or program.",
-           "open_tab": "Open a new tab in the Chrome browser that is already open.",
-           "none_here": "Anything else, or the request is unclear."}
+ACTIONS = {"open_app": "Only open or launch an app or program, nothing more.",
+           "open_tab": "Only open a new empty tab in the Chrome browser that is already open.",
+           "agent": "Anything else: several steps, searching, typing, clicking or changing settings."}
 SPAN = ("If `spoken_command` asks to open an app, choose the {} word of the app's name or kind of app, "
         "leaving out request words like open, launch, my or please.")
 
@@ -297,8 +305,8 @@ def screenshot() -> bytes:
     # The root window reports device pixels; capture takes logical ones.
     w, h = root.get_width() // root.get_scale_factor(), root.get_height() // root.get_scale_factor()
     shot = Gdk.pixbuf_get_from_window(root, 0, 0, w, h)
-    # Jev rejects 1280x1600 and larger ("Invalid image dimensions"); one 1440x900 screen's worth of pixels passes.
-    f = min(1, (1440 * 900 / (w * h)) ** 0.5)
+    # Jev rejects a side over 1568 ("Invalid image dimensions"), the same cap as brain/agent/jev.py.
+    f = min(1, 1568 / max(w, h))
     return shot.scale_simple(round(w * f), round(h * f), GdkPixbuf.InterpType.BILINEAR).save_to_bufferv("png", [], [])[1]
 
 
@@ -320,6 +328,7 @@ def open_app(name: str, trace: list) -> dict:
         return {"steps": ["Nothing typeable in the name"]}
     if not (ports := glob.glob(PICO_PORTS)):
         return {"steps": ["Pico not plugged in"]}
+    stop_agent()  # one owner per serial port: two readers would steal each other's acks
     # Opened per command so unplugging and replugging the Pico between commands just works.
     pico = PicoHID(ports[0], 115200)
     try:
@@ -338,6 +347,37 @@ def open_app(name: str, trace: list) -> dict:
         return {"steps": steps, "opened": True}
     finally:
         pico.close()
+
+
+agent: subprocess.Popen | None = None
+
+
+def stop_agent() -> None:
+    global agent
+    if agent and agent.poll() is None:
+        agent.terminate()
+        agent.wait(timeout=5)
+    agent = None
+
+
+def run_agent(goal: str) -> dict:
+    """Send one goal to the agent, started on first use and kept between commands, and
+    wait for its result. After ask_user or a cancel, the next goal is taken as the answer."""
+    global agent
+    if agent is None or agent.poll() is not None:
+        if not (ports := glob.glob(PICO_PORTS)):
+            return {"steps": ["Pico not plugged in"]}
+        agent = subprocess.Popen(AGENT_CMD, cwd=REPO, text=True, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, env=os.environ | {"LOCAL_KEYBOARD": ports[0]})
+    agent.stdin.write(" ".join(goal.split()) + "\n")  # a newline would split the goal in two
+    agent.stdin.flush()
+    steps = []
+    for line in agent.stdout:
+        print(line, end="", flush=True)
+        steps.append(line.rstrip())
+        if m := AGENT_RESULT.search(line):
+            return {"steps": steps, "status": m[1], "reply": m[2]}
+    return {"steps": steps, "error": "The agent stopped; see the server log."}
 
 
 def handle(text: str) -> dict:
@@ -364,6 +404,8 @@ def handle(text: str) -> dict:
         result |= open_app(result["label"], trace)
     elif choice == "open_app":
         result["steps"] = ["Couldn't find the app name"]
+    elif choice == "agent":
+        result |= run_agent(text)
     return result
 
 

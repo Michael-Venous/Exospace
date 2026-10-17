@@ -35,12 +35,17 @@ class Config:
     jev_min_confidence: float = 0.6
     zai_api_key: str = ""
     zai_model: str = "glm-4.6v-flashx"
+    zai_planner_model: str = "glm-4.6v"
+    zai_thinking: str | None = None  # thinking off: GLM's reasoning costs seconds per step
+    zai_fallback_model: str = "glm-4.6v"
     zai_base_url: str = "https://api.z.ai/api/paas/v4"
+    target_os: str = ""
+    local_keyboard: str = ""
 
     @property
     def uses_zai(self) -> bool:
-        """z.ai serves only the direct executor; GLM cannot follow jev-flash's stage schema."""
-        return bool(self.zai_api_key) and self.executor == "direct"
+        """z.ai and Gemini are interchangeable: ZAI_API_KEY, when set, serves every executor."""
+        return bool(self.zai_api_key)
 
     @property
     def model_name(self) -> str:
@@ -52,7 +57,6 @@ class Config:
         load_dotenv()
         env = os.environ.get
         executor = env("EXECUTOR") or "race"
-        zai = bool(env("ZAI_API_KEY")) and executor == "direct"
         return cls(
             gemini_api_key=env("GEMINI_API_KEY", ""),
             gemini_model=env("FAST_MODEL", env("GEMINI_MODEL", "gemini-3.8-flash")),
@@ -69,7 +73,7 @@ class Config:
             planner_thinking=env("PLANNER_THINKING", "medium") or None,
             # z.ai flashx, 1,299 calls: p99 14 s, and a hung call runs to the timeout. At 12 s
             # 1.9% retry and a hang costs 12 s, not 30.
-            model_timeout_s=float(env("MODEL_TIMEOUT_S") or ("12" if zai else "30")),
+            model_timeout_s=float(env("MODEL_TIMEOUT_S") or ("12" if env("ZAI_API_KEY") else "30")),
             planner_timeout_s=float(env("PLANNER_TIMEOUT_S", "120")),
             model_log=Path(env("MODEL_LOG", "bench/model_calls.jsonl")),
             executor=executor,
@@ -80,5 +84,10 @@ class Config:
             jev_min_confidence=float(env("JEV_MIN_CONFIDENCE", "0.6")),
             zai_api_key=env("ZAI_API_KEY", ""),
             zai_model=env("ZAI_MODEL", "glm-4.6v-flashx"),
+            zai_planner_model=env("ZAI_PLANNER_MODEL", "glm-4.6v"),
+            zai_thinking=env("ZAI_THINKING") or None,
+            zai_fallback_model=env("ZAI_FALLBACK_MODEL", "glm-4.6v"),
             zai_base_url=env("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
+            target_os=env("TARGET_OS", ""),
+            local_keyboard=env("LOCAL_KEYBOARD", ""),
         )

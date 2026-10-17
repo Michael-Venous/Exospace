@@ -8,12 +8,12 @@ from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast
 
 from brain.agent.memory import Memory
-from brain.agent.model import language_model
+from brain.agent.model import GeminiJSON, ZaiJSON, language_model
 from brain.agent.prompts import (DONE_PROMPT, DONE_SCHEMA, DONE_TEMPLATE, OS_HINTS, OS_PROMPT, OS_SCHEMA,
                                  PLAN_SCHEMA, SKILLS, SYSTEM_PROMPT, USER_TEMPLATE)
 from brain.cancel import CancelToken
 from brain.config import Config
-from brain.types import Action, ActionError, DeviceProfile, OSName
+from brain.types import OS_NAMES, Action, ActionError, DeviceProfile, OSName
 
 
 @dataclass(frozen=True)
@@ -79,53 +79,54 @@ class ModelExecutor:
                                     else (SYSTEM_PROMPT, PLAN_SCHEMA))
 
     def next_actions(self, image_jpeg: bytes, ctx: StepContext) -> Plan:
-        prompt = context_prompt(ctx) + _os_hint(ctx.profile.os)
-        data = self.model.generate(image_jpeg, prompt, self.system, self.schema,
+        data = self.model.generate(image_jpeg, context_prompt(ctx, os_hint=True), self.system, self.schema,
                                    role="fast", run_id=ctx.run_id, step=ctx.step)
         plan = parse_plan(data)
         first = next((action for action in plan.actions if action.type != "remember"), None)
-        # GLM claims done from its own history; once the run has acted, the screen must show it.
+        # GLM claims done from its own history; once it has acted, the screen must show it.
         if first is not None and first.type == "done" and ctx.history:
-            missing = self._missing(image_jpeg, ctx, first.summary)
+            missing = self.missing(image_jpeg, ctx, first.summary)
             if missing:
                 return replace(plan, actions=[a for a in plan.actions if a.type == "remember"], rejected=[
                     f"Not confirmed done: {missing}. Finish it or bring the result into view; "
                     "never repeat a send, purchase or deletion."])
         return plan
 
-    def _missing(self, image_jpeg: bytes, ctx: StepContext, claim: str) -> str:
-        """What the screen does not yet show of the goal; empty when it shows it all."""
-        prompt = DONE_TEMPLATE.format(goal=ctx.goal, os=ctx.profile.os, claim=claim,
-                                      facts=json.dumps(ctx.memory.facts) if ctx.memory.facts else "(none)")
+    def missing(self, image_jpeg: bytes, ctx: StepContext, claim: str) -> str:
+        """What the screen does not yet show of the goal, or "" when the claim holds."""
+        prompt = DONE_TEMPLATE.format(goal=ctx.goal, os=ctx.profile.os, os_hint=OS_HINTS.get(ctx.profile.os, ""),
+                                      facts=json.dumps(ctx.memory.facts) if ctx.memory.facts else "(none)",
+                                      history=_lines(ctx.history[-5:]), claim=claim)
         data = self.model.generate(image_jpeg, prompt, DONE_PROMPT, DONE_SCHEMA,
                                    role="check", run_id=ctx.run_id, step=ctx.step)
         return "" if data.get("complete") is True else str(data.get("missing") or "not shown on screen")
 
     def classify_os(self, image_jpeg: bytes) -> OSName:
-        data = self.model.generate(image_jpeg, OS_PROMPT, OS_PROMPT, OS_SCHEMA, role="device")
-        os = data.get("os", "unknown")
-        if os not in {"windows", "macos", "linux", "android", "unknown"}:
-            raise ValueError("invalid operating system classification")
-        return cast(OSName, os)
+        return detect_os(self.model, image_jpeg)
 
     def close(self) -> None:
         self.model.close()
 
 
-def context_prompt(ctx: StepContext) -> str:
+def detect_os(model: GeminiJSON | ZaiJSON, image_jpeg: bytes) -> OSName:
+    """One model call naming the screen's OS, or "bios" for firmware screens (PLAN.md §5.4)."""
+    os = model.generate(image_jpeg, OS_PROMPT, OS_PROMPT, OS_SCHEMA, role="device").get("os", "unknown")
+    if os not in OS_NAMES:
+        raise ValueError("invalid operating system classification")
+    return cast(OSName, os)
+
+
+def context_prompt(ctx: StepContext, *, os_hint: bool = False) -> str:
+    """`os_hint` adds the OS's keyboard conventions; only the one-call executor gets them, since
+    race's prompts were measured without."""
     return USER_TEMPLATE.format(
         goal=ctx.goal, os=ctx.profile.os, input=ctx.profile.input,
+        os_hint=OS_HINTS.get(ctx.profile.os, "") if os_hint else "",
         step=ctx.step, max_steps=ctx.max_steps,
         conversation=_lines(f"{t['role']}: {t['text']}" for t in ctx.memory.recent_turns()),
         facts=json.dumps(ctx.memory.facts) if ctx.memory.facts else "(none)",
         history=_lines(ctx.history[-12:]), note=ctx.note or "(none)",
     ) + "\nPlanner guidance (use only when consistent with the current screen):\n" + (ctx.guidance or "(none)")
-
-
-def _os_hint(os: OSName) -> str:
-    """Keyboard conventions for this OS. Only the one-call executor gets them: race's prompts
-    were measured without."""
-    return f"\nOn {os}: {OS_HINTS[os]}" if os in OS_HINTS else ""
 
 
 def parse_plan(data: dict[str, Any]) -> Plan:
@@ -172,6 +173,8 @@ def _to_contract(raw: dict[str, Any]) -> dict[str, Any]:
     if kind == "skill":
         out["name"] = raw.get("name", "")
         out["args"] = {"name": raw.get("text", "")}
+        if "keys" in raw:
+            out["args"]["keys"] = raw["keys"]  # boot_keys
     elif kind == "remember":
         out["key"] = raw.get("key", "")
         out["value"] = raw.get("text", "")
