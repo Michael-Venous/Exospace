@@ -3,7 +3,7 @@
 **Owner:** Agent. **Status:** proposal. Section 8 lists what needs team approval before it touches PLAN.md §5.
 
 This covers what happens from the moment the user wants something until it's done: who it's for, what they hear and
-see, how speech gets in, and how the smart model (Gemini) and the fast model (UI-TARS on the B200s, or a fast text model picking from a numbered list) share
+see, how speech gets in, and how the smart model (Gemini) and the fast model (UI-TARS on the B200s, or Jev picking from a numbered list) share
 the work.
 
 ## 1. Who it's for
@@ -100,7 +100,7 @@ Each tier is only used when the cheaper one can't handle the moment.
 | Tier | Who | Target latency | Job |
 |---|---|---|---|
 | 0. Skill / cache | Controller (no AI) | < 0.1 s | Per-OS keyboard skills (§6 in PLAN.md); replay a cached action for a screen seen before |
-| 1. Executor | UI-TARS on the B200s (candidate), **numbered-list picker (candidate)**, Gemini (baseline) | ~0.3–1 s | Screen + subtask → ONE next action (§5.3) |
+| 1. Executor | UI-TARS on the B200s (candidate), **Jev picking from a numbered list (candidate)**, Gemini (baseline) | ~0.3–1 s | Screen + subtask → ONE next action (§5.3) |
 | 2. Planner | Gemini | 1.5–3 s | Goal + memory + device → subtasks; repair when stuck |
 
 **Rule: Gemini never runs between individual actions.** It runs on a new request, a device change, or when the
@@ -131,12 +131,16 @@ a **numbered list of clickable things** lets a small, fast *text* model answer w
      Mac's own accessibility tree, so we get the tree **through the HDMI pixels** with nothing installed, only a
      setting turned on once. OCR the badges, and you know the position of every button.
    - **Everywhere else:** local OCR text boxes (a button labeled "Save" becomes option 7).
-2. A fast text model (on the B200, or a small Gemini) picks the number for the subtask.
+2. **Jev** picks the number for the subtask (about 0.3 s, with a probability per option).
 3. The badge or box center becomes normalized coordinates (§5.2), then a normal `click`.
 
 It can't see unlabeled icons, so UI-TARS or Gemini handle those screens. Add it as a `config` in
-`bench/results.csv` and let the numbers decide (PLAN.md §8). (Jev would have fit here, but the team says we can't
-use it.)
+`bench/results.csv` and let the numbers decide (PLAN.md §8).
+
+**Jev call** (format from computah's `docs/JEV_REQUESTS.md`): `POST https://api.typesafe.ai/v1/systemone`,
+model `jev-1.13.0`, a `state` (subtask, scene summary, candidate list) and a `choice` question whose `criteria` map
+IDs to options, plus `none_here`. Below 0.7, or `none_here`, means escalate. Also available on OpenRouter as
+`typesafe/jev-1.13`. Put the key in `.env` as `TYPESAFE_API_KEY`.
 
 **Why not the real accessibility API?** That's what makes Mac-only voice agents fast, but it requires software
 running *on* the target, which breaks "nothing installed" and our hardware story. The Voice Control overlay is the
@@ -148,7 +152,7 @@ match. It reads the macOS accessibility tree (no screenshots), lets Deepgram Flu
 *choice question* per step. Ideas that carry over even though we only have pixels and keyboard/mouse:
 1. **Ask a fast model to choose, never to write.** Each step is "here are the options, pick one ID," with a
    `none_here` answer (our escalation) and a probability per option. Code maps the ID back to a real target.
-   **Homemade Jev:** vLLM on the B200 supports constrained choice output (the model can only answer one of the given
+   We use Jev itself. **Backup if Jev goes down again:** vLLM on the B200 supports constrained choice output (the model can only answer one of the given
    IDs) plus logprobs, which gives the probability. A small, fast model served this way plays Jev's role.
 2. **Group the screen into choices first.** They don't send the whole tree, just a short list of actionable
    candidates ("AXButton; label=Done"). Ours: Voice Control badges or OCR boxes, as above.
