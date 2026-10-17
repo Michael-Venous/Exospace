@@ -100,7 +100,7 @@ Each tier is only used when the cheaper one can't handle the moment.
 | Tier | Who | Target latency | Job |
 |---|---|---|---|
 | 0. Skill / cache | Controller (no AI) | < 0.1 s | Per-OS keyboard skills (§6 in PLAN.md); replay a cached action for a screen seen before |
-| 1. Executor | UI-TARS on the B200s (candidate), **Jev picking from a numbered list (candidate)**, Gemini (baseline) | ~0.3–1 s | Screen + subtask → ONE next action (§5.3) |
+| 1. Executor | **Jev 1.14 on the screenshot (candidate)**, UI-TARS on the B200s (candidate), Jev on a numbered list, Gemini (baseline) | ~0.3–1 s | Screen + subtask → ONE next action (§5.3) |
 | 2. Planner | Gemini | 1.5–3 s | Goal + memory + device → subtasks; repair when stuck |
 
 **Rule: Gemini never runs between individual actions.** It runs on a new request, a device change, or when the
@@ -121,6 +121,37 @@ The planner then returns a revised list of remaining subtasks. **Risky actions**
 - **Look ahead:** while the executor works on subtask k, the planner can prepare k+1 (only after it's stable).
 - **Screen-fingerprint cache:** hash the settled frame (downscaled perceptual hash + the subtask text) → the action
   that worked. A cache hit skips the model entirely. Repeat runs get faster, which suits the benchmark slide.
+
+### Jev 1.14 can look at the screenshot itself (new as of Oct 14, beta)
+`jev-1.14.0` accepts images and adds a **`box` question**: "find the Send button in `screen`" returns
+`{"top","bottom","left","right"}` as fractions from 0 to 1, plus a confidence. That's already our §5.2 coordinate
+space if we crop the frame to the active rect first. The click target is the center of the box.
+
+One request per step can ask several questions about the same screenshot:
+```json
+{"model": "jev-1.14.0",
+ "state": {"screen": "frame", "subtask": "open the compose window", "last_action": "opened Mail"},
+ "assets": {"frame": {"type": "image", "format": "png", "data_base64": "<cropped frame>"}},
+ "questions": {
+   "action":  {"type": "choice", "instructions": "Which action advances `subtask` on `screen`?",
+               "criteria": {"click": "Click a visible control", "hotkey_new": "Press Cmd+N",
+                            "done": "subtask is already complete", "none_here": "No offered action applies"}},
+   "visible": {"type": "noul", "instructions": "Is a control that advances `subtask` visible in `screen`?"},
+   "target":  {"type": "box",  "instructions": "Find the control in `screen` that advances `subtask`"}}}
+```
+- Direct API: `POST https://api.typesafe.ai/v1/systemone` with header `TypeSafe-Danger-Zone-Images: true`.
+- **`box` has no "not found" answer.** It always returns four edges, so only click when `visible` is high
+  (TypeSafe recommends this pairing).
+- It's **beta** ("not recommended for production"), and we haven't measured latency yet. The team expects about
+  0.3–0.4 s; measure it first. Keep UI-TARS on the B200 as the comparison in `bench/results.csv`.
+- Downscale and crop frames before sending: fewer pixels means a faster, cheaper call.
+- Mask sensitive regions first (see "Sensitive data" below): this sends the screen to TypeSafe.
+
+This could replace OCR plus a candidate list for most screens. The numbered-list approach below stays as the
+fallback for dense, text-heavy screens, and lets us compare.
+
+**Open-source "Jev 8B" is not Jev.** TypeSafe hasn't released weights. Kev-8B on Hugging Face is a community,
+text-only model that copies the API, so it can't do `box`. For open vision on the B200s, use UI-TARS.
 
 ### Pick from a numbered list instead of guessing pixels (benchmark it, don't assume it)
 Asking a model to output exact click coordinates from a screenshot is slow and error-prone. Turning the screen into
