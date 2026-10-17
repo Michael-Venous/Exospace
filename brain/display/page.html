@@ -47,8 +47,12 @@ aside h2{margin:0;padding:12px 14px 6px;font-size:13px;letter-spacing:.06em;text
 #history .icon{text-align:center}
 #history .meta{color:var(--muted);font-size:14px;font-variant-numeric:tabular-nums}
 #history .why{grid-column:2/4;color:var(--muted);font-size:15px}
-#details{position:absolute;inset:0;background:var(--panel);padding:0 14px 14px;overflow:auto;display:none}
+#details{order:-1;display:none;max-height:55%;overflow:auto;padding:0 14px 10px;border-bottom:1px solid var(--line)}
 body.details #details{display:block}
+/* Simple view by default: plain-language rows. Details adds raw actions, coordinates and model times. */
+#history li.debug{display:none}
+body.details #history li.debug{display:grid}
+body:not(.details) #history .meta{display:none}
 .score{display:grid;grid-template-columns:110px 1fr 46px;align-items:center;gap:10px;margin:8px 0;font-size:15px}
 .bar{position:relative;height:10px;border-radius:5px;background:var(--line);overflow:visible}
 .bar i{position:absolute;inset:0 auto 0 0;border-radius:5px;background:var(--ok)}
@@ -60,7 +64,7 @@ footer{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 #stop{background:var(--bad);border-color:var(--bad);font-weight:800;font-size:20px;padding:14px 30px;letter-spacing:.06em}
 .seg{display:flex;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden}
 .seg button{border:0;border-radius:0}
-.seg button[aria-pressed=true]{background:var(--info);color:#04122b}
+.seg button[aria-pressed=true],#toggle[aria-pressed=true]{background:var(--info);color:#04122b}
 #tasks{display:flex;gap:8px;flex-wrap:wrap}
 form{display:flex;gap:8px;margin-left:auto;flex:1 1 260px;max-width:440px}
 input{flex:1;min-width:0;font:inherit;color:inherit;background:var(--panel);border:1px solid var(--line);
@@ -119,8 +123,9 @@ function post(path, body) {
   return fetch(path, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
 }
 function setState(s) { $("state").dataset.s = s; $("state").textContent = LABELS[s] || s; }
-function addRow(icon, text, meta, why) {
+function addRow(icon, text, meta, why, debug) {
   const li = document.createElement("li");
+  if (debug) li.className = "debug";
   li.innerHTML = `<span class="icon"></span><span></span><span class="meta"></span>`;
   li.children[0].textContent = icon; li.children[1].textContent = text; li.children[2].textContent = meta || "";
   if (why) { const w = document.createElement("span"); w.className = "why"; w.textContent = why; li.append(w); }
@@ -209,6 +214,25 @@ function showScores(scores) {
   }
 }
 
+// Plain-language versions of the agent's action briefs for the simple view.
+function friendly(brief) {
+  let m;
+  if ((m = brief.match(/^(click|double_click|right_click|tap|swipe)\(/)))
+    return {click: "Clicked", double_click: "Double-clicked", right_click: "Right-clicked", tap: "Tapped", swipe: "Swiped"}[m[1]];
+  if ((m = brief.match(/^type_text\((['"])(.*)\1\)$/))) return `Typed “${m[2]}”`;
+  if ((m = brief.match(/^hotkey\((.*)\)$/)))
+    return "Pressed " + m[1].split("+").map(k => k.charAt(0) + k.slice(1).toLowerCase()).join("+");
+  if ((m = brief.match(/^scroll\((-?\d+)\)$/))) return Number(m[1]) > 0 ? "Scrolled down" : "Scrolled up";
+  if ((m = brief.match(/^skill\(open_app .*'(?:name|text)': '([^']+)'/))) return "Opened " + m[1];
+  if ((m = brief.match(/^remember\((.*)\)$/))) return "Remembered " + m[1];
+  return brief;
+}
+const stageText = reasoning => {
+  const text = (reasoning || "").replace(/^Stage \d+\/\d+:\s*/, "");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+};
+let lastStage = "";
+
 const handlers = {
   config: e => { gates = e; },
   frame: e => { $("screen").src = "/screen.jpg?id=" + e.id; },
@@ -217,16 +241,19 @@ const handlers = {
     started = e.t; clearInterval(timer);
     timer = setInterval(() => { $("timer").textContent = (Date.now() / 1000 - started).toFixed(1) + " s"; }, 100);
     setMark("point", null);
-    addRow("▶", e.goal);
+    addRow("▶", e.goal); lastStage = "";
   },
   plan: e => {
     if (e.scores) showScores(e.scores);
     if (e.points.length) setMark("action", e.points[0], "pending");
-    addRow("◆", e.actions.join(", ") || "Thinking", e.t_model ? e.t_model.toFixed(2) + " s" : "", e.reasoning);
+    const stage = stageText(e.reasoning);
+    if (stage && stage !== lastStage) addRow("◆", stage);
+    lastStage = stage;
+    addRow("⚙", e.actions.join(", ") || "No action", e.t_model ? e.t_model.toFixed(2) + " s" : "", e.reasoning, true);
   },
   action: e => {
     if (e.point) setMark("action", e.point, e.ok ? "done" : "bad");
-    addRow(e.ok ? "✓" : "✗", e.action);
+    addRow(e.ok ? "✓" : "✗", friendly(e.action), e.action);
   },
   result: e => {
     setState(e.status); clearInterval(timer); $("timer").textContent = e.total_s.toFixed(1) + " s";
