@@ -17,12 +17,14 @@ from brain.cancel import CancelToken
 from brain.config import Config
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
+OVERLOADED = frozenset({429, 503})  # high demand or quota: switch models instead of waiting
 
 
 class GeminiJSON:
     def __init__(
         self, api_key: str, model: str, thinking: str | None,
         cancel: CancelToken, timeout_s: float, log_path: Path,
+        fallback_model: str = "",
     ) -> None:
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY is not set (see .env.example)")
@@ -31,6 +33,7 @@ class GeminiJSON:
 
         self._errors, self._types = errors, types
         self.model = model
+        self.fallback_model = fallback_model
         self.cancel = cancel
         self.thinking = thinking
         self.log_path = log_path
@@ -53,7 +56,9 @@ class GeminiJSON:
             thinking_config=types.ThinkingConfig(thinking_level=self.thinking) if self.thinking else None,
         )
         contents = [types.Part.from_bytes(data=image, mime_type="image/jpeg"), prompt]
+        next_model = self.model
         for attempt in range(1, 3):
+            model = next_model
             self.cancel.check()
             started = time.monotonic()
             success = False
@@ -62,7 +67,7 @@ class GeminiJSON:
             retry_delay = 0.5 * attempt
             try:
                 response = self.cancel.run(lambda: self.client.models.generate_content(
-                    model=self.model, contents=contents, config=config,
+                    model=model, contents=contents, config=config,
                 ))
                 data = json.loads(response.text or "")
                 if not isinstance(data, dict):
@@ -75,6 +80,8 @@ class GeminiJSON:
                 retry_delay = 10.0 if exc.code == 429 else 2.0
                 if exc.code not in RETRY_STATUS or attempt == 2:
                     raise
+                if exc.code in OVERLOADED and self.fallback_model:
+                    next_model, retry_delay = self.fallback_model, 0.0
             except (ValueError, TypeError) as exc:
                 error = type(exc).__name__
                 if attempt == 2:
@@ -83,7 +90,7 @@ class GeminiJSON:
                 error = type(exc).__name__
                 raise
             finally:
-                _log(self.log_path, run_id, step, role, self.model, attempt, started, success, error, status_code)
+                _log(self.log_path, run_id, step, role, model, attempt, started, success, error, status_code)
             self.cancel.sleep(retry_delay)
 
     def close(self) -> None:
@@ -236,7 +243,7 @@ def language_model(cfg: Config, cancel: CancelToken) -> GeminiJSON | ZaiJSON:
         return ZaiJSON(cfg.zai_api_key, cfg.zai_model, None, cancel, cfg.model_timeout_s,
                        cfg.model_log, cfg.zai_base_url)
     return GeminiJSON(cfg.gemini_api_key, cfg.gemini_model, cfg.gemini_thinking, cancel,
-                      cfg.model_timeout_s, cfg.model_log)
+                      cfg.model_timeout_s, cfg.model_log, cfg.fallback_model)
 
 
 def _log(path: Path, run_id: str, step: int, role: str, model: str, attempt: int,

@@ -1860,3 +1860,10 @@ cd8aff05,direct/glm-4.6v-flashx@768,linux,calendar-complex,total:11,,,,,,1,36.50
 26f720d6,direct/glm-4.6v-flashx@768,linux,calendar-complex,3,0.049,0.002,1.728,0.002,0.471,,
 26f720d6,direct/glm-4.6v-flashx@768,linux,calendar-complex,4,0.041,0.002,4.181,0.000,0.242,,
 26f720d6,direct/glm-4.6v-flashx@768,linux,calendar-complex,total:4,,,,,,1,13.363
+30fc581f,fallback-lite-3.5,windows,probe,1,,,1.968,,,1,1.968
+30fc581f,fallback-lite-3.5,windows,probe,2,,,1.594,,,1,1.594
+30fc581f,fallback-lite-3.5,windows,probe,3,,,0.922,,,1,0.922
+26e761c6,primary-flash-3.8,windows,probe,1,,,3.437,,,1,3.437
+8b191098,fallback-lite-3.5,windows,probe,1,,,0.766,,,1,0.766
+8b191098,fallback-lite-3.5,windows,probe,2,,,0.765,,,1,0.765
+8b191098,fallback-lite-3.5,windows,probe,3,,,0.829,,,1,0.829

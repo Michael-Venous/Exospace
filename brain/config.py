@@ -21,6 +21,7 @@ class Config:
     capture_height: int
     session_path: Path
     bench_csv: Path
+    fallback_model: str = "gemini-3.5-flash-lite"
     planner_model: str = "gemini-4-argon"
     planner_thinking: str | None = "medium"
     model_timeout_s: float = 30.0
@@ -63,6 +64,7 @@ class Config:
             capture_height=int(env("CAPTURE_HEIGHT", "1080")),
             session_path=Path(env("SESSION_PATH", "session.json")),
             bench_csv=Path(env("BENCH_CSV", "bench/results.csv")),
+            fallback_model=env("FALLBACK_MODEL", "gemini-3.5-flash-lite"),
             planner_model=env("PLANNER_MODEL", "gemini-4-argon"),
             planner_thinking=env("PLANNER_THINKING", "medium") or None,
             # z.ai flashx, 1,299 calls: p99 14 s, and a hung call runs to the timeout. At 12 s

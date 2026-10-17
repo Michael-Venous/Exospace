@@ -135,7 +135,7 @@ class JevFlashExecutor:
     def __init__(self,cfg:Config,cancel:CancelToken):
         self.cancel=cancel
         self.model=GeminiJSON(cfg.gemini_api_key,cfg.gemini_model,cfg.gemini_thinking,
-                             cancel,cfg.model_timeout_s,cfg.model_log)
+                             cancel,cfg.model_timeout_s,cfg.model_log,cfg.fallback_model)
         try:
             self.jev=JevVision(cfg.typesafe_api_key,cancel,cfg.model_log,cfg.jev_model,
                               cfg.jev_timeout_s,cfg.jev_min_presence,cfg.jev_min_confidence)

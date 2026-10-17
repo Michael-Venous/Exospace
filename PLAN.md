@@ -175,6 +175,12 @@ actions, paired sign test p = 0.00002, two scenarios incl. a held-out one).
   spoken-order commit, generation bump on interruption, stale-screen proposals re-grounded.
 - Flash 3.8 stays the planner: Live and Flash-Lite 3.5 made ~2x the wrong moves; text-only
   planning saved no time. Regex `direct_command` and recipe grammars are retired.
+- **Planner fallback:** a 503 (high demand) or 429 (quota) from `FAST_MODEL` retries once,
+  immediately, on `FALLBACK_MODEL` (default Flash-Lite 3.5; empty disables) instead of waiting
+  on the same model; other errors keep the old retry. 3.8 Flash returned 503/429 for hours on
+  2026-10-17. Probe (synthetic image, Windows): Lite 0.77–1.97 s (median 0.83, n=6) vs one
+  3.8 Flash call at 3.44 s. Lite planned worse in the study above, so this is degraded mode, not
+  a default. z.ai GLM is not a race fallback (it cannot follow jev-flash's stage schema).
 
 *(2026-10-17, from `overnight-ultracode`: `EXECUTOR=direct` (one call per step: z.ai GLM-4.6V-FlashX
 with `ZAI_API_KEY`, else Gemini) is an option, not the default. GLM does not follow jev-flash's stage

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
+from google.genai import errors
 
 from brain.agent.model import GeminiJSON, ZaiJSON, first_json_object, language_model, shape
 from brain.cancel import CancelToken
@@ -167,6 +168,62 @@ class ProviderTests(unittest.TestCase):
         client = language_model(replace(base, executor="direct", zai_api_key=""), CancelToken())
         self.addCleanup(client.close)
         self.assertIsInstance(client, GeminiJSON)
+
+
+def api_error(code):
+    return errors.APIError(code, {"error": {"message": "test", "status": "TEST"}})
+
+
+class FallbackTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / "calls.jsonl"
+        self.cancel = CancelToken()
+        self.client = GeminiJSON("offline-test-key", "primary", "low", self.cancel, 5,
+                                 self.path, fallback_model="fallback")
+        self.addCleanup(self.client.close)
+
+    def call(self, *responses):
+        with patch.object(self.client.client.models, "generate_content",
+                          side_effect=list(responses)) as generate, \
+                patch.object(self.cancel, "sleep") as sleep:
+            try:
+                return self.client.generate(b"image", "goal", "system", {}, role="fast")
+            finally:
+                self.models = [c.kwargs["model"] for c in generate.call_args_list]
+                self.sleeps = [c.args[0] for c in sleep.call_args_list]
+
+    def logged_models(self):
+        return [json.loads(line)["model"] for line in self.path.read_text().splitlines()]
+
+    def test_high_demand_switches_to_fallback_without_waiting(self):
+        result = self.call(api_error(503), SimpleNamespace(text='{"ok": true}'))
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(self.models, ["primary", "fallback"])
+        self.assertEqual(self.logged_models(), ["primary", "fallback"])
+        self.assertEqual(self.sleeps, [0.0])
+
+    def test_quota_switches_to_fallback(self):
+        result = self.call(api_error(429), SimpleNamespace(text='{"ok": true}'))
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(self.models, ["primary", "fallback"])
+
+    def test_client_errors_do_not_fall_back(self):
+        for code in (400, 401):
+            with self.subTest(code=code), self.assertRaises(errors.APIError):
+                self.call(api_error(code))
+            self.assertEqual(self.models, ["primary"])
+
+    def test_fallback_failure_surfaces(self):
+        with self.assertRaises(errors.APIError) as raised:
+            self.call(api_error(503), api_error(429))
+        self.assertEqual(raised.exception.code, 429)
+        self.assertEqual(self.models, ["primary", "fallback"])
+
+    def test_other_server_errors_retry_primary(self):
+        self.call(api_error(500), SimpleNamespace(text='{"ok": true}'))
+        self.assertEqual(self.models, ["primary", "primary"])
 
 
 if __name__ == "__main__":
