@@ -10,7 +10,7 @@ button{font:inherit;color:inherit;border:0;cursor:pointer}
 main{align-self:center}
 #heard{margin:0;max-width:11ch;font-size:clamp(56px,5.8vw,112px);line-height:1;letter-spacing:-.035em;text-wrap:balance}
 #heard.long{max-width:16ch;font-size:clamp(40px,3.8vw,72px)}
-#said:empty~#live:empty::before{content:"What are we doing today?";color:var(--ink)}
+body:not(.on,.wait) #said:empty~#live:empty::before{content:"What are we doing today?";color:var(--ink)}
 #live,#says{color:var(--dim)}
 #says{margin-top:.9em;max-width:40ch;min-height:1.3em;font-size:clamp(24px,2vw,36px);letter-spacing:-.01em}
 .err{color:#ff6961}
