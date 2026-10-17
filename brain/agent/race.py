@@ -1,6 +1,7 @@
 """Race executor: Jev triage and the Flash planner start together on every segment.
 
   act   confident Jev target -> one zoom-refined click, no LLM wait; the plan is discarded
+  keys  (JEV_SOLO_SKILLS=1) open an app or go to a site by keyboard, no LLM wait
   none  a remark or context -> remembered, no input
   plan  the planner's already-running result is used, so a Jev miss costs no extra time
 Irreversible requests never execute until the user approves them in the next turn.
@@ -14,6 +15,7 @@ from dataclasses import dataclass, replace
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_flash import JevFlashExecutor
+from brain.agent.solo import solo_actions
 from brain.agent.triage import answer_to_pending, triage
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
@@ -31,11 +33,14 @@ class _Pending:
 
 class RaceExecutor:
     image_grid = False
+    solo = False  # JEV_SOLO_SKILLS: triage may route easy keyboard tasks without the planner
 
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
         self.planner = JevFlashExecutor(cfg, cancel)
         self.jev = self.planner.jev
         self.cancel = cancel
+        self.solo = cfg.jev_solo_skills
+        self._keys: list[Action] = []
         # One worker: a speculative plan for an earlier segment always finishes before
         # the next one starts, so the planner's state is never touched concurrently.
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="race-planner")
@@ -65,12 +70,12 @@ class RaceExecutor:
         if key != self._key:
             self._key, self._clicked, self._approved_goal = key, False, None
             return self._start(image, ctx)
-        if self.mode == "act":
+        if self.mode in ("act", "keys"):
             if not self._clicked and ctx.step != self._triage_step:
-                # The loop discarded the click (the screen moved): aim again on this screen.
+                # The loop discarded the input (the screen moved): decide again on this screen.
                 return self._route(image, ctx, self._utterance, confirmed=True)
             if not self._clicked:
-                return self._direct()
+                return self._direct() if self.mode == "act" else self._solo()
             if "unchanged" not in (ctx.note or ""):
                 return Plan("Jev direct action done", [Action("done", summary="Done.")], [])
             self.mode = "plan"  # the click had no visible effect: let the planner recover
@@ -100,7 +105,8 @@ class RaceExecutor:
         # The single planner worker queues this behind any discarded speculation, so triage
         # (the fast path) never waits for an old plan to finish.
         self._plan = self._pool.submit(self.planner.next_actions, image, self._planner_ctx(ctx))
-        result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, run_id=ctx.run_id))
+        result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, solo=self.solo,
+                                                run_id=ctx.run_id))
         if result.irreversible and not confirmed:
             self.mode = "none"
             self._pending = _Pending(utterance, ctx.goal, ctx.profile.connected_at)
@@ -115,6 +121,11 @@ class RaceExecutor:
                                           Action("done", summary="Noted.")], [])
         if self.mode == "act":
             return self._direct()
+        if self.mode == "keys":
+            self._keys = solo_actions(result.skill, result.text, ctx.profile.os) or []
+            if self._keys:
+                return self._solo(f"{result.skill} {result.text!r}")
+            self.mode = "plan"  # this OS has no keyboard route for it
         return self.cancel.run(self._plan.result)
 
     def _planner_ctx(self, ctx: StepContext) -> StepContext:
@@ -122,6 +133,9 @@ class RaceExecutor:
 
     def _direct(self) -> Plan:
         return Plan("Jev direct action", [Action(self._gesture, x=self._point[0], y=self._point[1])], [])
+
+    def _solo(self, what: str = "") -> Plan:
+        return Plan(f"Jev solo skill {what}".rstrip(), list(self._keys), [])
 
     def _settle_speculation(self) -> None:
         """Wait out a discarded speculative plan before the planner is used again."""

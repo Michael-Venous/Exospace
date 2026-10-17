@@ -33,6 +33,7 @@ class Config:
     jev_timeout_s: float = 20.0
     jev_min_presence: float = 0.85
     jev_min_confidence: float = 0.6
+    jev_solo_skills: bool = False  # experimental: triage opens apps and sites by keyboard alone
     zai_api_key: str = ""
     zai_model: str = "glm-4.6v-flashx"
     zai_planner_model: str = "glm-4.6v"
@@ -82,6 +83,7 @@ class Config:
             jev_timeout_s=float(env("JEV_TIMEOUT_S", "20")),
             jev_min_presence=float(env("JEV_MIN_PRESENCE", "0.85")),
             jev_min_confidence=float(env("JEV_MIN_CONFIDENCE", "0.6")),
+            jev_solo_skills=env("JEV_SOLO_SKILLS", "").strip().lower() in ("1", "true", "yes"),
             zai_api_key=env("ZAI_API_KEY", ""),
             zai_model=env("ZAI_MODEL", "glm-4.6v-flashx"),
             zai_planner_model=env("ZAI_PLANNER_MODEL", "glm-4.6v"),
