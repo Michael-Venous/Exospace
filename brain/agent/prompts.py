@@ -47,10 +47,11 @@ purchasing, sending messages, or anything irreversible.
 
 FIRMWARE (BIOS/UEFI setup, boot menus)
 No pointer: a click only moves the highlight onto the menu row nearest it, and UP/DOWN \
-move it one row per press. ENTER opens or selects the highlighted row (or starts editing its \
-value: type the number, then ENTER), so check which row is highlighted first; ESC goes back; \
-change values with +/- or the keys in the on-screen legend. F10 usually saves and exits: \
-ask_user before saving any change the user did not request. From a running OS, prefer its restart-to-firmware option \
+move it one row per press. ENTER opens or selects the highlighted row, so check which row is \
+highlighted first; ESC goes back. To change a number press ENTER, type it, then ENTER (typing \
+alone does nothing); change other values with +/- or the keys in the on-screen legend. F10 \
+usually saves and exits: save what the goal asks for without asking, but ask_user before \
+saving any other change. From a running OS, prefer its restart-to-firmware option \
 (Windows: Settings > System > Recovery > Advanced startup; Linux: \
 systemctl reboot --firmware-setup), and ask_user first unless the goal needs firmware setup. \
 Otherwise restart with boot_keys FIRST in the same batch, or the restart skips setup, e.g. \
@@ -82,13 +83,17 @@ OS_HINTS = {
     "macos": "GUI (Command) shortcuts where Windows uses CTRL, e.g. GUI+C, GUI+L, GUI+Q.",
     "linux": "CTRL shortcuts; GUI opens the app launcher.",
     "chromeos": "CTRL shortcuts; GUI (the Search key) opens the launcher.",
-    "android": "Click taps; GUI+H goes home, GUI+LEFT goes back (also out of a black screen an app hides).",
+    "android": ("Click taps (taps on the on-screen keyboard type); open apps with open_app. GUI+H goes "
+                "home; GUI+LEFT goes back, hides the keyboard and leaves a black screen an app hides."),
     "ios": "GUI (Command) shortcuts; GUI+H goes home, GUI+SPACE searches.",
     "bios": ("Firmware or pre-OS screen (see FIRMWARE): a click only moves the highlight. A menu of entries like Device "
              "Manager and Boot Manager, or tabs like Main/Advanced/Boot/Exit, IS firmware setup: you are "
              "already in it. Boot Manager and boot menus start a device at once; settings such as boot "
-             "order and time-out are under Boot Maintenance Manager or a Boot tab. A change is lost unless "
-             "saved (F10, then Y): never done while 'Configuration changed' or a like notice shows. "
+             "order and time-out are under Boot Maintenance Manager or a Boot tab. A highlighted number "
+             "ignores typing until ENTER opens its entry box (an empty [ ] and \"valid inputs\" in the "
+             "legend): closed, change it with [ENTER, type the digits, ENTER]; already open, type the "
+             "digits, then ENTER. A change is lost unless saved (F10, then Y; a requested change "
+             "needs no ask_user): never done while 'Configuration changed' or a like notice shows. "
              "Setup keys do nothing until a restart. In a UEFI shell (Shell> prompt), exit then ENTER "
              "returns to the firmware menu; reset then ENTER restarts."),
 }
@@ -98,6 +103,23 @@ OS_PROMPT = (
     "status bar and window styling. Answer bios for firmware setup, boot menus and other "
     "pre-OS screens, chromeos for a Chromebook and ios for an iPhone or iPad."
 )
+
+DONE_PROMPT = """You check another agent's claim that it finished a goal on a device. Judge \
+from the screenshot, not the claim: is every part of the goal visibly achieved and kept (saved, \
+applied or sent; each value as requested)? A notice of unsaved changes, such as 'Configuration \
+changed' or a '*' by a document name, means it is not kept. Stored facts count as remembered. If not, say \
+briefly what is missing."""
+
+DONE_TEMPLATE = """Goal: {goal}
+Device: {os}. {os_hint}
+Stored facts: {facts}
+Claim: {claim}"""
+
+DONE_SCHEMA = {
+    "type": "object",
+    "properties": {"complete": {"type": "boolean"}, "missing": {"type": "string"}},
+    "required": ["complete", "missing"],
+}
 
 SKILLS = ["open_app", "wait", "boot_keys"]
 

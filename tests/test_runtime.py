@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, parse_plan
+from brain.agent.executor import ModelExecutor, Plan, StepContext, context_prompt, detect_os, parse_plan
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
 from brain.agent.orchestrator import Guidance, Orchestrator
@@ -269,6 +269,24 @@ class RuntimeTests(unittest.TestCase):
     def test_key_press_named_key_becomes_hotkey(self):
         for raw in ({"type": "key", "keys": ["DOWN"]}, {"type": "key", "key": "DOWN"}):
             self.assertEqual(parse_plan({"actions": [raw]}).actions[0].keys, ("DOWN",))
+
+    def test_done_after_input_must_show_on_screen(self):
+        model = Mock()
+        done = {"reasoning": "", "actions": [{"type": "remember", "key": "k", "text": "v"},
+                                             {"type": "done", "message": "Set to 7"}]}
+        model.generate.side_effect = [done, {"complete": False, "missing": "time-out shows 0"},
+                                      done, {"complete": True, "missing": ""}, done]
+        with patch("brain.agent.executor.language_model", return_value=model):
+            executor = ModelExecutor(Mock(), self.cancel, routing=False)
+        acted = StepContext("Set the time-out to 7", self.profile, self.memory, ["hotkey(F10)"], 3, 8)
+        refused = executor.next_actions(b"jpeg", acted)
+        self.assertEqual([a.type for a in refused.actions], ["remember"])
+        self.assertIn("time-out shows 0", refused.rejected[0])
+        self.assertEqual(executor.next_actions(b"jpeg", acted).actions[1].type, "done")
+        # A question answered before any input skips the check.
+        idle = StepContext("What is the time-out?", self.profile, self.memory, [], 1, 8)
+        self.assertEqual(executor.next_actions(b"jpeg", idle).actions[1].type, "done")
+        self.assertEqual(model.generate.call_count, 5)
 
     def test_semantic_executor_checks_covered_result_without_double_counting(self):
         self.hid.change=False

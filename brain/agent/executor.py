@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol, cast
 
 from brain.agent.memory import Memory
 from brain.agent.model import GeminiJSON, ZaiJSON, language_model
-from brain.agent.prompts import OS_HINTS, OS_PROMPT, OS_SCHEMA, PLAN_SCHEMA, SKILLS, SYSTEM_PROMPT, USER_TEMPLATE
+from brain.agent.prompts import (DONE_PROMPT, DONE_SCHEMA, DONE_TEMPLATE, OS_HINTS, OS_PROMPT, OS_SCHEMA,
+                                 PLAN_SCHEMA, SKILLS, SYSTEM_PROMPT, USER_TEMPLATE)
 from brain.cancel import CancelToken
 from brain.config import Config
 from brain.types import OS_NAMES, Action, ActionError, DeviceProfile, OSName
@@ -79,7 +80,24 @@ class ModelExecutor:
     def next_actions(self, image_jpeg: bytes, ctx: StepContext) -> Plan:
         data = self.model.generate(image_jpeg, context_prompt(ctx), self.system, self.schema,
                                    role="fast", run_id=ctx.run_id, step=ctx.step)
-        return parse_plan(data)
+        plan = parse_plan(data)
+        first = next((action for action in plan.actions if action.type != "remember"), None)
+        # GLM claims done from its own history; once it has acted, the screen must show it.
+        if first is not None and first.type == "done" and ctx.history:
+            missing = self._missing(image_jpeg, ctx, first.summary)
+            if missing:
+                return replace(plan, actions=[a for a in plan.actions if a.type == "remember"], rejected=[
+                    f"Not confirmed done: {missing}. Finish it or bring the result into view; "
+                    "never repeat a send, purchase or deletion."])
+        return plan
+
+    def _missing(self, image_jpeg: bytes, ctx: StepContext, claim: str) -> str:
+        prompt = DONE_TEMPLATE.format(goal=ctx.goal, os=ctx.profile.os, os_hint=OS_HINTS.get(ctx.profile.os, ""),
+                                      facts=json.dumps(ctx.memory.facts) if ctx.memory.facts else "(none)",
+                                      claim=claim)
+        data = self.model.generate(image_jpeg, prompt, DONE_PROMPT, DONE_SCHEMA,
+                                   role="check", run_id=ctx.run_id, step=ctx.step)
+        return "" if data.get("complete") is True else str(data.get("missing") or "not shown on screen")
 
     def classify_os(self, image_jpeg: bytes) -> OSName:
         return detect_os(self.model, image_jpeg)

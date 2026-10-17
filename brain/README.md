@@ -51,7 +51,10 @@ this prompt yet. `--max-steps` defaults to 30.
 ## Models and latency
 
 With `ZAI_API_KEY` set, the default is `EXECUTOR=direct`: GLM-4.6V-FlashX returns each
-step's actions and coordinates in one call (PLAN.md §13). Otherwise the default is
+step's actions and coordinates in one call (PLAN.md §13). GLM tends to claim `done` from
+its own history, so once a run has sent input, a short second call (about 1.7 s per `done`
+claim) must confirm that the screenshot shows the goal; if not, the run continues with what
+is missing. Otherwise the default is
 **Jev 1.14 + Gemini 3.8 Flash** (`EXECUTOR=jev-flash`).
 Set `GEMINI_API_KEY` and `TYPESAFE_API_KEY` in the ignored `.env`. Flash chooses
 semantic actions and writes content; Jev supplies pointer locations from the
