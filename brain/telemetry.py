@@ -56,7 +56,7 @@ class Telemetry:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         new_file = not self._path.exists()
         with self._path.open("a", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=FIELDS)
+            writer = csv.DictWriter(fh, fieldnames=FIELDS, lineterminator="\n")  # csv defaults to CRLF
             if new_file:
                 writer.writeheader()
             writer.writerow(row)
