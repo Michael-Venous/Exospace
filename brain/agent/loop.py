@@ -12,9 +12,10 @@ from brain.cancel import Cancelled
 from brain.capture import active_rect, frame_change, is_blank, thumbnail
 from brain.controller import Controller
 from brain.errors import describe
+from brain.events import EventBus
 from brain.imaging import prepare
 from brain.telemetry import Telemetry
-from brain.types import ActionError, DeviceProfile, TERMINAL_ACTIONS
+from brain.types import Action, ActionError, DeviceProfile, Frame, POINTER_ACTIONS, TERMINAL_ACTIONS
 from brain.verification import visibly_changed
 
 MAX_STALE_DISCARDS = 1  # consecutive plans dropped because the screen moved mid-inference
@@ -31,11 +32,14 @@ class TaskResult:
 class Agent:
     def __init__(self, executor: Executor, controller: Controller, memory: Memory,
                  telemetry: Telemetry, max_steps: int = 30,
-                 on_status: Callable[[str], None] = lambda message: None) -> None:
+                 on_status: Callable[[str], None] = lambda message: None,
+                 events: EventBus | None = None) -> None:
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
+        self.events = events
+        self._shown_scores: object = None
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
@@ -51,6 +55,7 @@ class Agent:
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
         self.on_status("Working on your request…")
+        self._emit("run", goal=goal, run_id=run_id)
         try:
             for step in range(1, self.max_steps + 1):
                 times = dict(t_capture=0.0, t_upload=0.0, t_model=0.0, t_execute=0.0, t_settle=0.0)
@@ -67,6 +72,7 @@ class Agent:
                     stamp = time.monotonic()
                     jpeg = prepare(frame, profile.rect, grid=getattr(self.executor, "image_grid", True))
                     times["t_upload"] = time.monotonic() - stamp
+                    self._show(frame, profile, jpeg)
                     ctx = StepContext(goal, profile, self.memory, history, step,
                                       self.max_steps, note=note, run_id=run_id)
                     stamp = time.monotonic()
@@ -76,6 +82,10 @@ class Agent:
                         times["t_model"] = time.monotonic() - stamp
                     token.check()
                     self.on_status(f"Step {step}: {plan.reasoning}")
+                    self._emit("plan", step=step, reasoning=plan.reasoning,
+                               actions=[a.brief() for a in plan.actions],
+                               points=[[a.x, a.y] for a in plan.actions if a.type in POINTER_ACTIONS],
+                               scores=self._jev_scores(), t_model=round(times["t_model"], 3))
                     if plan.refresh_screen:
                         note = "Planner updated. Recheck the current screen before acting."
                         continue
@@ -111,7 +121,9 @@ class Agent:
                             try:
                                 ctl.execute(action, profile)
                                 changed_input = True
+                                self._emit_action(step, action, ok=True)
                             except ActionError as exc:
+                                self._emit_action(step, action, ok=False)
                                 notes.append(f"Rejected action: {exc}. Try another action.")
                                 action_failed = True
                                 break
@@ -168,4 +180,32 @@ class Agent:
                                   time.monotonic() - started)
         self.memory.set_task(goal, status)
         self.memory.add_turn("assistant", message)
+        self._emit("result", status=status, message=message, steps=step,
+                   total_s=round(time.monotonic() - started, 3))
         return TaskResult(status, message, step, run_id)
+
+    # -- display events (no-ops without a display) -------------------------
+
+    def _emit(self, ev: str, **fields: object) -> None:
+        if self.events is not None:
+            self.events.publish(ev, **fields)
+
+    def _emit_action(self, step: int, action: Action, *, ok: bool) -> None:
+        point = [action.x, action.y] if action.type in POINTER_ACTIONS else None
+        self._emit("action", step=step, action=action.brief(), point=point, ok=ok)
+
+    def _show(self, frame: Frame, profile: DeviceProfile, model_jpeg: bytes) -> None:
+        """Share the step's screen. The model copy is reused unless it has an aiming grid."""
+        if self.events is None:
+            return
+        grid = getattr(self.executor, "image_grid", True)
+        self.events.set_frame(prepare(frame, profile.rect, grid=False) if grid else model_jpeg)
+
+    def _jev_scores(self) -> dict[str, object] | None:
+        """Scores from Jev's latest check, or None if this step made no new check
+        (Jev replaces `last_scores` with a new dict on every call)."""
+        scores = getattr(getattr(self.executor, "jev", None), "last_scores", None)
+        if not isinstance(scores, dict) or scores is self._shown_scores:
+            return None
+        self._shown_scores = scores
+        return dict(scores)

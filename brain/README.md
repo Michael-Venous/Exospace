@@ -179,6 +179,25 @@ Offline tests send no real input and make no model requests:
 .venv/bin/python -m unittest discover -s tests -v
 ```
 
+## Touch display and projector view
+
+`--display PORT` serves a local page (`brain/display/`) fed by live agent events (`brain/events.py`):
+
+```sh
+.venv/bin/python -m brain --backend browser --url https://www.google.com --headed --display 8770
+# open http://127.0.0.1:8770 (on the Pi: Chromium kiosk on the Touch Display 2)
+```
+
+- **Main view:** live screen with the click marker, history (actions, Flash/Jev reasoning, model time), STOP
+  (same cancel path as barge-in), saved-task buttons and a typed-goal box. **Details:** the last Jev check's
+  present / unique / clear / box scores against the `.env` pass marks.
+- **Taps:** "Tap = click" clicks that spot on the target through the normal controller. "Tap = this" marks a point,
+  and the next goal is sent to Flash with it ("delete this").
+- **For voice:** post a finished transcript to `POST /goal {"text": "..."}`; `POST /stop` is the barge-in.
+- The server only queues goals and taps. The main loop stays the single HID writer. The `pi` backend streams
+  capture frames at 4 fps; other backends update the screen once per step and after taps (they aren't thread-safe).
+- The page is read once at startup, so restart the app after editing it.
+
 ## Platform independence and accessibility
 
 The current cross-platform path is screenshot → normalized action → HID. The
