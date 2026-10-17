@@ -22,6 +22,7 @@ import json
 import os
 import queue
 import threading
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -80,6 +81,9 @@ class Agent:
         while True:
             try:
                 with urllib.request.urlopen(self.base + "/events", timeout=KEEPALIVE_S * 2) as stream:
+                    # The agent replays recent events: they set busy, but saying them again would be stale.
+                    # shortcut: compares the agent's clock with ours; send a sequence number if the agent moves to another machine.
+                    since = time.time()
                     for raw in stream:
                         if not raw.startswith(b"data: "):
                             continue
@@ -89,7 +93,7 @@ class Agent:
                         elif event.get("ev") == "result":
                             self.busy = False
                         line = narrate(event)
-                        if line:
+                        if line and event.get("t", since) >= since:
                             lines.put(line)
             except OSError:
                 threading.Event().wait(1.0)  # agent restarting; reconnect
