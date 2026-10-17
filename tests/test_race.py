@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 from brain.agent.executor import Plan, StepContext
+from brain.agent.jev_only import JevOnlyPlanner
 from brain.agent.memory import Memory
 from brain.agent.race import RaceExecutor
 from brain.agent.triage import Triage, triage
@@ -181,3 +182,26 @@ class RaceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class JevOnlyTests(unittest.TestCase):
+    def setUp(self):
+        self.planner = object.__new__(JevOnlyPlanner)
+        self.planner.jev = Mock()
+        profile = DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1)
+        self.ctx = StepContext("open calculator", profile, Mock(), ["skill open_app"], 2, 10)
+
+    def test_goal_jev_sees_done_is_done(self):
+        self.planner.jev.completion.return_value = .9
+        self.assertEqual(self.planner.next_actions(b"img", self.ctx).actions[0].type, "done")
+
+    def test_plan_request_fails_without_a_language_model(self):
+        self.planner.jev.completion.return_value = .1
+        self.assertEqual(self.planner.next_actions(b"img", self.ctx).actions[0].type, "fail")
+
+    def test_os_comes_from_a_jev_choice(self):
+        self.planner.jev.evaluate.return_value = ({"os": {"choice": "android"}}, None, None)
+        self.assertEqual(self.planner.classify_os(b"img"), "android")
+        self.planner.jev.evaluate.return_value = ({"os": {"choice": "beos"}}, None, None)
+        with self.assertRaises(ValueError):
+            self.planner.classify_os(b"img")

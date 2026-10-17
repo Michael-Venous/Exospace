@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
     home_os = cast(OSName | None, cfg.target_os or None)
     if home_os not in (None, *OS_NAMES) or home_os in ("unknown", "bios"):
         parser.error("TARGET_OS must be one of windows, macos, linux, chromeos, android, ios")
-    if not (cfg.gemini_api_key or cfg.uses_zai):
+    if cfg.executor != "jev" and not (cfg.gemini_api_key or cfg.uses_zai):
         status("Set ZAI_API_KEY or GEMINI_API_KEY in the project .env (see .env.example); either one works.")
         return 1
     try:
@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
             correction = False
             pointed: tuple[float, float] | None = None
 
-            status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
+            status(f"Executor: {cfg.executor}; model: {cfg.jev_model if cfg.executor == 'jev' else cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
             while True:
                 try:
                     if bus is None:
