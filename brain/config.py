@@ -39,7 +39,6 @@ class Config:
     zai_thinking: str | None = None  # thinking off: GLM's reasoning costs seconds per step
     zai_fallback_model: str = "glm-4.6v"
     zai_base_url: str = "https://api.z.ai/api/paas/v4"
-    target_os: str = ""
     local_keyboard: str = ""
 
     @property
@@ -88,6 +87,5 @@ class Config:
             zai_thinking=env("ZAI_THINKING") or None,
             zai_fallback_model=env("ZAI_FALLBACK_MODEL", "glm-4.6v"),
             zai_base_url=env("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
-            target_os=env("TARGET_OS", ""),
             local_keyboard=env("LOCAL_KEYBOARD", ""),
         )

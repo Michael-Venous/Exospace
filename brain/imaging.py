@@ -1,6 +1,5 @@
-"""Preparing frames for the model: crop to the active screen, scale its long side to
-MAX_SIDE, add an aiming grid, and JPEG-encode. Bigger images aim better; smaller ones
-upload and process faster."""
+"""Preparing frames for the model: crop to the active screen, shrink, add an
+aiming grid, and JPEG-encode. Smaller images upload and process faster."""
 
 from __future__ import annotations
 
@@ -17,11 +16,9 @@ GRID_COLOR = (0, 0, 255)  # BGR red
 def prepare(frame: Frame, rect: Rect, grid: bool = True) -> bytes:
     image = rect.crop(frame)
     h, w = image.shape[:2]
-    scale = MAX_SIDE / max(h, w)
-    if scale != 1.0:
-        # Enlarged too: on a 640x480 firmware screen the model hit 24/30 menu rows at 2x, 19/30 as is.
-        image = cv2.resize(image, (round(w * scale), round(h * scale)),
-                           interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC)
+    scale = min(1.0, MAX_SIDE / max(h, w))
+    if scale < 1.0:
+        image = cv2.resize(image, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
     else:
         image = image.copy()
     if grid:

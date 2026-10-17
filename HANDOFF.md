@@ -30,7 +30,9 @@ Earlier session logs and research notes live in git history; current evidence is
 | Turn on dark theme | Android emulator | 2 of 3 |
 | Set an alarm for 6:45 AM | Android emulator | 1 of 3 |
 | Add contact Ada Lovelace, 555 123 4567 | Android emulator | 0 of 9 |
-| Restart into firmware setup, set boot time-out to 7 s | QEMU/OVMF | 4 of 21 |
+
+These runs used per-OS prompt hints and the emulator backend, both since removed (PLAN.md §10), so they are
+history, not a measure of `main`.
 
 ## Fixed after the website runs
 - Scroll amounts are wheel notches (the planner had sent pixel counts; on the Pico that flings to the
@@ -47,16 +49,7 @@ Earlier session logs and research notes live in git history; current evidence is
   planner went back again (2/2).
 - **Planner-path clicks are less precise** than the direct path: 8/15 inside the target without zoom,
   12/15 with it. The planner path does not zoom yet.
-- **Race planner and `wait`:** the planner prompt offers `skill(name=wait)` and `boot_keys`, but its schema still
-  removes `wait` from the allowed names, so race cannot actually ask for it.
-- **Firmware is experimental:** the model often claims `done` before saving with F10 then Y. PCs with Fast Boot
-  ignore USB keyboards during POST, a restart that never resets USB gets no key taps, and Mac boot keys must be
-  held, which taps cannot do.
-- **Thin re-detection margins:** the threshold (40) is close to the smallest firmware-to-desktop change
-  measured (44.1); one firmware-to-phone pair changed by only 1.9, so a phone misread as firmware can stay `bios`.
-- **Quick start uses a word list,** so "open a text editor" still goes to the model.
-- **Untested:** the capture card, the real Pico, a Mac, a real phone (only the emulator), iOS and ChromeOS.
-  The OS hints were tuned on Linux and Android only.
+- **Untested:** the capture card, the real Pico, a Mac, a real phone, iOS and ChromeOS.
 
 ## Waiting on hardware (in order)
 1. On the Pi with sudo: the steps `scripts/pi/setup.sh` prints (uart0, `video`/`dialout` groups, linger),
@@ -70,7 +63,6 @@ Earlier session logs and research notes live in git history; current evidence is
 ## Still to do
 - Race vs direct in `bench/arch/e2e_study.py`, with an injection segment.
 - `bench/guard_cost.py` and the full test suite on the Pi.
-- Team sign-off on the contract notes added for firmware and new OS names (PLAN.md §5.3, §5.4, §5.6).
 - Wire `brain/arbiter.py` for pipelined voice segments (the voice layer interrupts and resubmits today).
 - The push-to-talk GPIO button and 3.5 mm switch jack are wired in the bring-up guide but not read by
   software yet; the voice page's Talk button and the Space bar work.

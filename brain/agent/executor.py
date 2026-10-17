@@ -9,7 +9,7 @@ from typing import Any, Protocol, cast
 
 from brain.agent.memory import Memory
 from brain.agent.model import GeminiJSON, ZaiJSON, language_model
-from brain.agent.prompts import (DONE_PROMPT, DONE_SCHEMA, DONE_TEMPLATE, OS_HINTS, OS_PROMPT, OS_SCHEMA,
+from brain.agent.prompts import (DONE_PROMPT, DONE_SCHEMA, DONE_TEMPLATE, OS_PROMPT, OS_SCHEMA,
                                  PLAN_SCHEMA, SKILLS, SYSTEM_PROMPT, USER_TEMPLATE)
 from brain.cancel import CancelToken
 from brain.config import Config
@@ -79,7 +79,7 @@ class ModelExecutor:
                                     else (SYSTEM_PROMPT, PLAN_SCHEMA))
 
     def next_actions(self, image_jpeg: bytes, ctx: StepContext) -> Plan:
-        data = self.model.generate(image_jpeg, context_prompt(ctx, os_hint=True), self.system, self.schema,
+        data = self.model.generate(image_jpeg, context_prompt(ctx), self.system, self.schema,
                                    role="fast", run_id=ctx.run_id, step=ctx.step)
         plan = parse_plan(data)
         first = next((action for action in plan.actions if action.type != "remember"), None)
@@ -94,7 +94,7 @@ class ModelExecutor:
 
     def missing(self, image_jpeg: bytes, ctx: StepContext, claim: str) -> str:
         """What the screen does not yet show of the goal, or "" when the claim holds."""
-        prompt = DONE_TEMPLATE.format(goal=ctx.goal, os=ctx.profile.os, os_hint=OS_HINTS.get(ctx.profile.os, ""),
+        prompt = DONE_TEMPLATE.format(goal=ctx.goal, os=ctx.profile.os,
                                       facts=json.dumps(ctx.memory.facts) if ctx.memory.facts else "(none)",
                                       history=_lines(ctx.history[-5:]), claim=claim)
         data = self.model.generate(image_jpeg, prompt, DONE_PROMPT, DONE_SCHEMA,
@@ -109,19 +109,16 @@ class ModelExecutor:
 
 
 def detect_os(model: GeminiJSON | ZaiJSON, image_jpeg: bytes) -> OSName:
-    """One model call naming the screen's OS, or "bios" for firmware screens (PLAN.md §5.4)."""
+    """One model call naming the screen's OS, or "unknown" (PLAN.md §5.4)."""
     os = model.generate(image_jpeg, OS_PROMPT, OS_PROMPT, OS_SCHEMA, role="device").get("os", "unknown")
     if os not in OS_NAMES:
         raise ValueError("invalid operating system classification")
     return cast(OSName, os)
 
 
-def context_prompt(ctx: StepContext, *, os_hint: bool = False) -> str:
-    """`os_hint` adds the OS's keyboard conventions; only the one-call executor gets them, since
-    race's prompts were measured without."""
+def context_prompt(ctx: StepContext) -> str:
     return USER_TEMPLATE.format(
         goal=ctx.goal, os=ctx.profile.os, input=ctx.profile.input,
-        os_hint=OS_HINTS.get(ctx.profile.os, "") if os_hint else "",
         step=ctx.step, max_steps=ctx.max_steps,
         conversation=_lines(f"{t['role']}: {t['text']}" for t in ctx.memory.recent_turns()),
         facts=json.dumps(ctx.memory.facts) if ctx.memory.facts else "(none)",
@@ -173,8 +170,6 @@ def _to_contract(raw: dict[str, Any]) -> dict[str, Any]:
     if kind == "skill":
         out["name"] = raw.get("name", "")
         out["args"] = {"name": raw.get("text", "")}
-        if "keys" in raw:
-            out["args"]["keys"] = raw["keys"]  # boot_keys
     elif kind == "remember":
         out["key"] = raw.get("key", "")
         out["value"] = raw.get("text", "")

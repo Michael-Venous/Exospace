@@ -16,8 +16,6 @@ cp -n .env.example .env     # then ZAI_API_KEY or GEMINI_API_KEY (either one), T
 | `pi` (default) | `.venv/bin/python -m brain --display 8770` | capture card + Pico (`CAPTURE_DEVICE`, `PICO_SERIAL`) |
 | `browser` | `.venv/bin/python -m brain --backend browser --url URL --os linux --headed --display 8770` | an isolated Chromium; models see screenshots only, never the DOM |
 | `local` | `.venv/bin/python -m brain --backend local --os macos` | this machine's own desktop (`-e '.[local]'`, PyAutoGUI; not on Wayland; `LOCAL_KEYBOARD` sends keys through a Pico) |
-| `qemu` | `.venv/bin/python -m brain --backend qemu` | a QEMU + OVMF UEFI virtual PC for restart and firmware tests (packages `qemu-system-x86`, `ovmf`) |
-| `android` | `.venv/bin/python -m brain --backend android` | an emulator or USB-debugging phone over `adb` (screencap in, `input` taps and keys out) |
 
 For the browser backend, run `.venv/bin/python -m playwright install chromium` once, or set
 `BROWSER_EXECUTABLE` to an existing Chrome. Add the voice page with
@@ -25,7 +23,8 @@ For the browser backend, run `.venv/bin/python -m playwright install chromium` o
 
 Typed goals work too. Ctrl+C during a task cancels and releases input. The next line corrects the
 previous goal; `/new GOAL` starts a different one. Ctrl+C at the prompt exits. `--max-steps` defaults to 30.
-`--os` or `TARGET_OS` skips OS detection (`TARGET_OS` still detects firmware screens).
+`--os` skips OS detection. The OS is only a label for the models and picks touch (Android) or mouse input;
+every device gets the same prompts and controller.
 
 On the Pi, `python -m brain.doctor` checks the capture card, Pico, UART and keys; the services and deploy
 scripts are in [`scripts/pi/`](../scripts/pi/).
@@ -47,10 +46,6 @@ scripts are in [`scripts/pi/`](../scripts/pi/).
 (GLM-4.6V-FlashX), otherwise Gemini 3.8 Flash. Both have the same settings: model, thinking, a fallback model on
 503/429, and the planner model (`.env.example`).
 
-**Quick start:** goals made only of unambiguous commands ("press ctrl c", `type "hi"`), or that start by opening
-an app or scrolling ("open calculator, then …"), take their first step with no model call (`agent/quick.py`);
-the executor checks the result next step.
-
 Other executors: `EXECUTOR=direct` makes one vision-model call per step (p50 2.5 s on GLM; once a run has sent
 input, a `done` claim costs one more call that must see the goal on screen); `jev-flash` runs the planner
 alone; `legacy-dual` is the older fast-executor + separate-planner pair.
@@ -60,18 +55,6 @@ never settles, like a video), skips the rest of a batch when a click changed the
 verifications, and stops a run that repeats the same batch from the same screen. A run survives a restart, replug
 or blank screen: it waits up to 180 s for video, re-detects the device and continues on the new screen.
 
-## Restarts and firmware screens (experimental)
-
-The `boot_keys` skill arms setup keys (F2, DELETE, ESC…) that the controller taps every 0.2 s while the target
-restarts and for 5 s after its video returns. Taps start only once the Pico sees the USB reset, so a screen that
-merely blanks gets none, and a run that ends disarms them. Firmware screens get the `bios` profile: they have no
-pointer, so a click presses DOWN/UP until the menu's highlight bar covers the clicked row; right-click, scroll
-and swipe are rejected. A `bios` profile is detected again once its screen has changed a lot.
-
-Limits: Mac boot keys must be held, which taps cannot do. PCs with Fast Boot ignore USB keyboards during POST,
-and a restart that never resets USB gets no taps. Highlight detection needs a solid bar, so menus that only
-recolor text need arrow keys. Measured: 4/21 on a QEMU firmware task.
-
 ## Modules
 
 | Module | Responsibility |
@@ -79,10 +62,10 @@ recolor text need arrow keys. Measured: 4/21 on a QEMU firmware task.
 | `app.py` | CLI, backends, connection lifecycle, typed goals and corrections |
 | `capture.py` | Capture-card frames, no-signal detection, active-rect detection |
 | `hid.py` | UART client for the Pico protocol (PLAN.md §5.1); `LocalHID` for the local backend |
-| `browser.py`, `qemu.py`, `android.py` | Development targets (capture + input): isolated Chromium, a UEFI virtual PC, a phone over adb |
+| `browser.py` | Isolated Chromium development target (capture + input) |
 | `controller.py` | Runs actions (§5.3), coordinate mapping (§5.2), settle detection, typing |
 | `monitor.py` | Connection generation; cancels on unplug or lost video (§5.6) |
-| `device.py` | OS identification from the first frame, or `--os` / `TARGET_OS`; `bios` re-detection |
+| `device.py` | OS identification from the first frame, or `--os` |
 | `cancel.py` | The one cancellation token |
 | `keys.py`, `imaging.py`, `verification.py` | Key names; crops and JPEG prep; screen-change checks |
 | `events.py`, `display/` | Live event stream and the touch display server |
@@ -90,11 +73,10 @@ recolor text need arrow keys. Measured: 4/21 on a QEMU firmware task.
 | `telemetry.py`, `errors.py`, `doctor.py` | Benchmark CSV (§5.7); readable errors with a private log; hardware check |
 | `agent/race.py`, `agent/triage.py` | Default executor; the triage call, zoom, gesture, irreversible and approval checks |
 | `agent/jev_flash.py`, `agent/jev.py` | Flash stages + Jev grounding and completion; Jev HTTP client and gates |
-| `agent/executor.py`, `agent/prompts.py`, `agent/model.py` | `direct` executor, its prompts and per-OS hints, Gemini and z.ai clients |
-| `agent/quick.py` | Model-free first step for unambiguous commands |
+| `agent/executor.py`, `agent/prompts.py`, `agent/model.py` | `direct` executor, its prompts, Gemini and z.ai clients |
 | `agent/orchestrator.py`, `agent/factory.py` | `legacy-dual`; builds the executor named by `EXECUTOR` |
 | `agent/loop.py`, `agent/memory.py` | Agent loop; `session.json` memory (§5.5) |
-| `skills/` | `open_app` (OS search), `hover`, `wait`, `boot_keys` |
+| `skills/` | `open_app` (desktop launcher search), `hover`, `wait` |
 | `voice/` | Voice layer and the older laptop voice demo |
 
 ## Touch display

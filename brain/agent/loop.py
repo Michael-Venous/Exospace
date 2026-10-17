@@ -22,9 +22,6 @@ from brain.verification import visibly_changed
 
 # A run survives these (PLAN.md §5.6): the target restarted, was replugged or blanked.
 RESUMABLE = frozenset({"target disconnected", "video lost"})
-# Thumbnail change that makes a firmware profile look again: >= 44 from firmware to any desktop
-# measured (QEMU/OVMF against Linux), while consecutive firmware screens rarely change this much.
-REDETECT_CHANGE = 40.0
 
 
 @dataclass(frozen=True)
@@ -40,21 +37,16 @@ class Agent:
                  telemetry: Telemetry, max_steps: int = 30,
                  on_status: Callable[[str], None] = lambda message: None,
                  events: EventBus | None = None,
-                 reconnect: Callable[[str], DeviceProfile | None] | None = None,
-                 redetect: Callable[[], DeviceProfile | None] | None = None) -> None:
+                 reconnect: Callable[[str], DeviceProfile | None] | None = None) -> None:
         """`reconnect(reason)` waits for the target to return and gives its new profile
-        (None if unchanged), or raises Cancelled; without it a disconnect ends the run.
-        `redetect()` classifies the screen again (None if it cannot tell): a boot logo read
-        as firmware becomes a desktop without any reconnect."""
+        (None if unchanged), or raises Cancelled; without it a disconnect ends the run."""
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
         self.events = events
         self._shown_scores: object = None
-        self.reconnect, self.redetect = reconnect, redetect
-        # (connected_at, thumbnail) of the screen the OS was classified on, kept between goals
-        self._classified: tuple[float, np.ndarray | None] = (0.0, None)
+        self.reconnect = reconnect
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
@@ -68,9 +60,6 @@ class Agent:
         unchanged_steps = 0  # consecutive steps whose input left the screen as it was
         recovery_used = False
         attempts: dict[tuple[str, ...], list[np.ndarray]] = {}  # each batch's starting screens
-        connected_at, basis = self._classified
-        if connected_at != profile.connected_at:  # another connection's screen
-            basis = None
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
         self.on_status("Working on your request…")
@@ -91,12 +80,6 @@ class Agent:
                         token.check()
                     before = thumbnail(frame)
                     times["t_capture"] = time.monotonic() - stamp
-                    if basis is None:
-                        basis = before
-                    elif self.redetect and profile.os == "bios" and frame_change(basis, before) >= REDETECT_CHANGE:
-                        stamp = time.monotonic()
-                        basis, profile = before, self.redetect() or profile
-                        times["t_model"] += time.monotonic() - stamp
                     profile = replace(profile, rect=active_rect(frame))
                     stamp = time.monotonic()
                     jpeg = prepare(frame, profile.rect, grid=getattr(self.executor, "image_grid", True))
@@ -156,8 +139,8 @@ class Agent:
                             try:
                                 ctl.execute(action, profile)
                                 acted = True
-                                # Waiting and arming boot keys send no input, so an unchanged screen is no failure.
-                                sent_input = sent_input or action.type != "skill" or action.name not in ("wait", "boot_keys")
+                                # A wait sends no input, so a still screen after it is no failure.
+                                sent_input = sent_input or (action.type, action.name) != ("skill", "wait")
                                 self._emit_action(step, action, ok=True)
                             except ActionError as exc:
                                 self._emit_action(step, action, ok=False)
@@ -232,7 +215,7 @@ class Agent:
                         raise
                     self.on_status(f"{exc.reason.capitalize()}; waiting for it to come back…")
                     if found := self.reconnect(exc.reason):
-                        profile, basis = found, None
+                        profile = found
                     note = "The target restarted, reconnected or blanked; continue from this screen."
                 finally:
                     self.telemetry.step(run_id, profile.os, task_id, step, **times)
@@ -244,7 +227,6 @@ class Agent:
         except Exception as exc:
             status, message = "fail", describe(exc, "task")
         finally:
-            self._classified = (profile.connected_at, basis)
             ctl.release_all()
             self.telemetry.finish(run_id, profile.os, task_id, step, status == "done",
                                   time.monotonic() - started)
