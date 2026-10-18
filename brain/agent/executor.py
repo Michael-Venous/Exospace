@@ -37,6 +37,7 @@ class Plan:
     needs_planner: bool = False
     message: str = ""
     refresh_screen: bool = False
+    held: str = ""
 
 
 class Executor(Protocol):
