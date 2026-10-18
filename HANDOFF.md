@@ -6,7 +6,7 @@ Earlier session logs and research notes live in git history; current evidence is
 
 ## What works (2026-10-17)
 - **Runtime:** race executor is the default with either a Gemini or a z.ai key (PLAN.md §10).
-  233 offline tests pass (`.venv/bin/python -m unittest discover -s tests`, no API calls); `test_capture` skips
+  236 offline tests pass (`.venv/bin/python -m unittest discover -s tests`, no API calls); `test_capture` skips
   without `mss`, which only the `local` extra installs.
 - **Voice layer:** `brain/voice/layer.py` with the Deepgram relay (key stays server-side), smoke-tested
   through the real agent; the newest request wins, and push to talk works.
@@ -17,6 +17,9 @@ Earlier session logs and research notes live in git history; current evidence is
   - A destructive request asks, and "no" declines.
   - "No, open John's email instead" runs the new request.
   - YouTube → search → first video.
+- **Laptop through the real Pico** (KDE, 2880x1800, spectacle capture): main suite 11/12 (211 s); judge
+  stress suite 9/9 in 40 s (barge-in, gibberish, "delete my home folder", passwords, contradictions, a hidden
+  page injection, Spanish, a long query, a question); Blender from closed: open, maximize, add a sphere, 34 s.
 - **Public websites** (Wikipedia, GitHub, docs.python.org, OpenStreetMap): 16 of 23 runs passed before the
   fixes below; safety held on remarks, ambiguous requests and a donation.
 - **Race on z.ai alone** (workstation study, one repeat): 7/10 by the fixture's oracle, 0 unsafe. Jev clicks
@@ -44,11 +47,21 @@ history, not a measure of `main`.
 
 ## Known issues (not fixed)
 - **False "done":** the completion check accepted a merely visible link as success (2/2), and reported
-  "Done" after a click redirected to GitHub's login page.
+  "Done" after a click redirected to GitHub's login page. Still seen: "open the tutorial, then the page
+  about data structures" stopped with the section only scrolled into view.
 - **"Go back" is hard to confirm:** after a correct back navigation the completion score stayed low, so the
   planner went back again (2/2).
-- **Planner-path clicks are less precise** than the direct path: 8/15 inside the target without zoom,
-  12/15 with it. The planner path does not zoom yet.
+- **Click precision (top priority).** Jev answers boxes in 0.005 steps (~14 px on a 2880 px screen) and its
+  full-screen boxes miss by 10-25 px at 1280 scale; one zoom lands 12/15 planner clicks inside the target,
+  but controls a few pixels apart need a second tight zoom (Blender's maximize vs minimize: 0/3 → 4/4).
+  After the black-wallpaper crop fix the agent sees the true full screen, so small windows mean small
+  targets: wiki_link went 5 s → 25 s and close_calc took 5 tries. To measure on an offline target set,
+  then keep what helps: an adaptive second zoom for small boxes, the median of 2-3 parallel looks, and a
+  hover check before clicking a small control next to a destructive one.
+- **Small windows are maximized only on the planner path.** Jev's direct actions skip the window check.
+- **Deep mode is slow and shallow.** Argon low takes 4-24 s a step; "make me a house" built a cube with a
+  pitched roof (153 s).
+- **Planner slips:** once typed `xdg-open <url>` into a browser while recovering a link click.
 - **Untested:** the capture card, the real Pico, a Mac, a real phone, iOS and ChromeOS.
 
 ## Waiting on hardware (in order)
