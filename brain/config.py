@@ -42,6 +42,10 @@ class Config:
     local_keyboard: str = ""
     local_pico: str = ""
     local_capture: str = ""
+    deep_model: str = ""  # stronger model race escalates to when stuck (brain/agent/deep.py); empty disables
+    deep_thinking: str | None = "medium"
+    deep_timeout_s: float = 90.0
+    deep_after: int = 2  # unproductive race steps in a row before deep mode
     replay_path: Path | None = None  # successful runs replayed without model calls (brain/agent/replay.py)
 
     @property
@@ -69,6 +73,10 @@ class Config:
             capture_width=int(env("CAPTURE_WIDTH", "1920")),
             capture_height=int(env("CAPTURE_HEIGHT", "1080")),
             session_path=Path(env("SESSION_PATH", "session.json")),
+            deep_model=env("DEEP_MODEL", "gemini-4-argon"),
+            deep_thinking=env("DEEP_THINKING", "medium") or None,
+            deep_timeout_s=float(env("DEEP_TIMEOUT_S", "90")),
+            deep_after=int(env("DEEP_AFTER", "2")),
             replay_path=Path(env("REPLAY_PATH", "replay.json")) if env("REPLAY_PATH", "replay.json") else None,
             bench_csv=Path(env("BENCH_CSV", "bench/results.csv")),
             fallback_model=env("FALLBACK_MODEL", "gemini-3.5-flash-lite"),

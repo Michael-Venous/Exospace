@@ -40,7 +40,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--os", choices=[os for os in OS_NAMES if os != "unknown"])
     parser.add_argument("--task-id", default="interactive")
     parser.add_argument("--config-name", help="Benchmark label (default: the executor)")
-    parser.add_argument("--max-steps", type=int, default=30)
+    parser.add_argument("--max-steps", type=int, default=60)  # deep mode needs room; most requests take < 10
     parser.add_argument("--display", type=int, metavar="PORT",
                         help="Serve the touch display page on this port (e.g. 8770)")
     parser.add_argument("--display-host", default="127.0.0.1")

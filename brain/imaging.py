@@ -44,6 +44,21 @@ def shrink(jpeg: bytes, max_side: int = MAX_SIDE) -> bytes:
     return buf.tobytes()
 
 
+def grid_copy(jpeg: bytes) -> bytes:
+    """A MAX_SIDE copy of a prepared JPEG with the aiming grid, for a model that clicks by coordinates."""
+    image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return jpeg
+    h, w = image.shape[:2]
+    scale = min(1.0, MAX_SIDE / max(h, w))
+    image = cv2.resize(image, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    _draw_grid(image)
+    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    if not ok:
+        raise RuntimeError("JPEG encoding failed")
+    return buf.tobytes()
+
+
 def _draw_grid(image: Frame) -> None:
     """Faint 10x10 grid labeled in the model's 0-1000 coordinate space."""
     h, w = image.shape[:2]
