@@ -18,8 +18,9 @@ class JevOnlyTests(unittest.TestCase):
         self.planner = JevOnlyPlanner(Mock(min_presence=.85))
 
     def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
-             fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON)):
-        step = {"complete": {"noul": complete}, "next": {"choice": next}, "present": {"noul": present},
+             fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
+             question=.05):
+        step = {"complete": {"noul": complete}, "question": {"noul": question}, "next": {"choice": next}, "present": {"noul": present},
                 "target": BOX, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
                 "app": {"box": {"left": .1, "right": .5, "top": .6, "bottom": .7}}}
@@ -84,6 +85,10 @@ class JevOnlyTests(unittest.TestCase):
     def test_step_with_no_visible_effect_fails(self):
         self.assertEqual(self.step("open it", note="Screen unchanged; try something different.").type, "fail")
 
+    def test_a_question_or_nonsense_is_left_to_flash(self):
+        self.assertEqual(self.step("what is this page about?", complete=.9, question=.9).type, "fail")
+        self.assertEqual(self.step("asdkjh qwe zxcv", fits=.1, next="stuck").type, "fail")  # no launcher
+
     def test_reasoning_fails_over(self):
         self.assertEqual(self.step("summarize this page", next="stuck").type, "fail")
 
@@ -92,14 +97,17 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("find a video about horses", fits=.1).type, "click")  # routed once per run
 
     def test_visible_suited_app_is_switched_to(self):
-        action = self.step("find a video about horses", fits=.1, app_present=.95)
+        goal = "find a video about horses"
+        action = self.step(goal, fits=.1, app_present=.95, app_name=str(spans(goal, 250).index("video")))
         self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .65))
 
     def test_no_suited_app_opens_the_launcher_waits_once_for_the_app_then_fails(self):
         goal = "find a video about horses"
-        self.assertEqual(self.step(goal, fits=.1).brief(), "hotkey(GUI)")
-        self.assertEqual(self.step(goal, fits=.1, history=["hotkey(GUI)"]).brief(), "skill(wait {})")
-        self.assertEqual(self.step(goal, fits=.1, history=["hotkey(GUI)", "skill(wait {})"]).type, "fail")
+        named = str(spans(goal, 250).index("video"))
+        self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), "hotkey(GUI)")
+        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)"]).brief(), "skill(wait {})")
+        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)", "skill(wait {})"]).type,
+                         "fail")
 
     def test_launcher_is_searched_for_the_app_the_goal_names_before_an_icon_is_clicked(self):
         goal = "open up camera and take a picture"

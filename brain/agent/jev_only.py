@@ -51,6 +51,8 @@ APP_TARGET = "The visible window, tab or app icon in `screen` of the app best su
 APP_NAME = ("Which words of the `goal` name the app, or the kind of app, to open? They are typed into the app "
             "launcher's search.")
 LAUNCHER_OPEN = "Is an app launcher or start menu open in `screen`, with a search field for typing an app's name?"
+QUESTION = ("Does the `goal` ask for information, an answer or an explanation, rather than for something to be "
+            "done on the device?")
 STEP_CONTROL = "the one control that the next step of the `goal` acts on, after the `executed_steps`"
 WAIT = Action("skill", name="wait")
 # Race's COMPLETION_GATE (0.3) let two unfinished goals through here, at 0.57 and 0.63 (2026-10-18: Google
@@ -86,6 +88,7 @@ class JevOnlyPlanner:
                  "launcher": {"type": "noul", "instructions": LAUNCHER_OPEN}} if routing else {}
         answers, size, padded = self.jev.evaluate(image, route | {
             "complete": {"type": "noul", "instructions": COMPLETION_QUESTION},
+            "question": {"type": "noul", "instructions": QUESTION},
             "next": {"type": "choice", "instructions": NEXT_QUESTION, "criteria": NEXT_CRITERIA},
             "present": {"type": "noul", "instructions":
                         "Is the one control that the next step of the `goal` acts on visible in `screen`, "
@@ -99,6 +102,9 @@ class JevOnlyPlanner:
         # Jev's own next step is Enter right after typing: the text isn't submitted, whatever the completion score.
         unsent = bool(ctx.history) and ctx.history[-1].startswith("type_text") and answers["next"].get(
             "choice") == "enter"
+        if probability(answers["question"].get("noul")) >= GATE:
+            # Jev called "what is this page about?" complete and said "Done." with no answer.
+            return _fail("the request asks for an answer, not an action")
         if probability(answers["complete"].get("noul")) >= COMPLETION_GATE and not unsent:
             return Plan("Jev verified the completed goal", [Action("done", summary="Done.")], [])
         if "unchanged" in ctx.note:
@@ -108,7 +114,9 @@ class JevOnlyPlanner:
             search = self._search(answers, ctx, texts)
             if search:
                 return search
-            if probability(answers["fits"].get("noul")) < GATE:
+            # Only a request that names an app is routed: gibberish ("asdkjh qwe zxcv") opened the launcher.
+            if probability(answers["fits"].get("noul")) < GATE and answers["app_name"].get("choice") in {
+                    str(i) for i in range(len(texts))}:
                 return self._route(answers, size, padded, ctx)
             self.routed = ctx.run_id
         step = answers["next"].get("choice")
