@@ -13,11 +13,16 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
 from brain.agent.executor import Plan, StepContext
+from brain.agent.jev import probability
 from brain.agent.jev_flash import COMPLETION_GATE, JevFlashExecutor
-from brain.agent.triage import answer_to_pending, triage
+from brain.agent.triage import GATE, answer_to_pending, triage
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
+
+
+LAUNCHED = ("Is the app the `utterance` asks to open now open in front as its own app window: not a web search "
+            "page about it, and not a different app with a similar name?")
 
 
 @dataclass(frozen=True)
@@ -46,6 +51,7 @@ class RaceExecutor:
         self._point: tuple[float, float] | None = None
         self._gesture = "click"
         self._scroll = 0
+        self._launched = ""
         self._clicked = False
         self._utterance = ""
         self._triage_step = 0
@@ -72,6 +78,13 @@ class RaceExecutor:
             if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):
                 return Plan("Scrolled", [Action("done", summary="Scrolled.")], [])
             self.mode = "plan"  # nothing to scroll here (or not focused): the planner recovers
+        if self.mode == "launch":
+            if "unchanged" not in (ctx.note or "") and self._launched_app(image, ctx) and self._goal_met(image, ctx):
+                return Plan("Jev launch done", [Action("done", summary="Done.")], [])
+            self.mode = "plan"  # more to do in the app ("... and work out 12 times 9"): plan on its screen
+            self._settle_speculation()
+            self.planner.forget_plan()  # the speculative plan was made before the launch
+            return self.planner.next_actions(image, self._planner_ctx(ctx))
         if self.mode == "act":
             if not self._clicked and ctx.step != self._triage_step:
                 # The loop discarded the click (the screen moved): aim again on this screen.
@@ -121,6 +134,9 @@ class RaceExecutor:
             return self._direct()
         if self.mode == "scroll":  # no target and no plan needed (it took 10.8 s through the planner)
             return Plan("Jev scroll", [Action("scroll", dy=result.scroll)], [])
+        if self.mode == "launch":
+            self._launched = result.app
+            return Plan("Jev launch", [Action("skill", name="open_app", args={"name": result.app})], [])
         return self.cancel.run(self._plan.result)
 
     def approved_run(self) -> bool:
@@ -137,10 +153,19 @@ class RaceExecutor:
         """One Jev completion call on the new screen: a changed screen alone is no proof
         (measured: "close the calculator" minimized it and reported done)."""
         executed = ([f"scroll {'down' if self._scroll > 0 else 'up'} {abs(self._scroll)} notches"]
-                    if self.mode == "scroll" else [f"{self._gesture} on the control for: {self._utterance}"])
+                    if self.mode == "scroll" else [f"open the app {self._launched}"]
+                    if self.mode == "launch" else [f"{self._gesture} on the control for: {self._utterance}"])
         score = self.cancel.run(lambda: self.jev.completion(image, ctx.goal, executed, run_id=ctx.run_id,
                                                             step=ctx.step))
         return score >= COMPLETION_GATE
+
+    def _launched_app(self, image: bytes, ctx: StepContext) -> bool:
+        """The launcher can land elsewhere: "abre la calculadora" on an English desktop became a web
+        search with a calculator widget, which the plain completion check passed (0.9)."""
+        answers, _, _ = self.cancel.run(lambda: self.jev.evaluate(image, {"launched": {"type": "noul", "instructions": LAUNCHED}},
+                                                                  run_id=ctx.run_id, step=ctx.step,
+                                                                  state={"utterance": self._utterance}))
+        return probability(answers["launched"].get("noul")) >= GATE
 
     def _planner_ctx(self, ctx: StepContext) -> StepContext:
         return replace(ctx, goal=self._approved_goal) if self._approved_goal else ctx

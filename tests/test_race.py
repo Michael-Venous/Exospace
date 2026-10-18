@@ -12,7 +12,7 @@ import numpy as np
 from brain.agent.executor import Plan, StepContext
 from brain.agent.memory import Memory
 from brain.agent.race import RaceExecutor
-from brain.agent.triage import Triage, triage
+from brain.agent.triage import Triage, spans, triage
 from brain.cancel import CancelToken
 from brain.types import Action, DeviceProfile, Rect
 
@@ -29,9 +29,21 @@ class TriageTests(unittest.TestCase):
         self.jev = Mock()
         self.size = ((400, 300), (400, 300))
 
-    def answer(self, choice, present=.95, unique=.95, irreversible=.02):
+    def answer(self, choice, present=.95, unique=.95, irreversible=.02, app="none"):
         return ({"intent": {"choice": choice, "confidence": .9}, "present": {"noul": present}, "gesture": {"choice": "click"},
-                 "unique": {"noul": unique}, "irreversible": {"noul": irreversible}, "target": BOX}, *self.size)
+                 "unique": {"noul": unique}, "irreversible": {"noul": irreversible}, "target": BOX,
+                 "app": {"choice": app}}, *self.size)
+
+    def test_an_app_to_open_is_named_by_the_utterance_itself(self):
+        words = spans("open the calculator and work out 12 times 9")
+        self.jev.evaluate.return_value = self.answer("launch", app=str(words.index("calculator")))
+        result = triage(self.jev, jpeg(), "open the calculator and work out 12 times 9", CancelToken())
+        self.assertEqual((result.mode, result.app), ("launch", "calculator"))
+        self.jev.evaluate.assert_called_once()  # no zoom: nothing to click
+
+    def test_a_launch_with_no_named_app_goes_to_the_planner(self):
+        self.jev.evaluate.return_value = self.answer("launch")
+        self.assertEqual(triage(self.jev, jpeg(), "open it", CancelToken()).mode, "plan")
 
     def test_remark_is_no_action_without_zoom(self):
         self.jev.evaluate.return_value = self.answer("no_action")
@@ -72,7 +84,7 @@ class RaceTests(unittest.TestCase):
         race._pool = ThreadPoolExecutor(max_workers=1)
         race._plan, race._key, race.mode, race._point, race._clicked, race._pending = None, None, "", None, False, None
         race._gesture, race._utterance, race._triage_step, race._approved_goal = "click", "", 0, None
-        race._scroll = 0
+        race._scroll, race._launched = 0, ""
         self.addCleanup(race._pool.shutdown)
         race.planner.next_actions.return_value = Plan("planned", [Action("hotkey", keys=("ENTER",))], [])
         self.race = race
@@ -196,6 +208,25 @@ class RaceTests(unittest.TestCase):
         self.race.acknowledge(True)
         self.race.jev.completion.return_value = .9
         self.assertEqual(self.race.next_actions(b"img", self.ctx("scroll up")).actions[0].type, "done")
+
+    def test_a_launch_needs_no_plan_and_the_rest_is_planned_on_the_app(self):
+        goal = "open the calculator and work out 12 times 9"
+        with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="calculator")):
+            first = self.race.next_actions(b"img", self.ctx(goal))
+        self.assertEqual((first.actions[0].name, first.actions[0].args), ("open_app", {"name": "calculator"}))
+        self.race.acknowledge(True)
+        self.race.jev.evaluate.return_value = ({"launched": {"noul": .95}}, None, None)
+        self.race.jev.completion.return_value = .1  # open, but nothing worked out yet
+        self.assertEqual(self.race.next_actions(b"img", self.ctx(goal)).reasoning, "planned")
+        self.race.planner.forget_plan.assert_called_once()
+
+    def test_a_launch_that_landed_elsewhere_goes_to_the_planner(self):
+        with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="calculadora")):
+            self.race.next_actions(b"img", self.ctx("abre la calculadora"))
+        self.race.acknowledge(True)
+        self.race.jev.evaluate.return_value = ({"launched": {"noul": .1}}, None, None)  # a web search instead
+        self.race.jev.completion.return_value = .9
+        self.assertEqual(self.race.next_actions(b"img", self.ctx("abre la calculadora")).reasoning, "planned")
 
     def test_a_scroll_with_no_effect_goes_to_the_planner(self):
         with patch("brain.agent.race.triage", return_value=Triage("scroll", None, False, scroll=5)):

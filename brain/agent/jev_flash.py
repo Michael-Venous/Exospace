@@ -65,7 +65,8 @@ then click the newly visible submenu item in a separate stage. Drag holds the
 button while moving to destination. These are different actions.
 Other actions: type_text(text), hotkey(keys), scroll(dy: mouse-wheel notches,
 positive down, about 5 per screenful; never pixels),
-skill(name=open_app,text=app), skill(name=wait) as its own stage ONLY when the
+skill(name=open_app,text=app: the app's full name as the user said it, in the screen's
+language, e.g. "system settings" not "settings"), skill(name=wait) as its own stage ONLY when the
 screenshot shows a spinner, progress bar or blank page that is still loading (a
 loaded page never needs it), remember(key,text), ask_user(message), fail(message).
 To start an app that is not already open, use skill(open_app); never hunt
@@ -101,7 +102,7 @@ COMPLETION_GATE=0.5  # steps-aware check: finished tasks scored >= 0.55, traps <
 
 
 def validate_steps(data, allow_visual_fallback=False):
-    steps=data.get('steps')
+    steps=deepcopy(data.get('steps'))  # cleaned below; the caller's reply stays as sent
     if not isinstance(steps,list) or not 0<=len(steps)<=12:
         raise ValueError('Plan requires 0-12 stages (empty only for completion verification)')
     if not isinstance(data.get('completion'),str) or not data['completion'].strip():
@@ -116,6 +117,10 @@ def validate_steps(data, allow_visual_fallback=False):
             if not isinstance(item,dict) or any(k in item for k in ('x','y','x2','y2')):
                 raise ValueError('Semantic actions cannot contain coordinates')
             kind=item.get('type')
+            if not allow_visual_fallback:
+                # The schema always offers these and Flash fills them anyway (on open_app too): rejecting
+                # the plan cost two extra calls, 5-12 s, on 3 of 7 app launches. Jev grounds instead.
+                item.pop('fallback_x',None); item.pop('fallback_y',None)
             if 'fallback_x' in item or 'fallback_y' in item:
                 import math
                 coords=[item.get(k) for k in ('fallback_x','fallback_y')]
@@ -188,6 +193,10 @@ class JevFlashExecutor:
         self.last_reason=''
         self._fallback_image=None
         self._plan_image=None  # the screenshot the current plan was made from
+
+    def forget_plan(self):
+        """Plan afresh on the next screen (the screen changed under the current plan)."""
+        self._key=None
 
     def acknowledge(self,executed:bool):
         # Called only by the single-writer agent after actual execution. A stale
