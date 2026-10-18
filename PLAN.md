@@ -21,9 +21,9 @@ A portable box that plugs into a computer or phone over one USB-C cable, **sees 
 We *complement* head mice and switches: they replace the mouse; we replace the steps.
 
 ## 3. Non-goals (do NOT build)
-Scheduling, a large dashboard, fine-tuning, fully-offline claims. These overlap with prior art or eat time.
+Scheduling, a large dashboard, fine-tuning, fully-offline claims, per-OS or per-device prompt hints and special cases, hard-coded command or phrase rules. These overlap with prior art, eat time, or break universality.
 
-Firmware/BIOS screens are not a non-goal: today's firmware path (arrow-key menus, `boot_keys`) is experimental, and we may return to it if Jev control generalizes to screens without a mouse.
+Firmware/BIOS screens are not a non-goal, but there is no firmware-specific logic for now: every device gets the same general path. We may return to it if Jev control generalizes to screens without a mouse.
 
 ## 4. Architecture
 ```
@@ -80,18 +80,17 @@ Model output (any space) → **normalized [0,1] within the active screen rect** 
 {"type":"skill","name":"open_app","args":{"name":"Notes"}}
 {"type":"skill","name":"hover","args":{"x":..,"y":..}}   // pointer move, no button
 {"type":"skill","name":"wait"}                 // until the screen changes, at most 10 s; sends no input
-{"type":"skill","name":"boot_keys","args":{"keys":["F2"]}}  // tap firmware keys through the next restart
 {"type":"scroll","dy":-3}                      // wheel notches
 {"type":"remember","key":"...","value":...}
 {"type":"done"} | {"type":"ask_user","question":"..."} | {"type":"fail","reason":"..."}
 ```
-On a `bios` profile a click or double_click moves the menu highlight with arrow keys (double_click then presses ENTER); right_click, scroll and swipe are rejected. `boot_keys` accepts 1–3 of ESC, DELETE, F1–F12.
+`wait` is offered to every executor; race plans it as its own stage (measured: a page that loads for 6 s, 2/2 passed with one click each).
 
 ### 5.4 Device profile (set on every connect)
 ```json
-{"os":"windows|macos|linux|chromeos|android|ios|bios|unknown","rect":[x0,y0,x1,y1],"input":"mouse|touch","connected_at":ts}
+{"os":"windows|macos|linux|chromeos|android|ios|unknown","rect":[x0,y0,x1,y1],"input":"mouse|touch","connected_at":ts}
 ```
-OS is detected **from the first frames** (USB can't reliably tell us). `bios` is a firmware setup or boot screen; `unknown` (a failed classification) still works as keyboard + mouse. A boot logo can read as `bios`, so a `bios` profile is re-detected once its screen has changed a lot since it was classified, mid-run or between goals (`connected_at` stays). `--os` overrides detection; `TARGET_OS` pins the OS for every screen except firmware.
+OS is detected **from the first frames** (USB can't reliably tell us). It is a label for the models plus the input mode (`touch` for Android, else `mouse`); no prompt or controller logic depends on it otherwise. `unknown` (boot or firmware screens, a failed classification) still works as keyboard + mouse. `--os` overrides detection.
 
 ### 5.5 Memory (`session.json`, persists across swaps)
 ```json
@@ -103,7 +102,7 @@ The planner gets memory + device profile on every call.
 ### 5.6 Cancellation — ONE path for everything
 Triggers: Pico `unmounted` · capture no-signal/black > 300 ms · Talk/STOP during execution (barge-in) · 3 failed verifications.
 Effect: Pico `release_all` → drop action queue → (if disconnect) wait for new device → build profile → planner resumes from memory.
-Resume: after a disconnect, restart or lost video, the run waits up to 180 s for live video, taps armed `boot_keys` once the Pico has unmounted (the restart), re-detects the profile if the connection changed and continues the same goal on the new screen.
+Resume: after a disconnect, restart or lost video, the run waits up to 180 s for live video, re-detects the profile if the connection changed and continues the same goal on the new screen.
 
 ### 5.7 Benchmark log (`bench/results.csv`)
 `run_id, config, device, task_id, step, t_capture, t_upload, t_model, t_execute, t_settle, success, total_s`
@@ -142,10 +141,10 @@ AI judges read the repo: keep code clean, typed, small modules, a real README (a
 - **Completion** is one Jev call judging goal + executed steps + screen (gate 0.3); it alone decides.
 - **One commit gate** (`brain/arbiter.py`) is the only path to HID for pipelined voice: one winner per segment, spoken-order commit, generation bump on interruption, stale-screen proposals re-grounded.
 - **Fallback:** a 503/429 retries once on the provider's fallback model (Flash-Lite 3.5 / GLM-4.6V). Lite planned worse, so this is degraded mode, not a default.
-- **Quick start** (`brain/agent/quick.py`, reintroduced from `overnight-ultracode`): goals made only of unambiguous commands ("press ctrl c", 'type "hi"'), or that start by opening an app or scrolling, take their first step with no model call; the model checks the result next step. It decides with a word list.
 - **Options, not defaults:** `EXECUTOR=direct` (one call per step; a `done` claim after input is checked on screen), `jev-flash` (planner only), `legacy-dual`.
 - **Measured:** race on Gemini, 89% (above). Race on z.ai alone, workstation study, one repeat: 7/10 by the fixture's oracle, 0 unsafe; GLM does not follow the stage schema as well (0/3 vs 1/3 for direct on the calendar task).
-- **Rejected, with measurements in `bench/`:** Flash-Lite, Gemini Live and text-only planning as the planner (about 2× the wrong moves, no time saved); regex `direct_command` and recipe grammars (the quick start above is the one word-list path left); three-model routing (no accuracy gain, ~12% slower); GPT-6 Luna and Claude Haiku 5.5 (unsafe on messy speech). The B200 / self-hosted models are deferred.
+- **Rejected, with measurements in `bench/`:** Flash-Lite, Gemini Live and text-only planning as the planner (about 2× the wrong moves, no time saved); regex `direct_command` and recipe grammars; three-model routing (no accuracy gain, ~12% slower); GPT-6 Luna and Claude Haiku 5.5 (unsafe on messy speech). The B200 / self-hosted models are deferred.
+- **Removed by user decision (2026-10-17), to keep one general path:** the firmware path (`boot_keys`, arrow-key menus, `bios` re-detection), per-OS prompt hints, the word-list quick start, `TARGET_OS`, and the QEMU and Android-emulator backends. They remain in git history.
 
 ## 11. Voice layer
 The voice layer sits **on top** of the pipeline: it decides *what* the user wants, never *how*.

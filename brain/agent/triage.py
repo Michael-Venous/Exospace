@@ -16,18 +16,22 @@ import numpy as np
 from brain.agent.jev import JevVision, probability
 from brain.cancel import CancelToken
 
-Mode = Literal["act", "plan", "none"]
+Mode = Literal["act", "plan", "none", "scroll"]
 Gesture = Literal["click", "double_click", "right_click"]
 
 GATE = 0.5  # presence/uniqueness, zoom presence, irreversible, approval: 0 unsafe acts at this gate
 ZOOM_WINDOW = 0.30  # crop side as a fraction of the longer screen side
 ZOOM_SCALE = 2.5
+FINE_WINDOW = 0.12  # the second, tighter look: Jev's boxes come in 0.005 steps of whatever it is shown
+SCROLL = 5  # wheel notches for "scroll down a bit": about a screenful
 
 INTENT_CRITERIA = {
     "act_now": "The utterance asks to click, tap, open or select ONE specific control that is visible on "
                "this screen right now, and that single pointer action fully satisfies the request.",
     "plan": "The utterance needs typing, keyboard keys, several steps, writing content, answering a question, "
             "an irreversible or destructive action, or its intended target is ambiguous or not visible.",
+    "scroll": "The utterance only asks to scroll or page the current view up or down, not to find or open "
+              "anything in particular.",
     "no_action": "The utterance is a remark, background context, a feeling or an acknowledgement; "
                  "it does not ask for any action.",
 }
@@ -38,11 +42,12 @@ GESTURE_CRITERIA = {
                     "icon or row in a desktop file-manager window.",
     "right_click": "The user asks for a right-click, a context menu, or more options for an item.",
 }
-IRREVERSIBLE = ("Would carrying out the `utterance` on this screen do something irreversible or high-impact: "
+IRREVERSIBLE_KINDS = ("do something irreversible or high-impact: "
                 "sending or posting a message, deleting or emptying data, purchasing or paying, submitting a "
                 "form, formatting, changing and saving firmware/BIOS settings, or a public action on the user's "
                 "account (starring, liking, following, subscribing, voting, sharing)? Opening, navigating, "
                 "selecting, typing a draft, adding to or removing from a cart, and creating something new are not.")
+IRREVERSIBLE = "Would carrying out the `utterance` on this screen " + IRREVERSIBLE_KINDS
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,7 @@ class Triage:
     point: tuple[float, float] | None  # normalized, zoom-refined; only for mode "act"
     irreversible: bool
     gesture: Gesture = "click"
+    scroll: int = 0  # wheel notches for mode "scroll", positive = down
 
 
 def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
@@ -64,6 +70,9 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
         "unique": {"type": "noul", "instructions":
                    "Does the `utterance` identify exactly one visible control in `screen`, with no ambiguity?"},
         "irreversible": {"type": "noul", "instructions": IRREVERSIBLE},
+        "direction": {"type": "choice", "criteria": {"down": "Down, further along, the next page.",
+                                                     "up": "Up, back towards the top, the previous page."},
+                      "instructions": "Which way does the `utterance` ask to scroll, if it asks to scroll?"},
         "gesture": {"type": "choice", "criteria": GESTURE_CRITERIA, "instructions":
                     "Which pointer gesture carries out the `utterance` on the control it names in `screen`?"},
         "target": {"type": "box", "instructions":
@@ -75,6 +84,8 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
     choice = answers["intent"].get("choice")
     if choice == "no_action":
         return Triage("none", None, irreversible)
+    if choice == "scroll":
+        return Triage("scroll", None, irreversible, scroll=-SCROLL if answers["direction"].get("choice") == "up" else SCROLL)
     present = min(probability(answers["present"].get("noul")), probability(answers["unique"].get("noul")))
     point = _box_center(answers["target"], size, padded)
     if choice != "act_now" or present < GATE or point is None:
@@ -88,8 +99,19 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
 
 def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], *,
            run_id: str = "", step: int = 0) -> tuple[float, float] | None:
-    """Re-locate `target` in an enlarged crop around `point`; None if Jev no longer sees it."""
-    crop, (x0, y0, x1, y1) = _crop_around(jpeg, point)
+    """Re-locate `target` in an enlarged crop around `point`, then in a tighter one around that;
+    None if Jev no longer sees it. On 49 OCR-labelled targets (Blender, Wikipedia, KCalc, GitHub)
+    the point landed in the target 4 times from the full screen, 28 after one zoom and 35 after
+    both (a median of three zooms: 27)."""
+    coarse = _look(jev, jpeg, target, point, ZOOM_WINDOW, run_id, step)
+    if coarse is None:
+        return None
+    return _look(jev, jpeg, target, coarse, FINE_WINDOW, run_id, step) or coarse
+
+
+def _look(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], window: float,
+          run_id: str, step: int) -> tuple[float, float] | None:
+    crop, (x0, y0, x1, y1) = _crop_around(jpeg, point, window)
     questions = {
         "present": {"type": "noul", "instructions":
                     "This is a zoomed-in part of a screen. Is the control the `utterance` asks to click, "
@@ -139,10 +161,11 @@ def _box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) ->
     return (x, y) if 0 <= x <= 1 and 0 <= y <= 1 else None  # padding must never become a click
 
 
-def _crop_around(jpeg: bytes, point: tuple[float, float]) -> tuple[bytes, tuple[float, float, float, float]]:
+def _crop_around(jpeg: bytes, point: tuple[float, float],
+                 window: float = ZOOM_WINDOW) -> tuple[bytes, tuple[float, float, float, float]]:
     image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     h, w = image.shape[:2]
-    side = ZOOM_WINDOW * max(w, h)
+    side = window * max(w, h)
     half_w, half_h = min(side, w) / 2, min(side * 0.66, h) / 2
     cx = min(max(point[0] * w, half_w), w - half_w)
     cy = min(max(point[1] * h, half_h), h - half_h)

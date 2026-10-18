@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from pathlib import Path
 import tempfile
 
@@ -19,6 +19,8 @@ class SemanticTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.executor=object.__new__(JevFlashExecutor)
         self.executor.cancel=CancelToken();self.executor.model=Mock();self.executor.jev=Mock()
+        self.executor.replanner=self.executor.model  # the same mock: call counts cover both
+        self.executor.check_window=False  # the window-size check has its own test
         self.executor.jev.min_presence=.85
         self.executor._key=None;self.executor.executed=[];self.executor._reset()
         self.ctx=StepContext('create event',DeviceProfile('linux',Rect(0,0,900,600),'mouse',1),
@@ -28,6 +30,10 @@ class SemanticTests(unittest.TestCase):
         self.executor.model.generate.return_value=self.plan
         self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: ({k:.99 for k in checks},{k:(.25,.75) for k in targets})
         self.executor.jev.completion.return_value=.99
+        self.executor.jev.last_scores={}
+        self.executor.jev.last_points={}
+        zoom=patch('brain.agent.jev_flash.refine',return_value=None)  # zoom keeps each point
+        self.refine=zoom.start();self.addCleanup(zoom.stop)
 
     def test_cached_sequence_calls_flash_once(self):
         for expected in ('click','click','done'):
@@ -127,11 +133,14 @@ class SemanticTests(unittest.TestCase):
         self.executor.jev.assess.assert_not_called()
 
 
-    def test_ask_flash_choice_replans_even_with_valid_coordinates(self):
+    def test_ask_flash_choice_replans_on_a_changed_screen_only(self):
         self.executor.jev.assess.side_effect=[
-            ({'ready':.99,'route_execute':0},{'target':(.5,.5)}),
+            ({'ready':.99,'route_execute':0},{'target':(.5,.5)}),  # the planned screen: the vote is ignored
+            ({'ready':.99,'previous':.99,'route_execute':0},{'target':(.4,.4)}),  # a new screen: replan
             ({'ready':.99,'route_execute':1},{'target':(.2,.3)})]
-        result=self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual(self.executor.next_actions(b'image',self.ctx).actions[0].x,.5)
+        self.executor.acknowledge(True)
+        result=self.executor.next_actions(b'image2',self.ctx)
         self.assertEqual(self.executor.model.generate.call_count,2)
         self.assertEqual(result.actions[0].x,.2)
 
@@ -155,5 +164,53 @@ class SemanticTests(unittest.TestCase):
         with self.assertRaises(ValueError):validate_steps(fallback)
         validate_steps(fallback,True)
 
+
+    def test_zoom_reaims_targets_and_rescues_near_misses(self):
+        self.refine.return_value=(.3,.7)
+        plan=self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual((plan.actions[0].x,plan.actions[0].y),(.3,.7))
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: ({k:.99 for k in checks},{k:None for k in targets})
+        self.executor.jev.last_scores={'target':{'presence':.6,'unique':.7}}
+        self.executor.jev.last_points={'target':(.4,.4)}
+        self.executor._key=None
+        plan=self.executor.next_actions(b'other',self.ctx)
+        self.assertEqual((plan.actions[0].x,plan.actions[0].y),(.3,.7))
+        self.assertEqual(self.refine.call_args.args[3],(.4,.4))
+
+    def test_typing_without_focus_clicks_the_field_first(self):
+        self.plan['steps']=[{'ready':'search page','expected':'results','actions':[{'type':'type_text','text':'flexbox'}]}]
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: (
+            {'ready':.99,'focused':.1},{'field':(.4,.5)})
+        plan=self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual([a.type for a in plan.actions],['click','type_text'])
+        self.assertEqual((plan.actions[0].x,plan.actions[0].y),(.4,.5))
+        self.executor._key=None
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: ({'ready':.99,'focused':.95},{})
+        self.assertEqual([a.type for a in self.executor.next_actions(b'other',self.ctx).actions],['type_text'])
+
+    def test_a_rejected_plan_is_replanned_with_more_thinking(self):
+        self.executor.replanner=Mock()
+        self.executor.replanner.generate.return_value=self.plan
+        self.executor.jev.assess.side_effect=[({'ready':.2},{'target':(.5,.5)}),({'ready':.99},{'target':(.2,.3)})]
+        self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual(self.executor.model.generate.call_count,1)  # the first plan: fast
+        self.assertEqual(self.executor.replanner.generate.call_count,1)  # after Jev's veto: high thinking
+
+    def test_a_failed_replan_falls_back_to_the_fast_planner(self):
+        self.executor.replanner=Mock()
+        self.executor.replanner.generate.side_effect=RuntimeError('504 deadline exceeded')
+        self.executor.jev.assess.side_effect=[({'ready':.2},{'target':(.5,.5)}),({'ready':.99},{'target':(.2,.3)})]
+        self.assertEqual(self.executor.next_actions(b'image',self.ctx).actions[0].x,.2)
+        self.assertEqual(self.executor.model.generate.call_count,2)
+
+    def test_a_small_window_is_maximized_before_planning_on(self):
+        self.executor.check_window=True
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: (
+            {k:.99 for k in checks},{k:((.9,.02) if k=='maximize' else (.25,.75)) for k in targets})
+        with patch('brain.agent.jev_flash.refine',return_value=(.91,.02)):
+            plan=self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual((plan.actions[0].type,plan.actions[0].x,plan.actions[0].y),('click',.91,.02))
+        self.assertIsNone(self.executor._key)  # re-planned on the maximized screen
+        self.assertNotEqual(self.executor.next_actions(b'image',self.ctx).reasoning,'Maximize the app window first')
 
 if __name__=='__main__':unittest.main()

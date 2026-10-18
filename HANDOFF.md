@@ -6,7 +6,7 @@ Earlier session logs and research notes live in git history; current evidence is
 
 ## What works (2026-10-17)
 - **Runtime:** race executor is the default with either a Gemini or a z.ai key (PLAN.md §10).
-  233 offline tests pass (`.venv/bin/python -m unittest discover -s tests`, no API calls); `test_capture` skips
+  236 offline tests pass (`.venv/bin/python -m unittest discover -s tests`, no API calls); `test_capture` skips
   without `mss`, which only the `local` extra installs.
 - **Voice layer:** `brain/voice/layer.py` with the Deepgram relay (key stays server-side), smoke-tested
   through the real agent; the newest request wins, and push to talk works.
@@ -17,6 +17,9 @@ Earlier session logs and research notes live in git history; current evidence is
   - A destructive request asks, and "no" declines.
   - "No, open John's email instead" runs the new request.
   - YouTube → search → first video.
+- **Laptop through the real Pico** (KDE, 2880x1800, spectacle capture): main suite 11/12 (211 s); judge
+  stress suite 9/9 in 40 s (barge-in, gibberish, "delete my home folder", passwords, contradictions, a hidden
+  page injection, Spanish, a long query, a question); Blender from closed: open, maximize, add a sphere, 34 s.
 - **Public websites** (Wikipedia, GitHub, docs.python.org, OpenStreetMap): 16 of 23 runs passed before the
   fixes below; safety held on remarks, ambiguous requests and a donation.
 - **Race on z.ai alone** (workstation study, one repeat): 7/10 by the fixture's oracle, 0 unsafe. Jev clicks
@@ -30,7 +33,9 @@ Earlier session logs and research notes live in git history; current evidence is
 | Turn on dark theme | Android emulator | 2 of 3 |
 | Set an alarm for 6:45 AM | Android emulator | 1 of 3 |
 | Add contact Ada Lovelace, 555 123 4567 | Android emulator | 0 of 9 |
-| Restart into firmware setup, set boot time-out to 7 s | QEMU/OVMF | 4 of 21 |
+
+These runs used per-OS prompt hints and the emulator backend, both since removed (PLAN.md §10), so they are
+history, not a measure of `main`.
 
 ## Fixed after the website runs
 - Scroll amounts are wheel notches (the planner had sent pixel counts; on the Pico that flings to the
@@ -42,21 +47,22 @@ Earlier session logs and research notes live in git history; current evidence is
 
 ## Known issues (not fixed)
 - **False "done":** the completion check accepted a merely visible link as success (2/2), and reported
-  "Done" after a click redirected to GitHub's login page.
+  "Done" after a click redirected to GitHub's login page. Still seen: "open the tutorial, then the page
+  about data structures" stopped with the section only scrolled into view.
 - **"Go back" is hard to confirm:** after a correct back navigation the completion score stayed low, so the
   planner went back again (2/2).
-- **Planner-path clicks are less precise** than the direct path: 8/15 inside the target without zoom,
-  12/15 with it. The planner path does not zoom yet.
-- **Race planner and `wait`:** the planner prompt offers `skill(name=wait)` and `boot_keys`, but its schema still
-  removes `wait` from the allowed names, so race cannot actually ask for it.
-- **Firmware is experimental:** the model often claims `done` before saving with F10 then Y. PCs with Fast Boot
-  ignore USB keyboards during POST, a restart that never resets USB gets no key taps, and Mac boot keys must be
-  held, which taps cannot do.
-- **Thin re-detection margins:** the threshold (40) is close to the smallest firmware-to-desktop change
-  measured (44.1); one firmware-to-phone pair changed by only 1.9, so a phone misread as firmware can stay `bios`.
-- **Quick start uses a word list,** so "open a text editor" still goes to the model.
-- **Untested:** the capture card, the real Pico, a Mac, a real phone (only the emulator), iOS and ChromeOS.
-  The OS hints were tuned on Linux and Android only.
+- **Click precision (top priority).** Jev answers boxes in 0.005 steps (~14 px on a 2880 px screen) and its
+  full-screen boxes miss by 10-25 px at 1280 scale; one zoom lands 12/15 planner clicks inside the target,
+  but controls a few pixels apart need a second tight zoom (Blender's maximize vs minimize: 0/3 → 4/4).
+  After the black-wallpaper crop fix the agent sees the true full screen, so small windows mean small
+  targets: wiki_link went 5 s → 25 s and close_calc took 5 tries. To measure on an offline target set,
+  then keep what helps: an adaptive second zoom for small boxes, the median of 2-3 parallel looks, and a
+  hover check before clicking a small control next to a destructive one.
+- **Small windows are maximized only on the planner path.** Jev's direct actions skip the window check.
+- **Deep mode is slow and shallow.** Argon low takes 4-24 s a step; "make me a house" built a cube with a
+  pitched roof (153 s).
+- **Planner slips:** once typed `xdg-open <url>` into a browser while recovering a link click.
+- **Untested:** the capture card, the real Pico, a Mac, a real phone, iOS and ChromeOS.
 
 ## Waiting on hardware (in order)
 1. On the Pi with sudo: the steps `scripts/pi/setup.sh` prints (uart0, `video`/`dialout` groups, linger),
@@ -70,7 +76,6 @@ Earlier session logs and research notes live in git history; current evidence is
 ## Still to do
 - Race vs direct in `bench/arch/e2e_study.py`, with an injection segment.
 - `bench/guard_cost.py` and the full test suite on the Pi.
-- Team sign-off on the contract notes added for firmware and new OS names (PLAN.md §5.3, §5.4, §5.6).
 - Wire `brain/arbiter.py` for pipelined voice segments (the voice layer interrupts and resubmits today).
 - The push-to-talk GPIO button and 3.5 mm switch jack are wired in the bring-up guide but not read by
   software yet; the voice page's Talk button and the Space bar work.

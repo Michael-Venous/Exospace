@@ -7,7 +7,6 @@ calls where the OS gives a reliable keyboard path; anything else stays on screen
 
 | Skill | What it does |
 |---|---|
-| `open_app` | Opens the OS search (GUI, or GUI+SPACE on macOS/iOS), types the name, presses Enter; unavailable on firmware and unknown targets |
+| `open_app` | Opens the desktop launcher search (GUI, or GUI+SPACE on macOS), types the name, presses Enter; on phones and unknown targets the model uses the screen instead |
 | `hover` | Moves the pointer to `x`,`y` without a button (mouse targets only) |
-| `wait` | Blocks until the screen changes, at most 10 s; sends no input (direct executor only) |
-| `boot_keys` | Arms 1–3 firmware keys (ESC, DELETE, F1–F12) that the controller taps through the next restart (experimental) |
+| `wait` | Blocks until the screen changes, at most 10 s; sends no input (every executor; race plans it as its own stage) |

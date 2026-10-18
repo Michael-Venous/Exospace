@@ -15,16 +15,14 @@ from brain.capture import active_rect, frame_change, is_blank, thumbnail
 from brain.controller import Controller
 from brain.errors import describe
 from brain.events import EventBus
-from brain.imaging import prepare
+from brain.imaging import MAX_SIDE, prepare
 from brain.telemetry import Telemetry
 from brain.types import Action, ActionError, DeviceProfile, Frame, POINTER_ACTIONS, TERMINAL_ACTIONS
 from brain.verification import visibly_changed
 
+STALL_S = 20.0  # no visible progress for this long ends the run (a demo must never look frozen)
 # A run survives these (PLAN.md §5.6): the target restarted, was replugged or blanked.
 RESUMABLE = frozenset({"target disconnected", "video lost"})
-# Thumbnail change that makes a firmware profile look again: >= 44 from firmware to any desktop
-# measured (QEMU/OVMF against Linux), while consecutive firmware screens rarely change this much.
-REDETECT_CHANGE = 40.0
 
 
 @dataclass(frozen=True)
@@ -41,20 +39,17 @@ class Agent:
                  on_status: Callable[[str], None] = lambda message: None,
                  events: EventBus | None = None,
                  reconnect: Callable[[str], DeviceProfile | None] | None = None,
-                 redetect: Callable[[], DeviceProfile | None] | None = None) -> None:
+                 stall_s: float = STALL_S) -> None:
         """`reconnect(reason)` waits for the target to return and gives its new profile
-        (None if unchanged), or raises Cancelled; without it a disconnect ends the run.
-        `redetect()` classifies the screen again (None if it cannot tell): a boot logo read
-        as firmware becomes a desktop without any reconnect."""
+        (None if unchanged), or raises Cancelled; without it a disconnect ends the run."""
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
         self.events = events
         self._shown_scores: object = None
-        self.reconnect, self.redetect = reconnect, redetect
-        # (connected_at, thumbnail) of the screen the OS was classified on, kept between goals
-        self._classified: tuple[float, np.ndarray | None] = (0.0, None)
+        self.reconnect = reconnect
+        self.stall_s = stall_s
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
@@ -68,22 +63,29 @@ class Agent:
         unchanged_steps = 0  # consecutive steps whose input left the screen as it was
         recovery_used = False
         attempts: dict[tuple[str, ...], list[np.ndarray]] = {}  # each batch's starting screens
-        connected_at, basis = self._classified
-        if connected_at != profile.connected_at:  # another connection's screen
-            basis = None
+        settled_s: float | None = None  # how long the last action's settle took; None = settle first
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
         self.on_status("Working on your request…")
         self._emit("run", goal=goal, run_id=run_id)
         try:
+            progress_at = time.monotonic()
             for step in range(1, self.max_steps + 1):
+                override = getattr(self.executor, "stall_s", None)  # deep mode allows slower steps
+                stall_s = override if isinstance(override, (int, float)) and override else self.stall_s
+                if stall_s and time.monotonic() - progress_at > stall_s:
+                    # No visible progress for a while is a failure the user should hear about, not a silent grind.
+                    status, message = "fail", "I'm stuck on this one and stopped. Could you try it another way?"
+                    break
                 times = dict(t_capture=0.0, t_upload=0.0, t_model=0.0, t_execute=0.0, t_settle=0.0)
                 try:
-                    settled_s = ctl.wait_settled()
-                    times["t_settle"] += settled_s
+                    if settled_s is None:  # otherwise the previous step's last action already settled
+                        settled_s = ctl.wait_settled()
+                        times["t_settle"] += settled_s
                     # A screen still moving at the settle timeout (a live camera preview, a video) differs at
                     # every grab: judging it stale discarded nearly every plan (measured on Android's camera).
                     moving = settled_s >= ctl.settle.timeout_s
+                    settled_s = None
                     stamp = time.monotonic()
                     frame = ctl.capture.grab()
                     if frame is None or is_blank(frame):
@@ -91,15 +93,11 @@ class Agent:
                         token.check()
                     before = thumbnail(frame)
                     times["t_capture"] = time.monotonic() - stamp
-                    if basis is None:
-                        basis = before
-                    elif self.redetect and profile.os == "bios" and frame_change(basis, before) >= REDETECT_CHANGE:
-                        stamp = time.monotonic()
-                        basis, profile = before, self.redetect() or profile
-                        times["t_model"] += time.monotonic() - stamp
                     profile = replace(profile, rect=active_rect(frame))
                     stamp = time.monotonic()
-                    jpeg = prepare(frame, profile.rect, grid=getattr(self.executor, "image_grid", True))
+                    side = getattr(self.executor, "image_side", MAX_SIDE)
+                    jpeg = prepare(frame, profile.rect, grid=getattr(self.executor, "image_grid", True),
+                                   max_side=side if isinstance(side, int) else MAX_SIDE)
                     times["t_upload"] = time.monotonic() - stamp
                     self._show(frame, profile, jpeg)
                     ctx = StepContext(goal, profile, self.memory, history, step,
@@ -156,8 +154,8 @@ class Agent:
                             try:
                                 ctl.execute(action, profile)
                                 acted = True
-                                # Waiting and arming boot keys send no input, so an unchanged screen is no failure.
-                                sent_input = sent_input or action.type != "skill" or action.name not in ("wait", "boot_keys")
+                                # A wait sends no input, so a still screen after it is no failure.
+                                sent_input = sent_input or (action.type, action.name) != ("skill", "wait")
                                 self._emit_action(step, action, ok=True)
                             except ActionError as exc:
                                 self._emit_action(step, action, ok=False)
@@ -167,7 +165,8 @@ class Agent:
                             finally:
                                 times["t_execute"] += time.monotonic() - stamp
                             history.append(action.brief())  # before settling: a restart lands there
-                            times["t_settle"] += ctl.wait_settled()
+                            settled_s = ctl.wait_settled()
+                            times["t_settle"] += settled_s
                     if pending_done is not None:
                         # Check the claim on the new screen now: replanning on a screen that looks unchanged
                         # (a camera shutter) repeated the action (measured: 20+ photos for one).
@@ -199,6 +198,8 @@ class Agent:
                             token.check()
                         unchanged = not visibly_changed(frame, after)
                         unchanged_steps = unchanged_steps + 1 if unchanged else 0
+                        if not unchanged and not action_failed:
+                            progress_at = time.monotonic()
                         if unchanged:
                             notes.append("Screen unchanged; try something different.")
                         # A covered result can leave pixels unchanged. The Jev
@@ -232,7 +233,8 @@ class Agent:
                         raise
                     self.on_status(f"{exc.reason.capitalize()}; waiting for it to come back…")
                     if found := self.reconnect(exc.reason):
-                        profile, basis = found, None
+                        profile = found
+                    settled_s = None
                     note = "The target restarted, reconnected or blanked; continue from this screen."
                 finally:
                     self.telemetry.step(run_id, profile.os, task_id, step, **times)
@@ -244,7 +246,6 @@ class Agent:
         except Exception as exc:
             status, message = "fail", describe(exc, "task")
         finally:
-            self._classified = (profile.connected_at, basis)
             ctl.release_all()
             self.telemetry.finish(run_id, profile.os, task_id, step, status == "done",
                                   time.monotonic() - started)

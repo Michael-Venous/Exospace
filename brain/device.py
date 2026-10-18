@@ -12,10 +12,7 @@ from brain.types import DeviceProfile, OSName
 
 
 def detect_profile(capture: Capture, executor: Executor, override_os: OSName | None = None,
-                   *, home_os: OSName | None = None, cancel: CancelToken | None = None,
-                   timeout_s: float = 5.0) -> DeviceProfile:
-    """`home_os` is the target's own OS: any classification but firmware becomes it, since one
-    screenshot of a full-screen app shows no OS (Linux with Chrome was read as windows and chromeos)."""
+                   *, cancel: CancelToken | None = None, timeout_s: float = 5.0) -> DeviceProfile:
     token = cancel or CancelToken()
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -25,8 +22,6 @@ def detect_profile(capture: Capture, executor: Executor, override_os: OSName | N
             rect = active_rect(frame)
             os = override_os or _classify(executor, prepare(frame, rect, grid=False))
             token.check()
-            if home_os and os != "bios":
-                os = home_os
             # "unknown" (BIOS, boot splash, full-screen app) still works as keyboard + mouse.
             return DeviceProfile(os, rect, "touch" if os == "android" else "mouse", time.time())
         token.sleep(0.05)

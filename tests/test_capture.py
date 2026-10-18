@@ -1,12 +1,15 @@
 """ScreenCapture (local backend) recovers when the monitor layout changes."""
 
 import importlib.util
+import threading
+import time
 import unittest
 from unittest.mock import Mock, patch
 
+import cv2
 import numpy as np
 
-from brain.capture import ScreenCapture
+from brain.capture import ScreenCapture, V4L2Capture
 
 HAS_MSS = importlib.util.find_spec("mss") is not None
 if HAS_MSS:
@@ -24,5 +27,64 @@ class ScreenCaptureTests(unittest.TestCase):
         stale.close.assert_called_once()
 
 
+class BlankTests(unittest.TestCase):
+    def test_a_black_desktop_with_a_cursor_is_live_video(self):
+        from brain.capture import is_blank
+        frame = np.zeros((1800, 2880, 3), np.uint8)
+        self.assertTrue(is_blank(frame))
+        frame[900:930, 1400:1420] = 255  # the mouse cursor
+        self.assertFalse(is_blank(frame))
+
+
+class ActiveRectTests(unittest.TestCase):
+    def test_a_pillarboxed_phone_is_cropped(self):
+        from brain.capture import active_rect
+        frame = np.zeros((1080, 1920, 3), np.uint8)
+        frame[:, 700:1220] = 200
+        rect = active_rect(frame)
+        self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (700, 0, 1220, 1080))
+
+    def test_a_window_on_a_black_wallpaper_is_not_the_screen(self):
+        from brain.capture import active_rect
+        frame = np.zeros((1800, 2880, 3), np.uint8)
+        frame[460:1340, 738:2142] = 200  # a small app window, black all around it
+        rect = active_rect(frame)
+        self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (0, 0, 2880, 1800))
+
+    def test_a_dark_frame_lit_only_by_the_cursor_is_not_cropped(self):
+        from brain.capture import active_rect
+        frame = np.zeros((1800, 2880, 3), np.uint8)
+        frame[:, 1431:1449] = 30  # a dim page edge-to-edge in one column
+        frame[900:930, 1435:1445] = 255  # the cursor
+        rect = active_rect(frame)
+        self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (0, 0, 2880, 1800))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class CaptureReadLoopTests(unittest.TestCase):
+    def test_a_bad_mjpg_frame_does_not_end_the_capture_thread(self):
+        """The card's occasional empty MJPG frame makes OpenCV raise; reading must carry on."""
+        good = np.full((36, 64, 3), 120, np.uint8)
+        reads = iter([cv2.error("imdecode: empty buffer"), (True, good)])
+
+        class Card:
+            def read(self):
+                item = next(reads, (True, good))
+                if isinstance(item, Exception):
+                    raise item
+                return item
+
+        capture = object.__new__(V4L2Capture)
+        capture._cap, capture._lock, capture._frame, capture._stamp = Card(), threading.Lock(), None, 0.0
+        capture._running = True
+        thread = threading.Thread(target=capture._read_loop, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 2
+        while capture.grab() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        capture._running = False
+        thread.join(timeout=1)
+        self.assertIsNotNone(capture.grab())

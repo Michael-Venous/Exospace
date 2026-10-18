@@ -1,10 +1,10 @@
-"""Preparing frames for the model: crop to the active screen, scale its long side to
-MAX_SIDE, add an aiming grid, and JPEG-encode. Bigger images aim better; smaller ones
-upload and process faster."""
+"""Preparing frames for the model: crop to the active screen, shrink, add an
+aiming grid, and JPEG-encode. Smaller images upload and process faster."""
 
 from __future__ import annotations
 
 import cv2
+import numpy as np
 
 from brain.types import Frame, Rect
 
@@ -14,18 +14,45 @@ GRID_DIVISIONS = 10
 GRID_COLOR = (0, 0, 255)  # BGR red
 
 
-def prepare(frame: Frame, rect: Rect, grid: bool = True) -> bytes:
+def prepare(frame: Frame, rect: Rect, grid: bool = True, max_side: int = MAX_SIDE) -> bytes:
     image = rect.crop(frame)
     h, w = image.shape[:2]
-    scale = MAX_SIDE / max(h, w)
-    if scale != 1.0:
-        # Enlarged too: on a 640x480 firmware screen the model hit 24/30 menu rows at 2x, 19/30 as is.
-        image = cv2.resize(image, (round(w * scale), round(h * scale)),
-                           interpolation=cv2.INTER_AREA if scale < 1.0 else cv2.INTER_CUBIC)
+    scale = min(1.0, max_side / max(h, w))
+    if scale < 1.0:
+        image = cv2.resize(image, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
     else:
         image = image.copy()
     if grid:
         _draw_grid(image)
+    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    if not ok:
+        raise RuntimeError("JPEG encoding failed")
+    return buf.tobytes()
+
+
+def shrink(jpeg: bytes, max_side: int = MAX_SIDE) -> bytes:
+    """A smaller copy of a prepared JPEG for the language model, which needs no more than MAX_SIDE."""
+    image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    if image is None or max(image.shape[:2]) <= max_side:
+        return jpeg  # already small, or not an image this module can read: pass it on unchanged
+    h, w = image.shape[:2]
+    scale = max_side / max(h, w)
+    image = cv2.resize(image, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
+    if not ok:
+        raise RuntimeError("JPEG encoding failed")
+    return buf.tobytes()
+
+
+def grid_copy(jpeg: bytes) -> bytes:
+    """A MAX_SIDE copy of a prepared JPEG with the aiming grid, for a model that clicks by coordinates."""
+    image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return jpeg
+    h, w = image.shape[:2]
+    scale = min(1.0, MAX_SIDE / max(h, w))
+    image = cv2.resize(image, (round(w * scale), round(h * scale)), interpolation=cv2.INTER_AREA)
+    _draw_grid(image)
     ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
     if not ok:
         raise RuntimeError("JPEG encoding failed")
