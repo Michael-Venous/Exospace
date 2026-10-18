@@ -29,6 +29,8 @@ ALIASES = {
 def canonical(key: str) -> str:
     """Normalize one key name, or raise ValueError if we can't send it."""
     k = key.strip().upper().replace(" ", "").replace("-", "_")
+    if k.endswith(("_L", "_R")) and len(k) > 2:  # X11 keysym sides: Control_L, Shift_R, Super_L
+        k = k[:-2]
     k = ALIASES.get(k, k)
     if len(k) == 1 and k.isascii() and k.isalnum():
         return k

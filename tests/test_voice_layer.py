@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 from brain.display.server import Command, DisplayServer
 from brain.events import EventBus
-from brain.voice.layer import Agent, narrate, page_server
+from brain.voice.layer import Agent, filler, narrate, page_server
 
 
 class NarrationTests(unittest.TestCase):
@@ -26,6 +26,22 @@ class NarrationTests(unittest.TestCase):
         self.assertEqual(narrate({"ev": "result", "status": "cancelled", "message": "barge-in"}), "Stopped.")
         self.assertEqual(narrate({"ev": "result", "status": "fail", "message": "TimeoutError"}),
                          "Sorry, I couldn't do that.")
+
+    def test_executor_news_is_spoken(self):
+        self.assertEqual(narrate({"ev": "status", "message": "This one's harder. I'm thinking it through."}),
+                         "This one's harder. I'm thinking it through.")
+
+    def test_a_silent_request_is_acknowledged_then_given_progress(self):
+        self.assertIsNone(filler(1.0, spoken=False))  # a fast request finishes before anything is said
+        self.assertEqual(filler(3.0, spoken=False), "On it.")
+        self.assertIsNone(filler(5.0, spoken=True))
+        self.assertEqual(filler(11.0, spoken=True), "Still working on it.")
+
+    def test_a_line_repeating_the_last_one_is_said_once(self):
+        agent, lines = Agent("http://127.0.0.1:1"), queue.Queue()
+        agent._say(lines, "The calculator is open")
+        agent._say(lines, "The calculator is open")
+        self.assertEqual(lines.qsize(), 1)
 
     def test_stages_are_brief_and_fast_actions_are_silent(self):
         self.assertEqual(narrate({"ev": "plan", "reasoning": "Stage 1/2: The reply window is open"}),
@@ -45,6 +61,8 @@ class AgentLinkTests(unittest.TestCase):
     def test_segments_become_agent_goals(self):
         self.agent.submit("open chrome")
         self.assertEqual(self.commands.get(timeout=2), Command("goal", text="open chrome"))
+        self.agent.submit("and search lofi", continues=True)
+        self.assertEqual(self.commands.get(timeout=2), Command("goal", text="and search lofi", continues=True))
 
     def test_talking_interrupts_only_running_work(self):
         self.agent.interrupt()
@@ -54,9 +72,9 @@ class AgentLinkTests(unittest.TestCase):
         self.stop.assert_called_once_with("barge-in")
 
     def test_follow_tracks_busy_state_and_narrates_only_new_events(self):
-        updates: queue.Queue[dict] = queue.Queue()
+        lines: queue.Queue[dict] = queue.Queue()
         self.bus.publish("result", status="fail", message="before the layer connected")
-        threading.Thread(target=self.agent.follow, args=(updates,), daemon=True).start()
+        threading.Thread(target=self.agent.follow, args=(lines,), daemon=True).start()
         time.sleep(0.2)
         self.bus.publish("run", goal="delete the downloads folder")
         deadline = time.monotonic() + 2
@@ -64,10 +82,34 @@ class AgentLinkTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertTrue(self.agent.busy)
         self.bus.publish("result", status="ask_user", message="This can't be undone. Should I go ahead?")
-        self.assertEqual([updates.get(timeout=2) for _ in range(4)],
-                         [{"busy": False}, {"busy": True}, {"busy": False},
-                          {"say": "This can't be undone. Should I go ahead?"}])
+        self.assertEqual(lines.get(timeout=2), {"say": "This can't be undone. Should I go ahead?"})
         self.assertFalse(self.agent.busy)
+
+    def test_describe_mode_describes_a_finished_request(self):
+        describer = Mock()
+        describer.describe.side_effect = lambda jpeg, request, outcome, emit: emit({"pcm": "AAAA", "rate": 24000}) or True
+        agent, lines = Agent(self.display.url, describer), queue.Queue()
+        agent.describe_on, agent._goal = True, "search youtube for lofi"
+        self.bus.set_frame(b"jpeg")
+        self.assertTrue(agent.describing({"ev": "result", "status": "done"}))
+        self.assertFalse(agent.describing({"ev": "result", "status": "ask_user"}))  # questions are read verbatim
+        agent._describe(lines, "Search results are shown")
+        self.assertEqual([lines.get(), lines.get()], [{"show": "Search results are shown"}, {"pcm": "AAAA", "rate": 24000}])
+        self.assertEqual(describer.describe.call_args.args[:3], (b"jpeg", "search youtube for lofi", "Search results are shown"))
+
+    def test_a_failed_description_still_says_the_result(self):
+        describer = Mock()
+        describer.describe.return_value = False
+        agent, lines = Agent(self.display.url, describer), queue.Queue()
+        self.bus.set_frame(b"jpeg")
+        agent._describe(lines, "Done.")
+        self.assertEqual([lines.get(), lines.get()], [{"show": "Done."}, {"say": "Done."}])
+
+    def test_screen_is_the_latest_frame(self):
+        self.assertIsNone(self.agent.screen())
+        self.bus.set_frame(b"jpeg")
+        self.assertEqual(self.agent.screen(), b"jpeg")
+        self.assertIsNone(Agent("http://127.0.0.1:9").screen())
 
 
 class PageServerTests(unittest.TestCase):
@@ -90,28 +132,51 @@ class PageServerTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code
 
-    def test_page_names_the_relay_port_and_embeds_the_decision_log(self):
+    def test_describe_toggle_needs_a_describer(self):
+        self.assertEqual(self.post("/describe", {"on": True}), 200)
+        self.assertTrue(self.agent.describe_on)
+        self.agent.describer = None
+        self.post("/describe", {"on": True})
+        self.assertFalse(self.agent.describe_on)
+
+    def test_talking_cuts_off_a_description(self):
+        self.post("/talk", {})
+        self.agent.describer.cancel.assert_called_once()
+
+    def test_page_names_the_relay_port(self):
         with urllib.request.urlopen(self.base + "/", timeout=2) as response:
             page = response.read()
         self.assertIn(b"ws://${location.hostname}:8781", page)
-        self.assertIn(b'data-src="http://127.0.0.1:8770/#log"', page)
 
-    def test_every_open_page_gets_the_busy_state_and_each_update(self):
+    def test_every_open_page_gets_each_update(self):
         # A stale stream left by a reload must not swallow the update the live page needs.
         with urllib.request.urlopen(self.base + "/narration", timeout=2) as stale, \
                 urllib.request.urlopen(self.base + "/narration", timeout=2) as live:
-            self.updates.put({"busy": False})
+            time.sleep(0.1)  # both streams registered
+            self.updates.put({"say": "Done."})
             for stream in (stale, live):
-                lines = [stream.readline() for _ in range(4)]
-                self.assertEqual(lines, [b'data: {"busy": true}\n', b"\n", b'data: {"busy": false}\n', b"\n"])
+                self.assertEqual([stream.readline() for _ in range(2)], [b'data: {"say": "Done."}\n', b"\n"])
 
     def test_segment_is_forwarded(self):
         self.assertEqual(self.post("/segment", {"text": "actually go back"}), 200)
-        self.agent.submit.assert_called_once_with("actually go back")
+        self.agent.submit.assert_called_once_with("actually go back", False)
+
+    def test_a_later_segment_is_forwarded_as_a_continuation(self):
+        self.assertEqual(self.post("/segment", {"text": "and search lofi", "continues": True}), 200)
+        self.agent.submit.assert_called_once_with("and search lofi", True)
 
     def test_talk_barges_in(self):
         self.assertEqual(self.post("/talk", {}), 200)
         self.agent.interrupt.assert_called_once()
+
+    def test_screen_is_relayed(self):
+        self.agent.screen.return_value = b"jpeg"
+        with urllib.request.urlopen(self.base + "/screen.jpg?t=1", timeout=2) as response:
+            self.assertEqual((response.headers["Content-Type"], response.read()), ("image/jpeg", b"jpeg"))
+        self.agent.screen.return_value = None
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(self.base + "/screen.jpg", timeout=2)
+        self.assertEqual(caught.exception.code, 503)
 
     def test_cross_site_and_empty_requests_are_refused(self):
         self.assertEqual(self.post("/segment", {"text": "send it"}, origin=False), 403)

@@ -1,6 +1,8 @@
 """Shortcut checks without model calls or real keyboard input."""
 
 import unittest
+
+import numpy as np
 from unittest.mock import Mock
 
 from brain.cancel import Cancelled, CancelToken
@@ -12,13 +14,14 @@ class SkillTests(unittest.TestCase):
     def setUp(self):
         self.controller = Mock()
         self.controller.cancel = CancelToken()
+        self.controller.capture.grab.return_value = None  # no frame: open_app skips waiting for the window
 
     def profile(self, os):
         return DeviceProfile(os, Rect(0, 0, 100, 100), "mouse", 0)
 
     def test_platform_shortcuts(self):
-        for os, keys in (("macos", ["GUI", "SPACE"]), ("ios", ["GUI", "SPACE"]), ("windows", ["GUI"]),
-                         ("linux", ["GUI"]), ("chromeos", ["GUI"])):
+        for os, keys in (("macos", ["GUI", "SPACE"]), ("windows", ["GUI"]), ("linux", ["GUI"]),
+                         ("chromeos", ["GUI"])):
             with self.subTest(os=os):
                 self.controller.reset_mock()
                 run_skill("open_app", {"name": " Notes "}, self.profile(os), self.controller)
@@ -29,27 +32,26 @@ class SkillTests(unittest.TestCase):
                     unittest.mock.call.type_text("Notes"),
                     unittest.mock.call.wait_settled(),
                     unittest.mock.call.hotkey(["ENTER"]),
-                    unittest.mock.call.wait_for_new_screen(self.controller.capture.grab.return_value),
                 ])
 
+    def test_open_app_waits_for_the_window_not_just_the_launcher(self):
+        self.controller.capture.grab.return_value = np.zeros((10, 10, 3), np.uint8)
+        run_skill("open_app", {"name": "Notes"}, self.profile("macos"), self.controller)
+        self.assertEqual(self.controller.method_calls[-2:], [
+            unittest.mock.call.wait_settled(), unittest.mock.call.wait_for_change(4.0, since=unittest.mock.ANY)])
+
     def test_a_launch_that_opens_no_window_is_rejected(self):
-        self.controller.wait_for_new_screen.return_value = False
+        self.controller.capture.grab.return_value = np.zeros((10, 10, 3), np.uint8)
+        self.controller.wait_for_change.return_value = False
         with self.assertRaises(ActionError):  # the loop then drops the blind keys queued after it
             run_skill("open_app", {"name": "Notes"}, self.profile("linux"), self.controller)
-        self.controller.capture.grab.return_value = None  # no frame to compare: nothing to wait for
-        run_skill("open_app", {"name": "Notes"}, self.profile("linux"), self.controller)
-
-    def test_android_picks_the_app_not_a_web_search(self):
-        run_skill("open_app", {"name": "Clock"}, self.profile("android"), self.controller)
-        self.assertEqual(self.controller.method_calls[-3:-1], [
-            unittest.mock.call.hotkey(["DOWN"]), unittest.mock.call.hotkey(["ENTER"])])
 
     def test_wait_only_watches_the_screen(self):
         run_skill("wait", {}, self.profile("windows"), self.controller)
         self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change()])
 
     def test_unsupported_has_no_input(self):
-        for os in ("bios", "unknown"):
+        for os in ("android", "ios", "unknown"):
             with self.assertRaises(SkillUnavailable):
                 run_skill("open_app", {"name": "Notes"}, self.profile(os), self.controller)
         with self.assertRaises(SkillUnavailable):
@@ -61,21 +63,6 @@ class SkillTests(unittest.TestCase):
             with self.assertRaises(ActionError):
                 run_skill("open_app", {"name": name}, self.profile("macos"), self.controller)
         self.assertEqual(self.controller.method_calls, [])
-
-    def test_boot_keys_arm_only_firmware_keys(self):
-        for args, keys in (({"name": "", "keys": ["f2", "Del"]}, ["F2", "DELETE"]), ({"name": "esc"}, ["ESC"])):
-            with self.subTest(args=args):
-                run_skill("boot_keys", args, self.profile("windows"), self.controller)
-                self.controller.arm_boot_keys.assert_called_with(keys)
-        self.controller.reset_mock()
-        for keys in (["ENTER"], ["A"], [], ["F1", "F2", "F10", "ESC"], None, [5], "F2, DEL"):
-            with self.subTest(keys=keys), self.assertRaises(ActionError):
-                run_skill("boot_keys", {"name": "", "keys": keys}, self.profile("windows"), self.controller)
-        self.assertEqual(self.controller.method_calls, [])
-
-    def test_wait_only_waits(self):
-        run_skill("wait", {"name": ""}, self.profile("bios"), self.controller)
-        self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change()])
 
     def test_cancel_after_search_prevents_typing(self):
         self.controller.wait_settled.side_effect = lambda: self.controller.cancel.cancel("barge-in")

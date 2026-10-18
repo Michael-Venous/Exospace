@@ -7,7 +7,7 @@ import re
 from brain.agent.jev_flash import JevFlashExecutor, validate_steps
 
 
-# Retired from the runtime (PLAN.md §13: no hard-coded phrase rules); kept for this experiment.
+# Retired from the runtime (PLAN.md §3: no hard-coded phrase rules); kept for this experiment.
 def direct_command(goal: str):
     """Only explicit single pointer commands bypass language-model planning."""
     match=re.fullmatch(r'\s*(double[- ]click|right[- ]click|click|tap|hover(?: over)?)\s+(?:on\s+)?(.+?)\s*[.!]?\s*',goal,re.I)

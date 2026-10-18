@@ -35,7 +35,6 @@ OS_CRITERIA = {
     "chromeos": "A Chromebook (ChromeOS shelf and launcher).",
     "android": "An Android phone or tablet.",
     "ios": "An iPhone or iPad.",
-    "bios": "Firmware setup, a boot menu or another pre-OS screen.",
     "unknown": "None of the above can be told from this screen.",
 }
 NEXT_QUESTION = ("The user's `goal` is being carried out on the device in `screen`; `executed_steps` were already "
@@ -142,7 +141,7 @@ class JevOnlyPlanner:
             state = {"goal": ctx.goal, "executed_steps": ctx.history}
             with ThreadPoolExecutor(2) as pool:
                 looks = [p for p in pool.map(lambda _: refine(self.jev, image, state, point, control=STEP_CONTROL,
-                                                               run_id=ctx.run_id, step=ctx.step), range(2)) if p]
+                                                               tight=False, run_id=ctx.run_id, step=ctx.step), range(2)) if p]
             # Jev's doubt about which step comes next also lowers its sureness that the target is visible (a
             # small YouTube search box: 0.77-0.84 on 5 tries, each box on it), so agreeing looks stand in for it.
             # Both zooms moving to one spot agree too: for "open a new tab and search ..." the first box was the
@@ -157,13 +156,13 @@ class JevOnlyPlanner:
             choice = answers["text"].get("choice")
             if choice not in {str(i) for i in range(len(texts))}:
                 return _fail("the text to type isn't in the request")
-            if probability(answers["replace"].get("noul")) >= GATE and ctx.profile.os != "bios":
+            if probability(answers["replace"].get("noul")) >= GATE:
                 # Select-all only in a filled single-line box: in a document it would replace everything.
                 actions.append(Action("hotkey", keys=("GUI" if ctx.profile.os in ("macos", "ios") else "CTRL", "A")))
             actions.append(Action("type_text", text=texts[int(choice)]))
         if step == "enter":
             actions.append(Action("hotkey", keys=("ENTER",)))
-        if step in ("scroll_down", "scroll_up") and ctx.profile.os != "bios":  # firmware has no wheel
+        if step in ("scroll_down", "scroll_up"):
             actions.append(Action("scroll", dy=5 if step == "scroll_down" else -5))
         if not actions:
             return _fail("it needs reasoning or content Jev can't supply")

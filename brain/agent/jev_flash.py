@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 import re
 import time
@@ -10,16 +11,20 @@ from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, p
 from brain.agent.jev import JevVision
 from brain.agent.model import language_model
 from brain.agent.prompts import PLAN_SCHEMA
-from brain.cancel import CancelToken
+from brain.agent.triage import GATE as ZOOM_GATE, refine
+from brain.imaging import shrink
+from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
 
 ACTION_SCHEMA=deepcopy(PLAN_SCHEMA['properties']['actions']['items'])
+# Jev sees screens up to 4K at full resolution, so its zoom crops keep real pixels on high-res
+# displays; Flash gets a MAX_SIDE copy (measured: a link Jev could not commit to at 1280 px it hit at 2880).
+FULL_SIDE=3840
 for axis in ('x','y','x2','y2'): ACTION_SCHEMA['properties'].pop(axis)
 ACTION_SCHEMA['properties']['type']['enum'].remove('swipe')
 ACTION_SCHEMA['properties']['type']['enum'].remove('done')
 ACTION_SCHEMA['properties']['type']['enum'] += ['hover','drag']
-ACTION_SCHEMA['properties']['name']['enum'].remove('wait')  # not offered to race until measured end to end
 ACTION_SCHEMA['properties']['target']={'type':'string'}
 ACTION_SCHEMA['properties']['destination']={'type':'string'}
 ACTION_SCHEMA['properties']['fallback_x']={'type':'number'}
@@ -59,12 +64,20 @@ Jev supplies ALL coordinates. Only ONE pointer action, FIRST in each stage.
 Hover moves the pointer without holding a button: use it to reveal a submenu,
 then click the newly visible submenu item in a separate stage. Drag holds the
 button while moving to destination. These are different actions.
-Other actions: type_text(text), hotkey(keys), scroll(dy positive down),
-skill(name=open_app,text=app), skill(name=wait) while a device restarts or loads,
-skill(name=boot_keys,keys=firmware setup keys) right before restarting into setup,
-remember(key,text), ask_user(message), fail(message).
+Other actions: type_text(text), hotkey(keys), scroll(dy: mouse-wheel notches,
+positive down, about 5 per screenful; never pixels),
+skill(name=open_app,text=app), skill(name=wait) as its own stage ONLY when the
+screenshot shows a spinner, progress bar or blank page that is still loading (a
+loaded page never needs it), remember(key,text), ask_user(message), fail(message).
+To start an app that is not already open, use skill(open_app); never hunt
+for it in taskbars, docks or launcher menus.
 No done action is needed: completion is checked after the last stage.
-Typing is literal. NEVER put tabs in text. Each hotkey is ONE simultaneous
+Never close, quit or minimize a window, tab or app, or switch to an unrelated
+app, unless the goal asks for it; recover inside the app the goal is about.
+Never click the small window-control buttons in a title bar's corner (they sit
+next to close): a small app window is maximized for you before your plan runs.
+Typing is literal. When the goal says what to type or search for, type those
+words exactly; never shorten, reword or translate them. NEVER put tabs in text. Each hotkey is ONE simultaneous
 combination, not a sequence. Batch TAB and typing only when focus/tab order are
 clear. Separate field fills into stages with expected values to detect mistakes.
 Use CTRL+A to replace a field. A click+type stage is permitted if the field is
@@ -85,7 +98,7 @@ blocks the goal. Ask for missing information.
 Ask before irreversible actions unless specifically authorized. Never enter secrets.
 '''
 POINTER={'click','double_click','right_click','hover','drag','tap'}
-COMPLETION_GATE=0.3  # steps-aware check: finished tasks scored >= 0.55, traps <= 0.04 (bench/arch)
+COMPLETION_GATE=0.5  # steps-aware check: finished tasks scored >= 0.55, traps <= 0.04 (bench/arch); 0.3 passed a visible link (laptop suite)
 
 
 def validate_steps(data, allow_visual_fallback=False):
@@ -130,13 +143,32 @@ def validate_steps(data, allow_visual_fallback=False):
     return steps
 
 
+SMALL_WINDOW=('The app window the goal works in is much smaller than the screen, leaving large empty or unrelated '
+              'areas around it, and it is not maximized.')
+MAXIMIZE=('The maximize button of the app window: the up-arrow or square icon among the window buttons in '
+          'its title bar corner, not close or minimize.')
+FOCUS_CHECK=('A text cursor or focused input is visible exactly where the next text should go, so typing '
+             'now would land there.')
+FIELD_TARGET='The editable text field, search box or document area that the text "{text}" should be typed into.'
+
+
+class PlanError(ValueError):
+    """Flash's plan stayed invalid after one correction."""
+
+
 class JevFlashExecutor:
     image_grid=False
+    check_window=True  # Jev maximizes a small app window once per request
+    image_side=FULL_SIDE
     verifies_stages=True
 
     def __init__(self,cfg:Config,cancel:CancelToken):
         self.cancel=cancel
         self.model=language_model(cfg,cancel)
+        # A plan Jev rejected is replanned with more thinking on the same model: the fast first
+        # plan stays fast, and only the hard cases pay for deeper reasoning.
+        self.replanner=language_model(replace(cfg,gemini_thinking=cfg.replan_thinking,zai_thinking=cfg.replan_thinking),
+                                      cancel) if cfg.replan_thinking else self.model
         try:
             self.jev=JevVision(cfg.typesafe_api_key,cancel,cfg.model_log,cfg.jev_model,
                               cfg.jev_timeout_s,cfg.jev_min_presence,cfg.jev_min_confidence)
@@ -156,6 +188,7 @@ class JevFlashExecutor:
         self.completion=''
         self.last_reason=''
         self._fallback_image=None
+        self._plan_image=None  # the screenshot the current plan was made from
 
     def acknowledge(self,executed:bool):
         # Called only by the single-writer agent after actual execution. A stale
@@ -189,13 +222,15 @@ class JevFlashExecutor:
             prompt+='\nDo not provide fallback_x or fallback_y: Jev handles grounding for this plan.'
         started=time.monotonic()
         for attempt in range(2):
-            data=self.model.generate(image,prompt,PROMPT,SCHEMA,role='flash',run_id=ctx.run_id,step=ctx.step)
+            data=self._generate(shrink(image),prompt,ctx,replan=bool(reason))
             self.cancel.check()
             try:
                 self.stages=validate_steps(data,visual_fallback)
                 break
             except ValueError as exc:
-                if attempt: raise
+                if attempt and visual_fallback:  # an unusable fallback reply: plan normally instead
+                    return self._new_plan(image,ctx,reason)
+                if attempt: raise PlanError(f'Flash returned an invalid plan twice: {exc}') from exc
                 prompt+='\nCorrect this invalid plan structure: '+str(exc)
         self.completion=data['completion']
         self.last_reason=str(data.get('reasoning',''))
@@ -203,6 +238,7 @@ class JevFlashExecutor:
             'reason':reason or 'new task','reasoning':self.last_reason,'completion':self.completion,
             'stages':[{'expected':s['expected'],'ready':s['ready'],'actions':[_describe(a) for a in s['actions']]}
                       for s in self.stages]})
+        self._plan_image=image
         if self.stages and 'fallback_x' in self.stages[0]['actions'][0]:
             self._fallback_image=image
         ctx.memory.set_subtasks([stage['expected'] for stage in self.stages])
@@ -224,12 +260,21 @@ class JevFlashExecutor:
                     result.append(Action('swipe',x=point[0],y=point[1],x2=end[0],y2=end[1],ms=raw.get('ms',300)))
                     continue
                 raw['x'],raw['y']=point[0]*1000,point[1]*1000
+            if kind=='skill' and not raw.get('text') and raw.get('target'):
+                raw['text']=raw['target']  # Flash often names the app as the skill's target
             parsed=parse_plan({'actions':[raw]})
             if parsed.rejected: raise ValueError('Invalid grounded stage')
             result.extend(parsed.actions)
         return result
 
     def next_actions(self,image:bytes,ctx:StepContext)->Plan:
+        try:
+            return self._next_actions(image,ctx)
+        except PlanError as exc:  # an unusable plan is one failed step: the loop counts it and replans
+            self._reset()
+            return Plan('Plan could not be made',[],[str(exc)])
+
+    def _next_actions(self,image:bytes,ctx:StepContext)->Plan:
         key=(ctx.run_id,ctx.goal,ctx.profile.os,ctx.profile.connected_at)
         if self._key!=key:
             self._key=key
@@ -249,7 +294,7 @@ class JevFlashExecutor:
             if final:
                 # Judge the user's goal from the executed steps plus the screen; the
                 # planner's own completion wording can omit a required action.
-                score=self.jev.completion(image,ctx.goal,self.executed,run_id=ctx.run_id,step=ctx.step)
+                score=self.jev.completion(image,ctx.goal,self.executed,evidence=self.completion,run_id=ctx.run_id,step=ctx.step)
                 self.cancel.check()
                 if score>=COMPLETION_GATE:
                     self.pending=False
@@ -275,14 +320,57 @@ class JevFlashExecutor:
             if first['type'] in POINTER:
                 targets['target']=first['target']
                 if first['type']=='drag':targets['destination']=first['destination']
+            elif first['type']=='type_text':
+                # Typing into nothing cost a full replan (MDN search, a fresh KWrite window): check
+                # focus in the same call and click the field first when it has none.
+                checks['focused']=FOCUS_CHECK
+                targets['field']=FIELD_TARGET.format(text=str(first.get('text',''))[:40])
+            elif not self.pending and image==self._plan_image and all(
+                    a.get('type')=='skill' and a.get('name') in ('open_app','wait') for a in stage['actions']):
+                # Nothing to ground or verify yet, on the very screen Flash planned from: a Jev
+                # re-check of "ready" here only adds a flaky veto (0.55 vs 0.97 on one desktop).
+                self.cursor=next_cursor
+                return Plan(f'Stage {self.cursor+1}/{len(self.stages)}: '+stage['expected'],self._ground(stage,{}),[])
+            # Once per plan, on the first stage that works inside an app (not one that launches it):
+            # a small window makes every control small.
+            check_window=self.check_window and getattr(self,'_window_run',None)!=ctx.run_id
+            if check_window:
+                self._window_run=ctx.run_id  # one try per request: a window that will not grow stays as it is
+                checks['small_window']=SMALL_WINDOW
+                targets['maximize']=MAXIMIZE
             values,points=self.jev.assess(image,checks,targets,run_id=ctx.run_id,step=ctx.step,
-                                          proposal=stage['actions'])
+                                          request=ctx.goal,proposal=stage['actions'])
             self.cancel.check()
+            if check_window:
+                # Small windows scored 0.83-0.87 (the presence gate missed half), maximized ones 0.02-0.04.
+                small=values.pop('small_window',0.0)>=ZOOM_GATE
+                button={'maximize':targets.pop('maximize')}
+                point={'maximize':points.pop('maximize',None)}
+                # Window buttons sit ~13 px apart; the two-step zoom hit maximize 4/4. (A title-bar
+                # double-click is ignored by apps that draw their own title bar, such as Blender.)
+                found=self._zoom(image,button,point,ctx)['maximize'] if small else None
+                if found:  # the targets move: re-plan on the next screen
+                    self._key=None
+                    return Plan('Maximize the app window first',[Action('click',x=found[0],y=found[1])],[])
+            focus_click=None
+            if 'focused' in values:
+                focused=values.pop('focused')>=ZOOM_GATE
+                if focused:
+                    targets.pop('field'); points.pop('field',None)
+            points=self._zoom(image,targets,points,ctx)
+            if 'field' in targets:
+                field=points.pop('field',None); targets.pop('field')
+                if field is not None:  # no field found (a calculator takes keys anywhere): type as planned
+                    focus_click=Action('click',x=field[0],y=field[1])
+            if image==self._plan_image:  # Flash planned from this very screen: its route vote is redundant
+                values.pop('route_execute',None)  # (it vetoed 3 fresh plans in a row and cancelled a run)
             mismatch=[name for name,value in values.items() if value<self.jev.min_presence]
             if not mismatch and all(p is not None for p in points.values()):
                 self.pending=False
                 self.cursor=next_cursor
                 actions=self._ground(stage,points)
+                if actions is not None and focus_click is not None:
+                    actions=[focus_click,*actions]
                 if actions is not None:
                     return Plan(f'Stage {self.cursor+1}/{len(self.stages)}: '+stage['expected'],actions,[])
             reason='Visual checks: '+repr(values)+'; unresolved targets: '+repr(
@@ -295,17 +383,58 @@ class JevFlashExecutor:
                 return Plan('Plan could not be grounded',[],[reason])
         raise AssertionError('unreachable')
 
+    def _generate(self,image,prompt,ctx,replan):
+        """Replans think more (medium: 4.1 s median vs 2.9 s; high took 15-37 s and hit the server's
+        deadline). A failed replan falls back to the fast planner instead of ending the request."""
+        if replan and self.replanner is not self.model:
+            try:
+                return self.replanner.generate(image,prompt,PROMPT,SCHEMA,role='replan',run_id=ctx.run_id,step=ctx.step)
+            except Cancelled:
+                raise
+            except Exception:  # noqa: BLE001 - e.g. 504 deadline exceeded
+                pass
+        return self.model.generate(image,prompt,PROMPT,SCHEMA,role='flash',run_id=ctx.run_id,step=ctx.step)
+
+    def _zoom(self,image,targets,points,ctx):
+        """Re-aim each target in a zoomed crop, as the direct path does (planner clicks landed
+        inside the target 8/15 times without it, 12/15 with it). A target the full screen scored
+        between ZOOM_GATE and the presence gate gets that one zoomed look before any replan."""
+        scores=getattr(self.jev,'last_scores',None)
+        raw=getattr(self.jev,'last_points',None)
+        scores=scores if isinstance(scores,dict) else {}
+        raw=raw if isinstance(raw,dict) else {}
+        out={}
+        for key,target in targets.items():
+            point=points.get(key)
+            seen=scores.get(key) or {}
+            likely=min(float(seen.get('presence') or 0),float(seen.get('unique') or 0))>=ZOOM_GATE
+            start=point or (raw.get(key) if likely else None)
+            if start is None:
+                out[key]=None
+                continue
+            refined=refine(self.jev,image,{"utterance":target},start,run_id=ctx.run_id,step=ctx.step)
+            self.cancel.check()
+            out[key]=refined or point
+        return out
+
     def classify_os(self,image:bytes)->OSName:
         return detect_os(self.model,image)
 
     def close(self):
         self.jev.close()
         self.model.close()
+        if self.replanner is not self.model:
+            self.replanner.close()
 
 
 def _describe(action:dict)->str:
     """One executed semantic action, as the completion check reads it."""
-    detail=action.get('target') or action.get('text') or '+'.join(action.get('keys') or []) or action.get('name') or ''
+    text=str(action.get('text') or '')
+    if text.endswith('\n'):  # the typed newline presses Enter: say so, or it reads as "typed, not submitted"
+        text=text.rstrip('\n')+' then press Enter'
+    detail=action.get('target') or text or '+'.join(action.get('keys') or []) or action.get('name') or ''
     if action.get('destination'):
         detail+=' -> '+action['destination']
+    if action.get('type')=='scroll':
+        detail=f"{'down' if (action.get('dy') or 0)>0 else 'up'} {abs(action.get('dy') or 0)} notches"
     return f"{action.get('type')} {detail}".strip()

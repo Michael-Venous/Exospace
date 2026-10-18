@@ -1,4 +1,4 @@
-"""Live agent events for the touch display and projector (brain/agent/DESIGN.md §5).
+"""Live agent events for the touch display and projector (brain/README.md, "Touch display").
 
 The agent publishes; display clients subscribe. Publishing never blocks the
 agent: a client that falls behind loses events instead of slowing a step.

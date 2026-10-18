@@ -9,8 +9,8 @@ import numpy as np
 from numpy.typing import NDArray
 
 Frame = NDArray[np.uint8]  # BGR image, shape (height, width, 3)
-# "bios" covers firmware setup, boot menus and other pre-OS screens.
-OSName = Literal["windows", "macos", "linux", "chromeos", "android", "ios", "bios", "unknown"]
+# "unknown" covers boot and firmware screens and any classification failure.
+OSName = Literal["windows", "macos", "linux", "chromeos", "android", "ios", "unknown"]
 OS_NAMES: tuple[OSName, ...] = get_args(OSName)
 InputMode = Literal["mouse", "touch"]
 

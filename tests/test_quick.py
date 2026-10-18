@@ -66,18 +66,17 @@ class QuickActionTests(unittest.TestCase):
                 self.assertEqual(quick_actions(goal, "windows"), [])
 
     def test_open_app_only_where_the_os_has_a_launcher(self):
-        self.assertTrue(quick_actions("open camera", "android"))
-        self.assertEqual(quick_actions("open calculator", "bios"), [])
+        self.assertTrue(quick_actions("open calculator", "linux"))
+        self.assertEqual(quick_actions("open camera", "android"), [])
         self.assertEqual(quick_actions("open calculator", "unknown"), [])
-        self.assertEqual(briefs("press F10", "bios"), ["hotkey(F10)"])
-        self.assertEqual(quick_actions("scroll down", "bios"), [])
+        self.assertEqual(briefs("press F10", "unknown"), ["hotkey(F10)"])
         self.assertEqual(briefs("press home", "android"), ["hotkey(GUI+H)"])
 
     def test_browser_keys_only_follow_a_launch_on_a_computer(self):
         self.assertEqual(quick_actions("go to youtube.com", "windows"), [])  # whatever is in front gets them
         self.assertEqual(briefs("open safari and go to apple.com", "macos")[1:], [
             "hotkey(GUI+L)", "type_text('apple.com')", "hotkey(ENTER)"])
-        self.assertEqual(briefs("open chrome and go to youtube.com", "android"), ["skill(open_app {'name': 'chrome'})"])
+        self.assertEqual(quick_actions("open chrome and go to youtube.com", "android"), [])
 
 
 class QuickStartTests(unittest.TestCase):
@@ -101,9 +100,9 @@ class QuickStartTests(unittest.TestCase):
         self.assertEqual(self.inner.next_actions.call_count, 2)
 
     def test_delegates_everything_else(self):
-        self.inner.classify_os.return_value = "bios"
+        self.inner.classify_os.return_value = "android"
         self.inner.image_grid = False
-        self.assertEqual(self.executor.classify_os(b"jpeg"), "bios")
+        self.assertEqual(self.executor.classify_os(b"jpeg"), "android")
         self.assertIs(self.executor.image_grid, False)
 
 

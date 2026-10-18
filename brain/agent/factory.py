@@ -5,14 +5,20 @@ from brain.agent.jev_only import JevOnlyPlanner
 from brain.agent.race import RaceExecutor
 from brain.agent.executor import ModelExecutor
 from brain.agent.orchestrator import ModelPlanner, Orchestrator
+from brain.agent.deep import DeepFallback
 from brain.agent.quick import QuickStart
+from brain.agent.replay import ReplayCache
 
 
 def build_executor(cfg, token, cleanup, status):
-    return QuickStart(_executor(cfg, token, cleanup, status))
+    executor = _build(cfg, token, cleanup, status)
+    if cfg.executor == 'race' and cfg.deep_model and cfg.gemini_api_key:
+        executor = DeepFallback(executor, cfg, token, status)
+    executor = QuickStart(executor)  # a repeat replays before quick.py; a first-time command acts with no model call
+    return ReplayCache(executor, cfg.replay_path) if cfg.replay_path else executor
 
 
-def _executor(cfg, token, cleanup, status):
+def _build(cfg, token, cleanup, status):
     if cfg.executor == 'race':
         executor = RaceExecutor(cfg, token)
         cleanup.callback(executor.close)

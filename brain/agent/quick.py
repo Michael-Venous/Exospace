@@ -78,7 +78,7 @@ def _clause(text: str, os: OSName, launched: bool) -> tuple[list[Action], int]:
             return [Action("hotkey", keys=tuple(keys))], match.end()
     elif match := _TYPE.match(text):
         return [Action("type_text", text=match[1])], match.end()
-    elif (match := _SCROLL.match(text)) and os != "bios":  # firmware has no wheel
+    elif (match := _SCROLL.match(text)):
         return [Action("scroll", dy=-5 if match[1].lower() == "up" else 5)], match.end()
     return [], 0
 

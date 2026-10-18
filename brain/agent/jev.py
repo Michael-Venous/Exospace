@@ -18,6 +18,11 @@ from brain.cancel import CancelToken
 TRACE = 100  # decisions kept until the agent loop hands them to the display
 
 
+ATTEMPTS = 2  # one retry: a single timeout ended 3 of 14 live runs
+RETRY_STATUS = {429, 500, 502, 503, 504}
+RETRY_DELAY_S = 0.5
+
+
 class JevError(RuntimeError):
     """Sanitized provider failure (never contains credentials or image payloads)."""
 
@@ -51,6 +56,22 @@ COMPLETION_QUESTION = (
     "has the user's ENTIRE `goal` been accomplished? Every part of the goal must be covered by an "
     'executed step or be visibly true on the screen. A visible link, button or preview is not evidence '
     'that it was used; text typed but not submitted is not a completed search or send.')
+# With the planner's expected evidence, so Jev knows what to look for when it cannot work it out
+# itself (a calculator result scored 0.02 without it, 0.7 with it).
+EVIDENCE_SUFFICIENT = ('Would a screen showing `expected_evidence` prove that the user\'s ENTIRE `goal` is done, '
+                       'not just a first step towards it?')
+COMPLETION_HINTED = COMPLETION_QUESTION + (
+    ' `expected_evidence` is what the planner expects the screen to show once the goal is done: use it '
+    'to know what to look for, but judge the goal itself against the steps and the screen, not the claim.')
+
+
+SIDE_EFFECT_GATE = 0.7
+# Recovery once pressed Alt+Tab, landed on another app and closed it with Alt+F4 (laptop suite).
+SIDE_EFFECTS = (
+    'Would carrying out the proposed `actions` on this `screen` close, quit, minimize or discard any window, '
+    'tab, app, file or unsaved work that the user\'s `request` does not ask to close or discard? Confirming, '
+    'saving or closing a dialog, menu or popup as part of doing the request, or dismissing a splash screen, '
+    'welcome screen or notification, is not such a side effect.')
 
 
 class JevVision:
@@ -79,35 +100,47 @@ class JevVision:
                 'assets': {ref: {'type':'image','format':'jpg',
                                  'data_base64':base64.b64encode(encoded).decode()}},
                 'questions': questions}
-        started, success, error = time.monotonic(), False, ''
-        try:
-            self.cancel.check()
-            response = self.cancel.run(lambda: self.client.post(
-                'https://api.typesafe.ai/v1/systemone', json=body))
-            self.cancel.check()
-            if response.status_code != 200:
-                raise JevError(f'Jev HTTP {response.status_code}')
-            data = response.json()
-            answers = data.get('answers')
-            if not isinstance(answers, dict) or any(k not in answers for k in questions):
-                raise JevError('Jev returned incomplete answers')
-            success = True
-            self.trace.append({'label': label, 'elapsed_s': round(time.monotonic()-started, 3),
-                               'state': state or {}, 'gates': gates or {},
-                               'answers': {k: _on_screen(answers[k], size, padded, region) for k in questions}})
-            return answers, size, padded
-        except httpx.HTTPError as exc:
-            error = type(exc).__name__
-            raise JevError(f'Jev transport failure ({error})') from None
-        except BaseException as exc:
-            error = type(exc).__name__
-            raise
-        finally:
-            self.log_path.parent.mkdir(parents=True, exist_ok=True)
-            with self.log_path.open('a') as stream:
-                stream.write(json.dumps({'run_id':run_id,'step':step,'role':'jev',
-                    'model':self.model,'attempt':1,'elapsed_s':time.monotonic()-started,
-                    'success':success,'error':error})+'\n')
+        for attempt in range(1, ATTEMPTS + 1):
+            started, success, error = time.monotonic(), False, ''
+            try:
+                self.cancel.check()
+                response = self.cancel.run(lambda: self.client.post(
+                    'https://api.typesafe.ai/v1/systemone', json=body))
+                self.cancel.check()
+                if response.status_code != 200:
+                    error = f'HTTP {response.status_code}'
+                    if response.status_code not in RETRY_STATUS or attempt == ATTEMPTS:
+                        raise JevError(f'Jev HTTP {response.status_code}')
+                else:
+                    answers = response.json().get('answers')
+                    if not isinstance(answers, dict) or any(k not in answers for k in questions):
+                        raise JevError('Jev returned incomplete answers')
+                    success = True
+                    self.trace.append({'label': label, 'elapsed_s': round(time.monotonic()-started, 3),
+                                       'state': state or {}, 'gates': gates or {},
+                                       'answers': {k: _on_screen(answers[k], size, padded, region) for k in questions}})
+                    return answers, size, padded
+            except httpx.TransportError as exc:  # a timeout or dropped connection: one retry
+                error = type(exc).__name__
+                if attempt == ATTEMPTS:
+                    raise JevError(f'Jev transport failure ({error})') from None
+            except httpx.HTTPError as exc:
+                error = type(exc).__name__
+                raise JevError(f'Jev transport failure ({error})') from None
+            except BaseException as exc:
+                error = error or type(exc).__name__
+                raise
+            finally:
+                self._log(run_id, step, attempt, started, success, error)
+            self.cancel.sleep(RETRY_DELAY_S)
+        raise AssertionError('unreachable')
+
+    def _log(self, run_id: str, step: int, attempt: int, started: float, success: bool, error: str) -> None:
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.log_path.open('a') as stream:
+            stream.write(json.dumps({'run_id':run_id,'step':step,'role':'jev',
+                'model':self.model,'attempt':attempt,'elapsed_s':time.monotonic()-started,
+                'success':success,'error':error})+'\n')
 
     def locate(self, jpeg: bytes, target: str, *, run_id: str = '', step: int = 0):
         questions = {
@@ -131,14 +164,26 @@ class JevVision:
             return None  # padded region must never become a click
         return x,y
 
-    def completion(self, jpeg: bytes, goal: str, executed: list[str], *,
+    def completion(self, jpeg: bytes, goal: str, executed: list[str], *, evidence: str = '',
                    run_id: str = '', step: int = 0) -> float:
         """Probability the whole goal is done, judged from the executed steps AND the
         screen. History-dependent goals ("the first video") are covered by the steps;
-        skipped or unsubmitted steps are caught because they are absent from them."""
-        answers, _, _ = self.evaluate(jpeg, {'complete': {'type': 'noul', 'instructions': COMPLETION_QUESTION}},
-                                      run_id=run_id, step=step, label='completion',
-                                      state={'goal': goal, 'executed_steps': executed})
+        skipped or unsubmitted steps are caught because they are absent from them.
+        `evidence` (the planner's expected end state) only tells Jev what to look for:
+        12/12 finished and 0/18 traps accepted, 12/15 and 0/15 held out (bench/arch/verify_study)."""
+        state = {'goal': goal, 'executed_steps': executed}
+        questions = {'complete': {'type': 'noul', 'instructions': COMPLETION_QUESTION}}
+        if evidence:
+            # The hint is used only when it would prove the whole goal: a plan whose evidence was just
+            # "Blender is open" for "make me a house in blender" passed as done (laptop suite).
+            state['expected_evidence'] = evidence
+            questions['complete'] = {'type': 'noul', 'instructions': COMPLETION_QUESTION +
+                                     ' Ignore `expected_evidence` for this question.'}
+            questions['hinted'] = {'type': 'noul', 'instructions': COMPLETION_HINTED}
+            questions['sufficient'] = {'type': 'noul', 'instructions': EVIDENCE_SUFFICIENT}
+        answers, _, _ = self.evaluate(jpeg, questions, run_id=run_id, step=step, state=state, label='completion')
+        if evidence and probability(answers['sufficient'].get('noul')) >= 0.5:
+            return probability(answers['hinted'].get('noul'))
         return probability(answers['complete'].get('noul'))
 
     def close(self):
@@ -150,6 +195,8 @@ class JevVision:
         questions = {f'check_{key}': {'type':'noul', 'instructions':
             f'Based only on the visible `screen`, is this condition true? {condition}'}
             for key, condition in checks.items()}
+        if proposal:
+            questions['side_effects'] = {'type':'noul', 'instructions': SIDE_EFFECTS}
         questions['route'] = {'type':'choice', 'instructions': {
             'question':'Judge ONLY the supplied next actions or verification checks, not the complexity of a larger task. Choose execute when this bounded next step is clear and feasible on this screen. Choose ask_flash for uncertainty, unclear intent, missing actions, or an unexpected screen needing a new plan. A verification-only step with checks and no actions is valid. Do not invent steps.',
             'request':request, 'actions':proposal, 'checks':checks, 'targets':targets},
@@ -167,15 +214,21 @@ class JevVision:
         for key in targets:
             gates.update({f'{key}_present':self.min_presence,f'{key}_unique':self.min_presence,
                           f'{key}_box':self.min_confidence})
-        answers, (w,h), (pw,ph) = self.evaluate(jpeg,questions,run_id=run_id,step=step,label='stage check',gates=gates)
+        state={'request':request,'actions':json.dumps(proposal)} if proposal else None
+        answers, (w,h), (pw,ph) = self.evaluate(jpeg,questions,run_id=run_id,step=step,state=state,
+                                                label='stage check',gates=gates)
         values={key:probability(answers[f'check_{key}'].get('noul')) for key in checks}
         route=answers['route']
         # Choice confidence and Box confidence have different semantics. Honor
         # the explicit routing choice; the independent evidence gates still apply.
         probability(route.get('confidence'))
         values['route_execute']=float(route.get('choice')=='execute')
+        if proposal:  # a stage that closes or discards something nobody asked for never runs
+            # Only a clear yes blocks: borderline verdicts vetoed dismissing a splash screen (0.5-0.7).
+            values['safe']=float(probability(answers['side_effects'].get('noul'))<SIDE_EFFECT_GATE)
         self.last_scores={'route':route.get('choice'),'route_confidence':route.get('confidence')}
         points={}
+        self.last_points={}  # every target's box center, before the presence/confidence gates
         for key in targets:
             a=answers[f'{key}_box']
             self.last_scores[key]={'presence':answers[f'{key}_present'].get('noul'),
@@ -185,16 +238,20 @@ class JevVision:
             # Intent clarity is a routing decision, not another copy of the
             # localization probability cutoff. Keep its score for diagnostics.
             probability(answers[f'{key}_clear'].get('noul'))
-            if min(probability(answers[f'{key}_present'].get('noul')),
-                   probability(answers[f'{key}_unique'].get('noul'))) < self.min_presence \
-                    or probability(a.get('confidence')) < self.min_confidence:
-                points[key]=None
-                continue
-            box=a.get('box',{})
-            left,right,top,bottom=[probability(box.get(k)) for k in ('left','right','top','bottom')]
-            if not left<right or not top<bottom: raise ValueError('Invalid Jev box ordering')
-            x,y=(left+right)/2*pw/w,(top+bottom)/2*ph/h
-            points[key]=(x,y) if 0<=x<=1 and 0<=y<=1 else None
+            gated=min(probability(answers[f'{key}_present'].get('noul')),
+                      probability(answers[f'{key}_unique'].get('noul'))) < self.min_presence \
+                or probability(a.get('confidence')) < self.min_confidence
+            box=a.get('box') or {}
+            try:
+                left,right,top,bottom=[probability(box.get(k)) for k in ('left','right','top','bottom')]
+                ordered=left<right and top<bottom
+            except ValueError:
+                ordered=False
+            # A malformed box means "not located": it ended a whole run when it raised (laptop suite).
+            x,y=((left+right)/2*pw/w,(top+bottom)/2*ph/h) if ordered else (-1,-1)
+            center=(x,y) if 0<=x<=1 and 0<=y<=1 else None
+            self.last_points[key]=center
+            points[key]=None if gated else center
         return values,points
 
 

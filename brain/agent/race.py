@@ -13,7 +13,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
 from brain.agent.executor import Plan, StepContext
-from brain.agent.jev_flash import JevFlashExecutor
+from brain.agent.jev_flash import COMPLETION_GATE, JevFlashExecutor
 from brain.agent.jev_only import JevOnlyPlanner
 from brain.agent.triage import answer_to_pending, triage
 from brain.cancel import Cancelled, CancelToken
@@ -32,6 +32,7 @@ class _Pending:
 
 class RaceExecutor:
     image_grid = False
+    image_side = JevFlashExecutor.image_side
 
     def __init__(self, cfg: Config, cancel: CancelToken,
                  planner: JevFlashExecutor | JevOnlyPlanner | None = None) -> None:
@@ -46,6 +47,7 @@ class RaceExecutor:
         self.mode = ""
         self._point: tuple[float, float] | None = None
         self._gesture = "click"
+        self._scroll = 0
         self._clicked = False
         self._utterance = ""
         self._triage_step = 0
@@ -67,15 +69,20 @@ class RaceExecutor:
         if key != self._key:
             self._key, self._clicked, self._approved_goal = key, False, None
             return self._start(image, ctx)
+        if self.mode == "scroll":
+            # "scroll down to the comments" also triages as a scroll: done only if the goal is met.
+            if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):
+                return Plan("Scrolled", [Action("done", summary="Scrolled.")], [])
+            self.mode = "plan"  # nothing to scroll here (or not focused): the planner recovers
         if self.mode == "act":
             if not self._clicked and ctx.step != self._triage_step:
                 # The loop discarded the click (the screen moved): aim again on this screen.
                 return self._route(image, ctx, self._utterance, confirmed=True)
             if not self._clicked:
                 return self._direct()
-            if "unchanged" not in (ctx.note or ""):
+            if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):
                 return Plan("Jev direct action done", [Action("done", summary="Done.")], [])
-            self.mode = "plan"  # the click had no visible effect: let the planner recover
+            self.mode = "plan"  # no visible effect, or not the goal (a neighbouring button): the planner recovers
         self._settle_speculation()
         return self.planner.next_actions(image, self._planner_ctx(ctx))
 
@@ -106,11 +113,8 @@ class RaceExecutor:
         self.jev.trace.append({"label": "route", "mode": result.mode, "gesture": result.gesture,
                                "irreversible": result.irreversible, "approved": confirmed})
         if result.irreversible and not confirmed:
-            self.mode = "none"
-            self._pending = _Pending(utterance, ctx.goal, ctx.profile.connected_at)
-            return Plan("Irreversible request needs approval",
-                        [Action("ask_user", question=f'This can\'t be undone: "{utterance}". Should I go ahead?')], [])
-        self.mode, self._point, self._gesture = result.mode, result.point, result.gesture
+            return self.hold(ctx, f'"{utterance}"')
+        self.mode, self._point, self._gesture, self._scroll = result.mode, result.point, result.gesture, result.scroll
         if self.mode == "none" and declined:
             return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
         if self.mode == "none":
@@ -119,7 +123,28 @@ class RaceExecutor:
                                           Action("done", summary="Noted.")], [])
         if self.mode == "act":
             return self._direct()
+        if self.mode == "scroll":  # no target and no plan needed (it took 10.8 s through the planner)
+            return Plan("Jev scroll", [Action("scroll", dy=result.scroll)], [])
         return self.cancel.run(self._plan.result)
+
+    def approved_run(self) -> bool:
+        return self._approved_goal is not None
+
+    def hold(self, ctx: StepContext, what: str) -> Plan:
+        """Ask before an irreversible request or step; the user's next reply answers it."""
+        self.mode = "none"
+        self._pending = _Pending(ctx.goal.splitlines()[-1], ctx.goal, ctx.profile.connected_at)
+        return Plan("Irreversible request needs approval",
+                    [Action("ask_user", question=f"This can't be undone: {what}. Should I go ahead?")], [])
+
+    def _goal_met(self, image: bytes, ctx: StepContext) -> bool:
+        """One Jev completion call on the new screen: a changed screen alone is no proof
+        (measured: "close the calculator" minimized it and reported done)."""
+        executed = ([f"scroll {'down' if self._scroll > 0 else 'up'} {abs(self._scroll)} notches"]
+                    if self.mode == "scroll" else [f"{self._gesture} on the control for: {self._utterance}"])
+        score = self.cancel.run(lambda: self.jev.completion(image, ctx.goal, executed, run_id=ctx.run_id,
+                                                            step=ctx.step))
+        return score >= COMPLETION_GATE
 
     def _planner_ctx(self, ctx: StepContext) -> StepContext:
         return replace(ctx, goal=self._approved_goal) if self._approved_goal else ctx

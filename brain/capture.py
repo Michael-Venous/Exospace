@@ -1,16 +1,19 @@
 """Seeing the target: frame sources and frame analysis.
 
-`V4L2Capture` reads the HDMI capture card on the Pi. `ScreenCapture` is the
-development stand-in that captures the machine you're on. Both keep only the
-latest frame in memory, so callers always see a fresh screen.
+`V4L2Capture` reads the HDMI capture card on the Pi. `ScreenCapture` and
+`CommandCapture` are development stand-ins that capture the machine you're on;
+`CommandCapture` runs a screenshot tool, for desktops (Wayland) that mss cannot read.
 """
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Protocol
 
 import cv2
@@ -21,6 +24,7 @@ from brain.types import Frame, Rect
 STALE_S = 0.5  # a frame older than this counts as no signal
 BLANK_MAX = 12  # brightest pixel below this (0-255) = blank / no signal
 BAR_MIN_FRACTION = 0.05  # pillarbox bars must each be at least this wide
+ASPECT_RANGE = (0.3, 3.4)  # width/height of any real screen; a tall phone is ~0.43
 THUMB_SIZE = (64, 36)
 
 
@@ -59,7 +63,13 @@ class V4L2Capture:
 
     def _read_loop(self) -> None:
         while self._running:
-            ok, frame = self._cap.read()
+            try:
+                ok, frame = self._cap.read()
+            except cv2.error:
+                # Some cards (the Monster/UltraSemi one: 3 of 40 frames right after opening) send an
+                # empty MJPG frame, which OpenCV raises on instead of returning False. Uncaught, it
+                # would end this thread and leave the agent with no video for the rest of the run.
+                ok, frame = False, None
             if not ok:
                 time.sleep(0.01)
                 continue
@@ -140,8 +150,37 @@ def _grey_out(frame: Frame, title: str, area: dict[str, int]) -> None:
             frame[max(y, 0):max(y + h, 0), max(x, 0):max(x + w, 0)] = 128
 
 
+class CommandCapture:
+    """Development stand-in: runs `command` (with `{path}` for the output image) per frame,
+    e.g. `spectacle -b -n -f -o {path}` on KDE Wayland."""
+
+    def __init__(self, command: str) -> None:
+        if "{path}" not in command:
+            raise ValueError("LOCAL_CAPTURE needs {path} where the screenshot is written")
+        self._command = command
+        self._dir = tempfile.TemporaryDirectory(prefix="exospace-capture-")
+        self._lock = threading.Lock()  # one screenshot tool run at a time
+
+    def grab(self) -> Frame | None:
+        path = Path(self._dir.name) / "screen.png"
+        with self._lock:
+            args = [part.replace("{path}", str(path)) for part in shlex.split(self._command)]
+            subprocess.run(args, capture_output=True, timeout=10, check=False)
+            frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+            path.unlink(missing_ok=True)
+        return frame
+
+    def signal_present(self) -> bool:
+        return True
+
+    def close(self) -> None:
+        self._dir.cleanup()
+
+
 def is_blank(frame: Frame) -> bool:
-    return int(thumbnail(frame).max()) < BLANK_MAX
+    """No picture at all. Sampled at full resolution: a thumbnail averaged away the mouse
+    cursor on a black desktop, and a live but dark screen read as lost video."""
+    return int(frame[::4, ::4].max()) < BLANK_MAX
 
 
 def thumbnail(frame: Frame) -> np.ndarray:
@@ -159,8 +198,9 @@ def active_rect(frame: Frame) -> Rect:
     """Find the real screen inside the frame.
 
     A mirrored phone arrives as a portrait image with black bars on both sides
-    (pillarbox). Only symmetric bars count, so a dark desktop wallpaper doesn't
-    get cropped by mistake.
+    (pillarbox). Only symmetric bars on one axis count: a scaled-to-fit picture
+    always touches two opposite edges, while a window centred on a black wallpaper
+    has bars on all four sides and must not become the whole "screen".
     """
     h, w = frame.shape[:2]
     full = Rect(0, 0, w, h)
@@ -172,12 +212,13 @@ def active_rect(frame: Frame) -> Rect:
 
     left, right = int(cols[0]), w - 1 - int(cols[-1])
     top, bottom = int(rows[0]), h - 1 - int(rows[-1])
-    x0, x1, y0, y1 = 0, w, 0, h
-    if _symmetric_bars(left, right, w):
-        x0, x1 = left, w - right
-    if _symmetric_bars(top, bottom, h):
-        y0, y1 = top, h - bottom
-    return Rect(x0, y0, x1, y1)
+    sides, ends = _symmetric_bars(left, right, w), _symmetric_bars(top, bottom, h)
+    if sides == ends:
+        return full
+    rect = Rect(left, 0, w - right, h) if sides else Rect(0, top, w, h - bottom)
+    # A dark loading page lit only by the cursor once "cropped" the screen to an 18 px strip.
+    aspect = (rect.x1 - rect.x0) / (rect.y1 - rect.y0)
+    return rect if ASPECT_RANGE[0] <= aspect <= ASPECT_RANGE[1] else full
 
 
 def _symmetric_bars(a: int, b: int, size: int) -> bool:

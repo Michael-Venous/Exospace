@@ -6,11 +6,17 @@ Run the agent with a display server, then this:
 or both in one process (the extra arguments go to the agent):
     .venv/bin/python -m brain.voice.layer --display 8770
 
-Hold the button (or Space) and speak. Each finished utterance goes to the agent's
-POST /goal; starting to speak while the agent is busy sends POST /stop first, so the
-next utterance becomes a correction ("actually go back"). Narration comes from the
+Hold the button (or Space) and speak. Each pause sends what was said to the agent's
+POST /goal, so work starts while the user keeps talking; starting to speak while the
+agent is busy sends POST /stop first. Later segments of the same hold continue that
+request ("go to youtube" ... "and search lofi", "actually go back"). Narration comes from the
 agent's event stream: questions (including irreversible-action confirmations) are
-always spoken, plan stages briefly, then the result. This process never writes HID.
+always spoken, plan stages briefly, then the result; a request that runs silently gets
+"On it." and then a progress line every few seconds, so a hard task never leaves dead air.
+With the page's Describe toggle on, Gemini Live describes the screen after each request
+instead of the bare result line (brain/voice/describe.py). The page can also show the
+target's live screen, relayed from the agent's GET /screen.jpg. This process never
+writes HID.
 
 Mic audio is relayed to Deepgram server-side, so DEEPGRAM_API_KEY never reaches
 the browser. The page and relay only answer to this machine.
@@ -20,7 +26,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import html
 import json
 import os
 import queue
@@ -33,14 +38,20 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from brain.voice.describe import DESCRIBE_MODEL, Describer
+
 DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=300&smart_format=true"
 KEEPALIVE_S = 15.0
 MAX_BODY = 4096
+ACK_S = 2.5  # a request still running this long with nothing said gets "On it."
+PROGRESS_S = 10.0  # then each this long of silence gets a progress line: a hard task never leaves dead air
 
 
 def narrate(event: dict[str, Any]) -> str | None:
     """What to say for one agent event; None stays silent (fast actions need no commentary)."""
     kind = event.get("ev")
+    if kind == "status":
+        return str(event.get("message", "")).strip() or None
     if kind == "plan":
         reasoning = str(event.get("reasoning", ""))
         if reasoning.startswith("Stage "):  # "Stage 1/3: <expected visible result>"
@@ -59,12 +70,25 @@ def narrate(event: dict[str, Any]) -> str | None:
     return "Sorry, I couldn't do that."
 
 
+def filler(quiet_s: float, spoken: bool) -> str | None:
+    """What to say while a request runs silently: an acknowledgement, then progress."""
+    if not spoken:
+        return "On it." if quiet_s >= ACK_S else None
+    return "Still working on it." if quiet_s >= PROGRESS_S else None
+
+
 class Agent:
     """The agent's display server, reached as a local program (no Origin header)."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, describer: Describer | None = None) -> None:
         self.base = base_url.rstrip("/")
+        self.describer = describer
+        self.describe_on = False  # the page's Describe toggle
         self.busy = False
+        self._goal = ""
+        self._said_at = 0.0  # monotonic time of the last line for the running request
+        self._spoken = False  # anything said for it yet
+        self._last = ""  # its last line: a result that repeats the final stage is said once
 
     def post(self, path: str, body: dict[str, Any]) -> None:
         request = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST",
@@ -72,15 +96,23 @@ class Agent:
         with urllib.request.urlopen(request, timeout=5) as response:
             response.read()
 
-    def submit(self, text: str) -> None:
-        self.post("/goal", {"text": text})
+    def submit(self, text: str, continues: bool = False) -> None:
+        self.post("/goal", {"text": text, "continues": continues})
+
+    def screen(self) -> bytes | None:
+        """The latest capture-card frame as JPEG, or None when the agent has none or is down."""
+        try:
+            with urllib.request.urlopen(self.base + "/screen.jpg", timeout=2) as response:
+                return response.read() or None  # 204: no frame yet
+        except OSError:
+            return None
 
     def interrupt(self) -> None:
         if self.busy:
             self.post("/stop", {})
 
-    def follow(self, updates: queue.Queue[dict[str, Any]]) -> None:
-        """Track busy state and queue it and narration for the page from the agent's server-sent events, forever."""
+    def follow(self, lines: queue.Queue[dict[str, Any]]) -> None:
+        """Track busy state and queue narration from the agent's server-sent events, forever."""
         while True:
             try:
                 with urllib.request.urlopen(self.base + "/events", timeout=KEEPALIVE_S * 2) as stream:
@@ -91,20 +123,52 @@ class Agent:
                         if not raw.startswith(b"data: "):
                             continue
                         event = json.loads(raw[6:])
-                        if event.get("ev") in ("run", "result"):
-                            self.busy = event["ev"] == "run"
-                            updates.put({"busy": self.busy})
+                        fresh = event.get("t", since) >= since
+                        if event.get("ev") == "run":
+                            self.busy, self._goal = True, str(event.get("goal", ""))
+                            self._said_at, self._spoken, self._last = time.monotonic(), False, ""
+                        elif event.get("ev") == "result":
+                            self.busy = False
                         line = narrate(event)
-                        if line and event.get("t", since) >= since:
-                            updates.put({"say": line})
+                        if not (line and fresh):
+                            continue
+                        if self.describing(event):
+                            threading.Thread(target=self._describe, args=(lines, line), daemon=True).start()
+                        else:
+                            self._say(lines, line)
             except OSError:
                 threading.Event().wait(1.0)  # agent restarting; reconnect
 
 
+    def describing(self, event: dict[str, Any]) -> bool:
+        """A finished request is described; questions are always read word for word."""
+        return self.describe_on and self.describer is not None and event.get("ev") == "result" \
+            and event.get("status") in ("done", "fail")
+
+    def _describe(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
+        lines.put({"show": line})
+        jpeg = self.screen()
+        if not (jpeg and self.describer and self.describer.describe(jpeg, self._goal, line, lines.put)):
+            lines.put({"say": line})
+
+    def pace(self, lines: queue.Queue[dict[str, Any]]) -> None:
+        """Fill silence while a request runs, forever."""
+        while True:
+            time.sleep(0.5)
+            line = filler(time.monotonic() - self._said_at, self._spoken) if self.busy else None
+            if line:
+                self._say(lines, line)
+
+    def _say(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
+        self._said_at, self._spoken = time.monotonic(), True
+        if line != self._last:
+            self._last = line
+            lines.put({"say": line})
+
+
 def page_server(agent: Agent, port: int, ws_port: int, updates: queue.Queue[dict[str, Any]]) -> ThreadingHTTPServer:
-    """The voice page, narration and busy stream, and agent forwarding (no audio). Port 0 picks a free port."""
-    page = resources.files("brain.voice").joinpath("layer.html").read_text().replace("__WS_PORT__", str(ws_port)) \
-        .replace("__AGENT__", html.escape(agent.base))
+    """The voice page, narration stream and agent forwarding (no audio). Port 0 picks a free port."""
+    page = resources.files("brain.voice").joinpath("layer.html").read_text().replace("__WS_PORT__", str(ws_port))
     hosts: set[str] = set()
     pages: set[queue.Queue[dict[str, Any]]] = set()  # one per open narration stream
 
@@ -126,6 +190,12 @@ def page_server(agent: Agent, port: int, ws_port: int, updates: queue.Queue[dict
                 self._reply(200, page.encode(), "text/html; charset=utf-8")
             elif self.path == "/narration":
                 self._narration()
+            elif self.path.split("?", 1)[0] == "/screen.jpg":
+                jpeg = agent.screen()
+                if jpeg:
+                    self._reply(200, jpeg, "image/jpeg")
+                else:
+                    self._reply(503, b"no screen yet", "text/plain")
             else:
                 self._reply(404, b"not found")
 
@@ -139,13 +209,18 @@ def page_server(agent: Agent, port: int, ws_port: int, updates: queue.Queue[dict
             body = json.loads(self.rfile.read(length)) if 0 < length <= MAX_BODY else {}
             try:
                 if self.path == "/talk":  # the user started speaking: barge in on running work
+                    if agent.describer is not None:
+                        agent.describer.cancel()
                     agent.interrupt()
+                elif self.path == "/describe":
+                    agent.describe_on = body.get("on") is True and agent.describer is not None
+                    return self._reply(200, json.dumps({"ok": True, "on": agent.describe_on}).encode())
                 elif self.path == "/segment":
                     text = str(body.get("text", "")).strip()
                     if not 0 < len(text) <= 500:
                         return self._reply(400, b'{"error":"text must be 1-500 characters"}')
                     agent.interrupt()  # speaking while it works ("stop", a correction) barges in
-                    agent.submit(text)
+                    agent.submit(text, body.get("continues") is True)
                 else:
                     return self._reply(404, b'{"error":"not found"}')
             except OSError as exc:
@@ -154,20 +229,19 @@ def page_server(agent: Agent, port: int, ws_port: int, updates: queue.Queue[dict
 
         def _narration(self) -> None:
             mine: queue.Queue[dict[str, Any]] = queue.Queue()
-            pages.add(mine)  # before reading busy, so no change falls between the two
+            pages.add(mine)
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            update: dict[str, Any] = {"busy": agent.busy}  # a reload mid-task still shows the work
             try:
                 while True:
-                    self.wfile.write(b"data: " + json.dumps(update).encode() + b"\n\n")
-                    self.wfile.flush()
                     try:
-                        update = mine.get(timeout=KEEPALIVE_S)
+                        message = mine.get(timeout=KEEPALIVE_S)
+                        self.wfile.write(b"data: " + json.dumps(message).encode() + b"\n\n")
                     except queue.Empty:
-                        update = {}  # keepalive; the page ignores an empty update
+                        self.wfile.write(b": keepalive\n\n")
+                    self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError):
                 pass
             finally:
@@ -177,6 +251,7 @@ def page_server(agent: Agent, port: int, ws_port: int, updates: queue.Queue[dict
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -190,9 +265,10 @@ def page_server(agent: Agent, port: int, ws_port: int, updates: queue.Queue[dict
 
 
 def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
-    updates: queue.Queue[dict[str, Any]] = queue.Queue()
-    threading.Thread(target=agent.follow, args=(updates,), name="agent-events", daemon=True).start()
-    page_server(agent, port, ws_port, updates)
+    lines: queue.Queue[dict[str, Any]] = queue.Queue()
+    threading.Thread(target=agent.follow, args=(lines,), name="agent-events", daemon=True).start()
+    threading.Thread(target=agent.pace, args=(lines,), name="agent-pace", daemon=True).start()
+    page_server(agent, port, ws_port, lines)
     print(f"Voice layer on http://127.0.0.1:{port} -> agent {agent.base}", flush=True)
     asyncio.run(_relay_forever(port, ws_port, deepgram_key))
 
@@ -240,13 +316,15 @@ def main() -> int:
     if not key:
         print("Set DEEPGRAM_API_KEY in the project .env (see .env.example).", flush=True)
         return 1
+    gemini = os.environ.get("GEMINI_API_KEY", "")
+    describer = Describer(gemini, os.environ.get("DESCRIBE_MODEL") or DESCRIBE_MODEL) if gemini else None
     if not brain_args:
-        serve(Agent(args.agent), args.port, args.ws_port, key)
+        serve(Agent(args.agent, describer), args.port, args.ws_port, key)
         return 0
     from brain.app import main as agent_main
 
-    threading.Thread(target=serve, args=(Agent(args.agent), args.port, args.ws_port, key), name="voice-layer",
-                     daemon=True).start()
+    threading.Thread(target=serve, args=(Agent(args.agent, describer), args.port, args.ws_port, key),
+                     name="voice-layer", daemon=True).start()
     return agent_main(brain_args)  # the main thread: the local capture backends aren't thread-safe
 
 

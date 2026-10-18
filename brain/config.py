@@ -39,9 +39,16 @@ class Config:
     zai_thinking: str | None = None  # thinking off: GLM's reasoning costs seconds per step
     zai_fallback_model: str = "glm-4.6v"
     zai_base_url: str = "https://api.z.ai/api/paas/v4"
-    target_os: str = ""
     local_keyboard: str = ""
     local_monitor: int = 0
+    local_pico: str = ""
+    local_capture: str = ""
+    replan_thinking: str | None = None  # more thinking for replans of a rejected plan; off: 8-29 s and 504s live
+    deep_model: str = ""  # stronger model race escalates to when stuck (brain/agent/deep.py); empty disables
+    deep_thinking: str | None = "low"  # Argon's lowest level (minimal is rejected)
+    deep_timeout_s: float = 25.0  # Argon low took 4-24 s a step; a 44 s call ended in a 504
+    deep_after: int = 3  # unproductive race steps (of the last 6) before deep mode
+    replay_path: Path | None = None  # successful runs replayed without model calls (brain/agent/replay.py)
 
     @property
     def uses_zai(self) -> bool:
@@ -68,6 +75,12 @@ class Config:
             capture_width=int(env("CAPTURE_WIDTH", "1920")),
             capture_height=int(env("CAPTURE_HEIGHT", "1080")),
             session_path=Path(env("SESSION_PATH", "session.json")),
+            replan_thinking=env("REPLAN_THINKING", "") or None,
+            deep_model=env("DEEP_MODEL", "gemini-4-argon"),
+            deep_thinking=env("DEEP_THINKING", "low") or None,
+            deep_timeout_s=float(env("DEEP_TIMEOUT_S", "25")),
+            deep_after=int(env("DEEP_AFTER", "3")),
+            replay_path=Path(env("REPLAY_PATH", "replay.json")) if env("REPLAY_PATH", "replay.json") else None,
             bench_csv=Path(env("BENCH_CSV", "bench/results.csv")),
             fallback_model=env("FALLBACK_MODEL", "gemini-3.5-flash-lite"),
             planner_model=env("PLANNER_MODEL", "gemini-4-argon"),
@@ -89,7 +102,8 @@ class Config:
             zai_thinking=env("ZAI_THINKING") or None,
             zai_fallback_model=env("ZAI_FALLBACK_MODEL", "glm-4.6v"),
             zai_base_url=env("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
-            target_os=env("TARGET_OS", ""),
             local_keyboard=env("LOCAL_KEYBOARD", ""),
             local_monitor=int(env("LOCAL_MONITOR", "0")),
+            local_pico=env("LOCAL_PICO", ""),
+            local_capture=env("LOCAL_CAPTURE", ""),
         )
