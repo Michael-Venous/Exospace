@@ -46,6 +46,17 @@ class DeepTests(unittest.TestCase):
         self.inner.next_actions.return_value = Plan("fast", [Action("click", x=.1, y=.1)], [])
         self.assertEqual(self.agent.next_actions(b"img", self.ctx(1, run="b")).reasoning, "fast")  # next request
 
+    def test_a_deep_model_error_hands_that_step_to_race(self):
+        self.inner.next_actions.return_value = STUCK
+        for step in (1, 2):
+            self.agent.next_actions(b"img", self.ctx(step))
+        self.deep.next_actions.side_effect = RuntimeError("504 DEADLINE_EXCEEDED")
+        self.inner.next_actions.return_value = Plan("Stage 1/1", [Action("click", x=.1, y=.1)], [])
+        self.assertEqual(self.agent.next_actions(b"img", self.ctx(3)).reasoning, "Stage 1/1")
+        self.agent.acknowledge(True)
+        self.inner.acknowledge.assert_called_with(True)
+        self.assertTrue(self.agent.active)  # the next step tries the deep model again
+
     def test_deep_actions_with_side_effects_are_blocked(self):
         self.inner.next_actions.return_value = STUCK
         self.inner.jev.evaluate.return_value = ({"side_effects": {"noul": .9}}, None, None)

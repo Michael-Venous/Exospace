@@ -18,7 +18,7 @@ from typing import Any
 
 from brain.agent.executor import ModelExecutor, Plan, StepContext
 from brain.agent.jev import SIDE_EFFECT_GATE, SIDE_EFFECTS, probability
-from brain.cancel import CancelToken
+from brain.cancel import CancelToken, Cancelled
 from brain.config import Config
 from brain.imaging import grid_copy
 from brain.types import OSName
@@ -40,6 +40,7 @@ class DeepFallback:
         self._run: tuple[str, str] | None = None
         self._recent: list[bool] = []  # unproductive flags of the last WINDOW race steps
         self.active = False
+        self._race_step = False  # this step went to race because the deep model failed
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.inner, name)
@@ -65,12 +66,19 @@ class DeepFallback:
                 return plan
             self.active = True
             self.on_status("This one needs more thought; switching to deep mode…")
-        plan = self.deep.next_actions(grid_copy(image_jpeg), replace(ctx, note=ctx.note or "Deep mode: the fast "
-                                                                     "planner was stuck; take any route that works."))
+        try:
+            plan = self.deep.next_actions(grid_copy(image_jpeg), replace(ctx, note=ctx.note or "Deep mode: the fast "
+                                                                         "planner was stuck; take any route that works."))
+        except Cancelled:
+            raise
+        except Exception:  # a 504 or timeout ended a whole house run: race takes this one step instead
+            self._race_step = True
+            return self.inner.next_actions(image_jpeg, ctx)
+        self._race_step = False
         return self._guard(image_jpeg, plan, ctx)
 
     def acknowledge(self, executed: bool) -> None:
-        if not self.active:
+        if not self.active or self._race_step:
             self.inner.acknowledge(executed)
 
     def _guard(self, image_jpeg: bytes, plan: Plan, ctx: StepContext) -> Plan:
