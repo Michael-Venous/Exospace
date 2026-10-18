@@ -126,7 +126,8 @@ class JevOnlyGuardTests(unittest.TestCase):
 
     def next_step(self, approved):
         planner = JevOnlyPlanner(Mock(min_presence=.85), approved)
-        answers = {"complete": {"noul": .1}, "question": {"noul": .05}, "next": {"choice": "enter"},
+        answers = {"complete": {"noul": .1}, "question": {"noul": .05}, "composed": {"noul": .05},
+                   "next": {"choice": "enter"},
                    "present": {"noul": .95}, "target": BOX, "text": {"choice": "none"}, "replace": {"noul": .1},
                    "fits": {"noul": .95}, "app_present": {"noul": .1}, "app_name": {"choice": "none"},
                    "launcher": {"noul": .1}, "app": BOX, "irreversible": {"noul": .95}}
