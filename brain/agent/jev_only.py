@@ -73,6 +73,9 @@ WAIT = Action("skill", name="wait")
 # shortcut: set from 5 live runs; move it if finished goals below 0.65 keep taking an extra step.
 COMPLETION_GATE = 0.65
 NEAR_PRESENCE = 0.75  # a target this sure is clicked only where both zoomed looks confirm it
+# shortcut: the "+" zooms landed 0.002 apart; a neighbouring row is ~0.02 away. Both zooms see the same crop, so they
+# can stray together; tighten or drop this if a run clicks a neighbour both zooms picked.
+ZOOMS_AGREE = 0.01
 MAX_SPANS = 250  # Jev's choice budget (bench/interpreter_screen.py)
 DEADLINE_S = 20.0  # user decision (raised from 5 s): a request Jev alone can't finish in 20 s isn't reliable enough
 
@@ -142,8 +145,11 @@ class JevOnlyPlanner:
                                                                run_id=ctx.run_id, step=ctx.step), range(2)) if p]
             # Jev's doubt about which step comes next also lowers its sureness that the target is visible (a
             # small YouTube search box: 0.77-0.84 on 5 tries, each box on it), so agreeing looks stand in for it.
-            if not looks or sure < self.jev.min_presence and not (
-                    len(looks) == 2 and all(box_contains(answers["target"], size, padded, p) for p in looks)):
+            # Both zooms moving to one spot agree too: for "open a new tab and search ..." the first box was the
+            # page's search box and both zooms found the tab strip's "+" (frame 49, 20/20 on 10 replays).
+            agree = len(looks) == 2 and (all(box_contains(answers["target"], size, padded, p) for p in looks)
+                                         or math.dist(*looks) < ZOOMS_AGREE)
+            if not looks or sure < self.jev.min_presence and not agree:
                 return _fail("its target isn't clearly visible")
             point = min(looks, key=lambda p: math.dist(p, point))
             actions.append(Action("click" if step == "fill" else step, x=point[0], y=point[1]))

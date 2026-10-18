@@ -101,11 +101,15 @@ def refine(jev: JevVision, jpeg: bytes, state: dict, point: tuple[float, float],
     answers, size, padded = jev.evaluate(crop, questions, run_id=run_id, step=step, state=state,
                                          label="zoom", gates={"present": GATE}, region=(x0, y0, x1, y1))
     local = box_center(answers["target"], size, padded)
-    if local is None or probability(answers["present"].get("noul")) < GATE:
+    sure = probability(answers["present"].get("noul"))
+    if local is None or sure < GATE:
         return None
     # A zoomed box around the first point only confirms it: its center can be a gap inside a larger control
-    # (a whole search result boxed, clicked between thumbnail and title). The zoom moves a first look that missed.
-    if box_contains(answers["target"], size, padded, ((point[0] - x0) / (x1 - x0), (point[1] - y0) / (y1 - y0))):
+    # (a whole search result boxed, clicked between thumbnail and title). The zoom moves a first look that missed,
+    # but only when sure: zooms at 0.65-0.80 moved "Search YouTube." off Chrome's search bar onto the Gmail
+    # shortcut below it (8/10 replays); the zooms that found the new-tab "+" were 0.91.
+    if sure < jev.min_presence or box_contains(answers["target"], size, padded,
+                                               ((point[0] - x0) / (x1 - x0), (point[1] - y0) / (y1 - y0))):
         return point
     return x0 + local[0] * (x1 - x0), y0 + local[1] * (y1 - y0)
 

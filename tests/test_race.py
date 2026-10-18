@@ -27,7 +27,7 @@ def jpeg(width=400, height=300) -> bytes:
 
 class TriageTests(unittest.TestCase):
     def setUp(self):
-        self.jev = Mock()
+        self.jev = Mock(min_presence=.85)
         self.size = ((400, 300), (400, 300))
 
     def answer(self, choice, present=.95, unique=.95, irreversible=.02):
@@ -57,6 +57,11 @@ class TriageTests(unittest.TestCase):
         self.assertEqual(zoom({"left": .1, "right": .9, "top": .4, "bottom": .9}), (.5, .5))
         x, y = zoom({"left": .1, "right": .3, "top": .1, "bottom": .3})  # the first look was off the control
         self.assertTrue(x < .5 and y < .5)
+
+    def test_an_unsure_zoom_does_not_move_the_click(self):
+        self.jev.evaluate.return_value = ({"present": {"noul": .8}, "target": {"box": {
+            "left": .1, "right": .3, "top": .1, "bottom": .3}}}, *self.size)
+        self.assertEqual(refine(self.jev, jpeg(), {}, (.5, .5)), (.5, .5))
 
     def test_ambiguous_target_goes_to_the_planner(self):
         self.jev.evaluate.return_value = self.answer("act_now", unique=.3)
@@ -249,6 +254,12 @@ class JevOnlyTests(unittest.TestCase):
         for zooms in ([centered, stray], [stray, centered], [centered, {"present": {"noul": .2}, "target": {}}]):
             self.assertEqual(self.step("search for horse videos", present=.8, zooms=zooms).type, "fail")
         self.assertEqual(self.step("search for horse videos", present=.7).type, "fail")
+
+    def test_two_zooms_that_agree_move_a_nearly_sure_click(self):
+        moved = {"present": {"noul": .9}, "target": {"box": {"left": .4, "right": .6, "top": .9, "bottom": 1}}}
+        action = self.step("open a new tab and search cats", present=.8, zooms=[moved, moved])
+        self.assertEqual(action.type, "click")
+        self.assertGreater(action.y, .31)  # off the first box, where both zooms put it
 
     def test_typed_text_is_a_run_of_the_goals_words(self):
         goal = 'type "hello world", then press enter'
