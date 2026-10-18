@@ -34,6 +34,15 @@ class SkillTests(unittest.TestCase):
                     unittest.mock.call.hotkey(["ENTER"]),
                 ])
 
+    def test_open_app_types_only_once_the_launcher_shows(self):
+        self.controller.capture.grab.return_value = np.zeros((10, 10, 3), np.uint8)
+        run_skill("open_app", {"name": "Notes"}, self.profile("macos"), self.controller)
+        calls = [c[0] for c in self.controller.method_calls]
+        self.assertEqual(calls[calls.index("hotkey"):calls.index("type_text")],
+                         ["hotkey", "wait_for_change", "wait_settled"])
+        self.assertEqual(self.controller.method_calls[calls.index("wait_for_change")],
+                         unittest.mock.call.wait_for_change(2.0, since=unittest.mock.ANY))
+
     def test_open_app_waits_for_the_window_not_just_the_launcher(self):
         self.controller.capture.grab.return_value = np.zeros((10, 10, 3), np.uint8)
         run_skill("open_app", {"name": "Notes"}, self.profile("macos"), self.controller)

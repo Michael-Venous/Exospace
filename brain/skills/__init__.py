@@ -20,6 +20,7 @@ class SkillUnavailable(ActionError):
 
 
 APP_START_S = 4.0  # longest wait for a launched app's window to appear
+LAUNCHER_S = 2.0  # longest wait for the launcher to appear after its key
 # The desktop launcher search; on phones and other targets the model uses the screen instead.
 OPEN_APP_KEYS: dict[str, list[str]] = {
     "macos": ["GUI", "SPACE"], "windows": ["GUI"], "linux": ["GUI"], "chromeos": ["GUI"],
@@ -87,6 +88,10 @@ def run_skill(
     frame = controller.capture.grab()
     start = thumbnail(frame) if frame is not None else None
     controller.hotkey(OPEN_APP_KEYS[profile.os])
+    # Type only once the launcher shows: through the capture card the screen looked "settled" before the
+    # launcher appeared, the name went nowhere, and Enter opened the launcher's first entry (an emulator).
+    if start is not None:
+        controller.wait_for_change(LAUNCHER_S, since=start)
     controller.wait_settled()
     controller.cancel.check()
     controller.type_text(app.strip())

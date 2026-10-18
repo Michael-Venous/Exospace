@@ -72,6 +72,13 @@ class ActiveRectTests(unittest.TestCase):
         rect = active_rect(frame)
         self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (700, 0, 1220, 1080))
 
+    def test_a_16_10_laptop_mirrored_into_a_16_9_capture_is_cropped(self):
+        from brain.capture import active_rect
+        frame = np.zeros((720, 1280, 3), np.uint8)
+        frame[:, 62:1216] = 200  # measured on the Pi: bars of 62 and 64 px (4.8% and 5.0%)
+        rect = active_rect(frame)
+        self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (62, 0, 1216, 720))
+
     def test_a_window_on_a_black_wallpaper_is_not_the_screen(self):
         from brain.capture import active_rect
         frame = np.zeros((1800, 2880, 3), np.uint8)
