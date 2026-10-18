@@ -21,7 +21,6 @@ from typing import cast
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import COMPLETION_QUESTION, JevVision, probability
-from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.prompts import OS_PROMPT
 from brain.agent.triage import GATE, box_center, box_contains, refine
 from brain.cancel import CancelToken
@@ -69,6 +68,10 @@ APP_NAME = ("Which words of the `goal` name the app, or the kind of app, to open
 LAUNCHER_OPEN = "Is an app launcher or start menu open in `screen`, with a search field for typing an app's name?"
 STEP_CONTROL = "the one control that the next step of the `goal` acts on, after the `executed_steps`"
 WAIT = Action("skill", name="wait")
+# Race's COMPLETION_GATE (0.3) let two unfinished goals through here, at 0.57 and 0.63 (2026-10-18: Google
+# results for "go to Wikipedia", a typed search never sent); finished ones scored 0.68-0.89.
+# shortcut: set from 5 live runs; move it if finished goals below 0.65 keep taking an extra step.
+COMPLETION_GATE = 0.65
 NEAR_PRESENCE = 0.75  # a target this sure is clicked only where both zoomed looks confirm it
 MAX_SPANS = 250  # Jev's choice budget (bench/interpreter_screen.py)
 DEADLINE_S = 20.0  # user decision (raised from 5 s): a request Jev alone can't finish in 20 s isn't reliable enough
@@ -108,7 +111,10 @@ class JevOnlyPlanner:
         }, run_id=ctx.run_id, step=ctx.step, state={"goal": ctx.goal, "executed_steps": ctx.history}, label="step",
            gates={"complete": COMPLETION_GATE, "present": self.jev.min_presence, "replace": GATE, "fits": GATE,
                   "app_present": self.jev.min_presence, "launcher": self.jev.min_presence})
-        if probability(answers["complete"].get("noul")) >= COMPLETION_GATE:
+        # Jev's own next step is Enter right after typing: the text isn't submitted, whatever the completion score.
+        unsent = bool(ctx.history) and ctx.history[-1].startswith("type_text") and answers["next"].get(
+            "choice") == "enter"
+        if probability(answers["complete"].get("noul")) >= COMPLETION_GATE and not unsent:
             return Plan("Jev verified the completed goal", [Action("done", summary="Done.")], [])
         if "unchanged" in ctx.note:
             return _fail("the last step had no visible effect")  # Jev would choose it again

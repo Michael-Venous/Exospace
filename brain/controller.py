@@ -11,11 +11,14 @@ from brain.cancel import Cancelled, CancelToken
 from brain.capture import Capture, frame_change, is_blank, thumbnail
 from brain.hid import HID, HID_MAX, HIDError
 from brain.keys import canonical_combo
-from brain.types import Action, ActionError, DeviceProfile
+from brain.types import Action, ActionError, DeviceProfile, Frame
 from brain.verification import highlight_rows, visibly_changed
 
 TYPE_CHUNK = 32  # chars per UART "type" command, so cancel lands quickly
 WAIT_S = 10.0  # longest block of the wait skill
+# shortcut: one cap for every app; a slower cold start drops the keys chained after it to step-by-step, so raise
+# it if launches measured on a target take longer.
+LAUNCH_S = 5.0  # longest wait for a launched app's window
 BOOT_KEY_TTL_S = 120.0  # armed firmware keys expire when no restart follows
 BOOT_TAP_S = 0.2  # firmware polls for its setup key; tap faster than that
 BOOT_TAP_AFTER_S = 5.0  # the boot logo shown once video returns is still the key window
@@ -226,6 +229,18 @@ class Controller:
             frame = self.capture.grab()
             if frame is None or frame_change(before, thumbnail(frame)) >= self.settle.threshold:
                 return
+
+    def wait_for_new_screen(self, before: Frame) -> bool:
+        """Settle until the screen visibly differs from `before`, e.g. a launched app's window, for at most
+        LAUNCH_S. False when it never does: keys sent next would land in the old window."""
+        deadline = time.monotonic() + LAUNCH_S
+        while True:
+            self.wait_settled()
+            frame = self.capture.grab()
+            if frame is None or visibly_changed(before, frame):
+                return True  # lost video is the connection monitor's to handle
+            if time.monotonic() >= deadline:
+                return False
 
     def _on_hid_event(self, event: str) -> None:
         if event == "unmounted":

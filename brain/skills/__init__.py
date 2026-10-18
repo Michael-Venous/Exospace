@@ -65,6 +65,7 @@ def run_skill(
     if any(ord(char) < 32 or ord(char) == 127 for char in app):
         raise ActionError("open_app name must not contain control characters")
 
+    before = controller.capture.grab()
     controller.hotkey(OPEN_APP_KEYS[profile.os])
     controller.wait_settled()
     controller.cancel.check()
@@ -74,3 +75,6 @@ def run_skill(
     if profile.os == "android":
         controller.hotkey(["DOWN"])  # ENTER alone starts a web search; DOWN focuses the top app
     controller.hotkey(["ENTER"])
+    # Keys chained after a launch run blind, so they wait for its window (an empty search just closes the launcher).
+    if before is not None and not controller.wait_for_new_screen(before):
+        raise ActionError(f"no window opened for {app.strip()!r}; look at the screen and continue from it")

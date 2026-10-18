@@ -221,6 +221,12 @@ class JevOnlyTests(unittest.TestCase):
     def test_goal_jev_sees_done_is_done(self):
         self.assertEqual(self.step("open calculator", complete=.9).type, "done")
 
+    def test_unfinished_goals_are_not_done(self):
+        self.assertEqual(self.step("go to wikipedia", complete=.63).type, "click")
+        typed = self.plan("search for cats", complete=.9, next="enter", history=["type_text('cats')"])
+        self.assertEqual([a.brief() for a in typed], ["hotkey(ENTER)"])
+        self.assertEqual(self.step("search for cats", complete=.9, next="enter", history=["hotkey(ENTER)"]).type, "done")
+
     def test_next_click_lands_on_the_target(self):
         action = self.step("open calculator, then click 7")
         self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))

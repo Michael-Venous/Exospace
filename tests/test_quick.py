@@ -21,6 +21,15 @@ class QuickActionTests(unittest.TestCase):
             "launch VS Code": ["skill(open_app {'name': 'VS Code'})"],
             "open settings, then turn on wifi": ["skill(open_app {'name': 'settings'})"],
             "open calculator and type 2+2": ["skill(open_app {'name': 'calculator'})"],
+            'open notes and type "hi"': ["skill(open_app {'name': 'notes'})", "type_text('hi')"],
+            "open chrome and go to youtube.com/feed": ["skill(open_app {'name': 'chrome'})", "hotkey(CTRL+L)",
+                                                       "type_text('youtube.com/feed')", "hotkey(ENTER)"],
+            "open firefox, open a new tab, then visit example.org": [
+                "skill(open_app {'name': 'firefox'})", "hotkey(CTRL+T)", "hotkey(CTRL+L)",
+                "type_text('example.org')", "hotkey(ENTER)"],
+            "Open up Chrome and go to youtube.com.": ["skill(open_app {'name': 'Chrome'})", "hotkey(CTRL+L)",
+                                                      "type_text('youtube.com')", "hotkey(ENTER)"],
+            "open chrome, go to youtube.com and search for horses": ["skill(open_app {'name': 'chrome'})"],
             "Open a spreadsheet, enter 12 in A1": ["skill(open_app {'name': 'spreadsheet'})"],
             "open a text editor and type hi": ["skill(open_app {'name': 'text editor'})"],
             "press ctrl c": ["hotkey(CTRL+C)"],
@@ -39,7 +48,7 @@ class QuickActionTests(unittest.TestCase):
                 self.assertEqual(briefs(goal), expected)
 
     def test_vague_or_compound_goals_go_to_the_model(self):
-        for goal in ("open a new tab", "open a document", "open an email", "open up spotify", "open file.txt", "open youtube.com",
+        for goal in ("open a new tab", "open a document", "open an email", "open up the file menu", "open file.txt", "open youtube.com",
                      "open the file menu", "open my documents", "open it", "press enter twice",
                      "press the button", "press enter to submit", "press and hold power",
                      "press a b", "type hello", "scroll down to the bottom", "Create the event",
@@ -63,6 +72,12 @@ class QuickActionTests(unittest.TestCase):
         self.assertEqual(briefs("press F10", "bios"), ["hotkey(F10)"])
         self.assertEqual(quick_actions("scroll down", "bios"), [])
         self.assertEqual(briefs("press home", "android"), ["hotkey(GUI+H)"])
+
+    def test_browser_keys_only_follow_a_launch_on_a_computer(self):
+        self.assertEqual(quick_actions("go to youtube.com", "windows"), [])  # whatever is in front gets them
+        self.assertEqual(briefs("open safari and go to apple.com", "macos")[1:], [
+            "hotkey(GUI+L)", "type_text('apple.com')", "hotkey(ENTER)"])
+        self.assertEqual(briefs("open chrome and go to youtube.com", "android"), ["skill(open_app {'name': 'chrome'})"])
 
 
 class QuickStartTests(unittest.TestCase):

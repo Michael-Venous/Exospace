@@ -23,16 +23,25 @@ class SkillTests(unittest.TestCase):
                 self.controller.reset_mock()
                 run_skill("open_app", {"name": " Notes "}, self.profile(os), self.controller)
                 self.assertEqual(self.controller.method_calls, [
+                    unittest.mock.call.capture.grab(),
                     unittest.mock.call.hotkey(keys),
                     unittest.mock.call.wait_settled(),
                     unittest.mock.call.type_text("Notes"),
                     unittest.mock.call.wait_settled(),
                     unittest.mock.call.hotkey(["ENTER"]),
+                    unittest.mock.call.wait_for_new_screen(self.controller.capture.grab.return_value),
                 ])
+
+    def test_a_launch_that_opens_no_window_is_rejected(self):
+        self.controller.wait_for_new_screen.return_value = False
+        with self.assertRaises(ActionError):  # the loop then drops the blind keys queued after it
+            run_skill("open_app", {"name": "Notes"}, self.profile("linux"), self.controller)
+        self.controller.capture.grab.return_value = None  # no frame to compare: nothing to wait for
+        run_skill("open_app", {"name": "Notes"}, self.profile("linux"), self.controller)
 
     def test_android_picks_the_app_not_a_web_search(self):
         run_skill("open_app", {"name": "Clock"}, self.profile("android"), self.controller)
-        self.assertEqual(self.controller.method_calls[-2:], [
+        self.assertEqual(self.controller.method_calls[-3:-1], [
             unittest.mock.call.hotkey(["DOWN"]), unittest.mock.call.hotkey(["ENTER"])])
 
     def test_wait_only_watches_the_screen(self):
