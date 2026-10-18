@@ -29,7 +29,7 @@ How to build and check what PLAN.md §5.1 specifies. Firmware details: [firmware
 
 Both boards use 3.3 V logic, so no level shifter. **Never connect the Pi's 5 V to a Pico GPIO pin.**
 The push-to-talk button goes between pin 11 (GPIO17) and pin 9 (GND): the voice layer reads it with `gpiomon` (internal pull-up, 30 ms debounce) and the page treats a press like holding its orb (`brain/voice/button.py`).
-yet; the voice page's Talk button and the Space bar work today, so a USB switch interface that sends Space works.
+The page's orb and the Space bar work too, so a USB switch interface that sends Space also works.
 
 ## 3. Pi setup
 From the laptop, `scripts/pi/deploy.sh` copies the code (never `.env`) and runs `scripts/pi/setup.sh` on the Pi:

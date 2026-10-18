@@ -22,7 +22,7 @@ def available() -> bool:
 def watch(on_change: Callable[[bool], None], chip: str = CHIP, line: int = LINE) -> None:
     """Call on_change(pressed) for each debounced change, forever (run on its own thread): every edge
     restarts a DEBOUNCE_S timer, and the level it settles at is what counts."""
-    proc = subprocess.Popen(["gpiomon", "-b", "pull-up", "-F", "%e", chip, str(line)],
+    proc = subprocess.Popen(["gpiomon", "--bias=pull-up", "--format=%e", chip, str(line)],
                             stdout=subprocess.PIPE, text=True)
     assert proc.stdout is not None
     lock = threading.Lock()
