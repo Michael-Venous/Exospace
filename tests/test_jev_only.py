@@ -53,8 +53,8 @@ class JevOnlyTests(unittest.TestCase):
     def test_a_target_not_visible_after_a_step_is_looked_for_again_twice(self):
         goal = "search youtube for horses"
         self.assertEqual(self.step(goal, present=.4, history=["skill(open_app {'name': 'firefox'})"]).brief(),
-                         "skill(wait {})")
-        waited = ["skill(open_app {'name': 'firefox'})", "skill(wait {})", "skill(wait {})"]
+                         "skill(wait {'s': 1.0})")
+        waited = ["skill(open_app {'name': 'firefox'})", "skill(wait {'s': 1.0})", "skill(wait {'s': 1.0})"]
         self.assertEqual(self.step(goal, present=.4, history=waited).type, "fail")
 
     def test_a_zoom_that_strays_is_outvoted(self):
@@ -118,7 +118,8 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual([a.brief() for a in actions], ["skill(hover {'x': 0.5, 'y': 0.5})", "scroll(5)"])
 
     def test_text_the_request_does_not_give_word_for_word_is_left_to_flash(self):
-        self.assertEqual(self.step("work out 12 times 9", composed=.9).type, "fail")
+        self.assertEqual(self.step("work out 12 times 9", composed=.9, next="type").type, "fail")
+        self.assertEqual(self.step("open camera", composed=.9).type, "click")  # a tap needs no text
 
     def test_reasoning_fails_over(self):
         self.assertEqual(self.step("summarize this page", next="stuck").type, "fail")
@@ -136,8 +137,8 @@ class JevOnlyTests(unittest.TestCase):
         goal = "find a video about horses"
         named = str(spans(goal, 250).index("video"))
         self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), "hotkey(GUI)")
-        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)"]).brief(), "skill(wait {})")
-        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)", "skill(wait {})"]).type,
+        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)"]).brief(), "skill(wait {'s': 3.0})")
+        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)", "skill(wait {'s': 3.0})"]).type,
                          "fail")
 
     def test_launcher_is_searched_for_the_app_the_goal_names_before_an_icon_is_clicked(self):

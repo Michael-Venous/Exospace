@@ -251,7 +251,10 @@ async function start() {
     speakHeld();
     if (done) send(done, sent);
     waiting(sent || !!done);
-    if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
+    // A close after letting go, or once words came back, lost nothing. Still holding: listen again at once.
+    if (e.code === 1000 || ended || sent || done) return;
+    if (held) return start();
+    showError(`Speech service closed (${e.code}). Try again.`);
   };
 }
 // Push to talk: listen only while the orb or Space is held, so speech meant for someone else is never acted on.

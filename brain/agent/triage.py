@@ -118,7 +118,9 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
     gesture = answers["gesture"].get("choice")
     gesture = gesture if gesture in GESTURE_CRITERIA else "click"
     small = box_width(answers["target"], size, padded) < SMALL_TARGET
-    return Triage("act", refined, irreversible, gesture, small=small) if refined else Triage("plan", None, irreversible)
+    named = names[int(app)] if app in {str(i) for i in range(len(names))} else ""
+    return Triage("act", refined, irreversible, gesture, small=small, app=named) if refined \
+        else Triage("plan", None, irreversible)
 
 
 def pointed(jev: JevVision, jpeg: bytes, utterance: str, point: tuple[float, float], *,

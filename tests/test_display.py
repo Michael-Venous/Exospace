@@ -131,7 +131,7 @@ class AgentEventTests(unittest.TestCase):
         capture = Capture()
         cancel = CancelToken()
         controller = Controller(HID(capture), capture, cancel,
-                                SettleConfig(min_s=0, react_s=0, load_stable_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
+                                SettleConfig(min_s=0, react_s=0, load_stable_s=0, load_react_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
         executor = Mock(spec=["next_actions"])
         executor.next_actions.side_effect = [
             Plan("Click Send", [Action("click", x=0.5, y=0.25)], []),
@@ -161,7 +161,7 @@ class AgentEventTests(unittest.TestCase):
         root = Path(temp.name)
         capture = Capture()
         controller = Controller(HID(capture), capture, CancelToken(),
-                                SettleConfig(min_s=0, react_s=0, load_stable_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
+                                SettleConfig(min_s=0, react_s=0, load_stable_s=0, load_react_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
         executor = Mock(spec=["next_actions"])
         executor.next_actions.side_effect = [  # the fake screen changes on the first click
             Plan("Fill", [Action("click", x=0.5, y=0.25), Action("click", x=0.5, y=0.75)], []),

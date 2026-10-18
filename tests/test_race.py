@@ -421,6 +421,12 @@ class RaceTests(unittest.TestCase):
         self.race.planner.next_actions.return_value = Plan("held", [], [], held="click Send button")
         self.assertEqual(self.race.next_actions(b"mail", self.ctx(goal)).actions[0].type, "ask_user")
 
+    def test_a_phone_has_no_launcher_so_the_planner_opens_the_app(self):
+        with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="brave")):
+            ctx = StepContext("open brave", DeviceProfile("ios", Rect(0, 0, 400, 300), "touch", 1), self.memory,
+                              [], 1, 10, run_id="a")
+            self.assertEqual(self.race.next_actions(b"img", ctx).reasoning, "planned")
+
     def test_a_launch_that_landed_elsewhere_goes_to_the_planner(self):
         with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="calculadora")):
             self.race.next_actions(b"img", self.ctx("abre la calculadora"))

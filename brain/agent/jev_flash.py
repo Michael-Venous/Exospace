@@ -13,6 +13,7 @@ from brain.agent.model import language_model
 from brain.agent.prompts import PLAN_SCHEMA
 from brain.agent.triage import GATE, GATE as ZOOM_GATE, refine
 from brain.imaging import shrink
+from brain.skills import OPEN_APP_KEYS
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
@@ -70,6 +71,9 @@ skill(name=open_app,text=app: the app's full name as the user said it, in the sc
 language, e.g. "system settings" not "settings"), skill(name=wait) as its own stage ONLY when the
 screenshot shows a spinner, progress bar or blank page that is still loading (a
 loaded page never needs it), remember(key,text), ask_user(message), fail(message).
+To search a website you know, in a browser already open, go straight to its search
+results: click the address bar and type the site's search URL with the words, then Enter,
+in one stage (e.g. youtube.com/results?search_query=lofi+hip+hop).
 To start an app that is not already open, use skill(open_app); never hunt
 for it in taskbars, docks or launcher menus.
 No done action is needed: completion is checked after the last stage.
@@ -135,7 +139,7 @@ def validate_steps(data, allow_visual_fallback=False):
                 if kind=='drag' and not item.get('destination'): raise ValueError('Drag needs a destination')
             elif kind in {'done','swipe'}:
                 raise ValueError('Use completion criterion or semantic drag')
-            elif kind=='skill' and item.get('name')=='open_app' and not str(item.get('text','')).strip():
+            elif kind=='skill' and item.get('name')=='open_app' and not str(item.get('text') or item.get('target') or '').strip():
                 raise ValueError('open_app needs the app name as text')  # an empty one relaunched a visible app
             elif kind=='type_text' and '\t' in str(item.get('text','')):
                 raise ValueError('Use TAB hotkey actions, not tabs in text')
@@ -224,6 +228,10 @@ class JevFlashExecutor:
             previous = {'stage':self.stages[self.cursor], 'executed':self.pending}
         self._reset()
         prompt=context_prompt(ctx)+'\nReplanning reason: '+(reason or 'new task')
+        if ctx.profile.os not in OPEN_APP_KEYS:
+            # Phones have no launcher key: Flash planned open_app with no name on Android, every run.
+            prompt+=('\nThis device has no app-launcher shortcut: never use open_app. Tap the app\'s icon; if it '
+                     'is not visible, go to the home screen and swipe up to open the app list.')
         if previous:
             prompt+='\nPrevious semantic stage and execution acknowledgement: '+json.dumps(previous)
             prompt+='\nIf executed but unverified, reveal or inspect the result before repeating the action. Repeated clicks may not change the screen.'

@@ -119,7 +119,8 @@ class Agent:
                     finally:
                         times["t_model"] += time.monotonic() - stamp
                     token.check()
-                    self.on_status(f"Step {step}: {plan.reasoning}")
+                    why = f" ({plan.rejected[0][:160]})" if plan.rejected and not plan.actions else ""
+                    self.on_status(f"Step {step}: {plan.reasoning}{why}")
                     self._emit("plan", step=step, reasoning=plan.reasoning,
                                actions=[a.brief() for a in plan.actions],
                                points=[[a.x, a.y] for a in plan.actions if a.type in POINTER_ACTIONS],

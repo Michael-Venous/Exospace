@@ -59,7 +59,8 @@ COMPOSED = ("Does what remains of the `goal`, after the `executed_steps`, need t
             "that the `goal` doesn't contain word for word, to be computed, translated or composed?")
 STEP_CONTROL = "the one control that the next step of the `goal` acts on, after the `executed_steps`"
 NEXT_IRREVERSIBLE = "Would the next step of the `goal`, after the `executed_steps`, " + IRREVERSIBLE_KINDS
-WAIT = Action("skill", name="wait")
+WAIT = Action("skill", name="wait", args={"s": 3.0})  # the app or its results still appearing
+LOOK_AGAIN = Action("skill", name="wait", args={"s": 1.0})  # a page still drawing; a drawn one waited 10 s
 MAX_WAITS = 2  # looks again before a target still not visible hands the request to Flash
 # Race's COMPLETION_GATE (0.3) let two unfinished goals through here, at 0.57 and 0.63 (2026-10-18: Google
 # results for "go to Wikipedia", a typed search never sent); finished ones scored 0.68-0.89.
@@ -115,7 +116,8 @@ class JevOnlyPlanner:
         if probability(answers["question"].get("noul")) >= GATE:
             # Jev called "what is this page about?" complete and said "Done." with no answer.
             return _fail("the request asks for an answer, not an action")
-        if probability(answers["composed"].get("noul")) >= GATE:
+        if probability(answers["composed"].get("noul")) >= GATE and answers["next"].get("choice") in ("type", "fill"):
+            # Only a step that types needs the text: "open camera" on a phone (a tap) was refused here.
             # "work out 12 times 9": Jev pressed keypad keys one per step and missed one (41.7 s; Flash typed
             # "12*9=" in one step, 12.2 s).
             return _fail("the rest needs text the request doesn't give word for word")
@@ -123,6 +125,11 @@ class JevOnlyPlanner:
             return Plan("Jev verified the completed goal", [Action("done", summary="Done.")], [])
         if "unchanged" in ctx.note:
             return _fail("the last step had no visible effect")  # Jev would choose it again
+        named = answers.get("app_name", {}).get("choice")
+        if routing and ctx.profile.input == "touch" and named in {str(i) for i in range(len(texts))} \
+                and not any(h.startswith("skill(open_app") for h in ctx.history):
+            # The demo phone ignores taps; its keyboard launcher opens the app the request names.
+            return Plan("Open the app", [Action("skill", name="open_app", args={"name": texts[int(named)]})], [])
         if routing:
             # Before the fits check: Jev can judge the open launcher itself as fitting and type the whole goal.
             search = self._search(answers, ctx, texts)
@@ -131,7 +138,7 @@ class JevOnlyPlanner:
             # Only a request that names an app is routed: gibberish ("asdkjh qwe zxcv") opened the launcher.
             if probability(answers["fits"].get("noul")) < GATE and answers["app_name"].get("choice") in {
                     str(i) for i in range(len(texts))}:
-                return self._route(answers, size, padded, ctx)
+                return self._route(answers, size, padded, ctx, texts)
             self.routed = ctx.run_id
         step = answers["next"].get("choice")
         actions: list[Action] = []
@@ -203,7 +210,7 @@ class JevOnlyPlanner:
             return Plan("Search the launcher", [Action("type_text", text=texts[int(name)])], [])
         return None
 
-    def _route(self, answers: dict, size, padded, ctx: StepContext) -> Plan:
+    def _route(self, answers: dict, size, padded, ctx: StepContext, texts: list[str]) -> Plan:
         """Switch to the visible app best suited to the goal, else open the OS launcher to show more."""
         launcher = Action("hotkey", keys=tuple(OPEN_APP_KEYS[ctx.profile.os]))
         point = box_center(answers["app"], size, padded)
@@ -211,6 +218,10 @@ class JevOnlyPlanner:
             # shortcut: one click opens taskbar, dock and launcher entries but not desktop icons; double-click
             # when the app box is a desktop icon if those get missed.
             return Plan("Switch to the app for the request", [Action("click", x=point[0], y=point[1])], [])
+        name = answers["app_name"].get("choice")
+        if name in {str(i) for i in range(len(texts))} and not any(h.startswith("skill(open_app") for h in ctx.history):
+            # The open_app skill knows each launcher's keys (a phone's drawer needs Ctrl+F before typing).
+            return Plan("Open the app", [Action("skill", name="open_app", args={"name": texts[int(name)]})], [])
         if launcher.brief() not in ctx.history:
             return Plan("Open the app launcher", [launcher], [])
         if ctx.history[-1] != WAIT.brief():  # the launcher, its results or the chosen app still appearing
@@ -224,10 +235,10 @@ def _look_again(ctx: StepContext) -> Plan | None:
     (nrebolloso, origin/live-speech cfb822b)."""
     waits = 0
     for done in reversed(ctx.history):
-        if done != WAIT.brief():
+        if done != LOOK_AGAIN.brief():
             break
         waits += 1
-    return Plan("Jev waits for the page", [WAIT], []) if ctx.history and waits < MAX_WAITS else None
+    return Plan("Jev waits for the page", [LOOK_AGAIN], []) if ctx.history and waits < MAX_WAITS else None
 
 
 def _words(text: str) -> list[str]:

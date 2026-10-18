@@ -20,8 +20,17 @@ APP_START_S = 4.0  # longest wait for a launched app's window to appear
 LAUNCHER_S = 2.0  # longest wait for the launcher to appear after its key
 # The desktop launcher search; on phones and other targets the model uses the screen instead.
 OPEN_APP_KEYS: dict[str, list[str]] = {
-    "macos": ["GUI", "SPACE"], "windows": ["GUI"], "linux": ["GUI"], "chromeos": ["GUI"],
+    "macos": ["GUI", "SPACE"], "windows": ["GUI"], "linux": ["GUI"], "chromeos": ["GUI"], "android": ["GUI"],
 }
+# A launcher that needs a second key before its search takes typing: Android's app drawer (measured on a
+# Samsung through the Pico: Meta opens the drawer, Ctrl+F its search; touch input didn't register there).
+SEARCH_KEYS: dict[str, list[str]] = {"android": ["CTRL", "F"]}
+# System shortcuts for apps a launcher search finds but won't open by keyboard (Samsung's search ignored Enter).
+# Android's own: Meta+I settings, +S messages, +B the default browser, +C contacts, +L calendar, +E email.
+_ANDROID = {("settings",): ["GUI", "I"], ("messages", "messaging", "texts", "sms", "google messages"): ["GUI", "S"],
+            ("browser", "brave", "chrome", "web browser", "internet"): ["GUI", "B"], ("contacts",): ["GUI", "C"],
+            ("calendar",): ["GUI", "L"], ("email", "gmail", "mail"): ["GUI", "E"]}
+APP_KEYS: dict[str, dict[str, list[str]]] = {"android": {name: keys for names, keys in _ANDROID.items() for name in names}}
 
 
 def run_skill(
@@ -33,7 +42,11 @@ def run_skill(
     """Run a named skill (hover, wait, open_app), checking cancellation between stages."""
     controller.cancel.check()
     if name == "wait":
-        controller.wait_for_change()
+        cap = args.get("s")  # an optional cap: the default waits up to WAIT_S for the screen to change
+        if isinstance(cap, (int, float)) and cap > 0:
+            controller.wait_for_change(min(float(cap), 10.0))
+        else:
+            controller.wait_for_change()
         return
     if name == "hover":
         if profile.input == "touch":
@@ -54,6 +67,11 @@ def run_skill(
     if any(ord(char) < 32 or ord(char) == 127 for char in app):
         raise ActionError("open_app name must not contain control characters")
 
+    shortcut = APP_KEYS.get(profile.os, {}).get(app.strip().lower())
+    if shortcut:
+        controller.hotkey(shortcut)
+        controller.wait_settled()
+        return
     frame = controller.capture.grab()
     start = thumbnail(frame) if frame is not None else None
     controller.hotkey(OPEN_APP_KEYS[profile.os])
@@ -62,6 +80,9 @@ def run_skill(
     if start is not None:
         controller.wait_for_change(LAUNCHER_S, since=start)
     controller.wait_settled()
+    if profile.os in SEARCH_KEYS:
+        controller.hotkey(SEARCH_KEYS[profile.os])
+        controller.wait_settled()
     controller.cancel.check()
     controller.type_text(app.strip())
     controller.wait_settled()

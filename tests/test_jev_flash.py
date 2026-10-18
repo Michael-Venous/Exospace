@@ -168,6 +168,9 @@ class SemanticTests(PlannerCase):
         unnamed={'reasoning':'r','completion':'c','steps':[{'ready':'r','expected':'e',
                  'actions':[{'type':'skill','name':'open_app','text':' '}]}]}
         with self.assertRaises(ValueError):validate_steps(unnamed)
+        named={'reasoning':'r','completion':'c','steps':[{'ready':'r','expected':'e',
+               'actions':[{'type':'skill','name':'open_app','target':'Firefox'}]}]}
+        validate_steps(named)  # Flash names the app in target as often as in text
 
 
     def test_zoom_reaims_targets_and_rescues_near_misses(self):

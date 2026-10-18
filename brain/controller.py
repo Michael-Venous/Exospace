@@ -34,6 +34,9 @@ class SettleConfig:
     # stillness passed as "settled" and the check after "search venus effects" ran on a half-loaded page
     # (two replans, ~7 s, on the Pi).
     load_stable_s: float = 0.4
+    # ...and the screen may take this long to start changing: a phone app opening from its icon showed
+    # nothing at 0.45 s, the step counted as "unchanged" and the request went to the planner.
+    load_react_s: float = 1.0
     stable_s: float = 0.12  # screen must stay still this long
     timeout_s: float = 2.5  # stop waiting on spinners and animations
     poll_s: float = 0.03
@@ -135,6 +138,7 @@ class Controller:
         have started a page load, so the screen must stay still longer."""
         cfg = self.settle
         stable_s = cfg.load_stable_s if loading else cfg.stable_s
+        react_s = max(cfg.react_s, cfg.load_react_s) if loading else cfg.react_s
         start = time.monotonic()
         prev = None
         still_since: float | None = None
@@ -148,7 +152,7 @@ class Controller:
                 thumb = thumbnail(frame)
                 if prev is not None and frame_change(prev, thumb) < cfg.threshold:
                     still_since = still_since if still_since is not None else now
-                    if elapsed >= (cfg.min_s if changed else max(cfg.min_s, cfg.react_s)) \
+                    if elapsed >= (cfg.min_s if changed else max(cfg.min_s, react_s)) \
                             and now - still_since >= stable_s:
                         return elapsed
                 else:

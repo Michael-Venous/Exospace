@@ -18,6 +18,7 @@ from brain.agent.jev_first import JevFirstPlanner
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.triage import GATE, answer_to_pending, pointed, triage
 from brain.cancel import Cancelled, CancelToken
+from brain.skills import OPEN_APP_KEYS
 from brain.config import Config
 from brain.types import Action, OSName
 
@@ -149,6 +150,15 @@ class RaceExecutor:
         if result.irreversible and not confirmed:
             return self.hold(ctx)
         self.mode, self._point, self._gesture, self._scroll = result.mode, result.point, result.gesture, result.scroll
+        if self.mode == "act" and result.app and ctx.profile.input == "touch" and ctx.profile.os in OPEN_APP_KEYS:
+            # Tapping an app's icon did nothing on the demo phone (its touch input doesn't register); the
+            # keyboard launcher opens the app the request names.
+            self.mode = "launch"
+            result = replace(result, mode="launch")
+        if self.mode == "launch" and ctx.profile.os not in OPEN_APP_KEYS:
+            # A phone has no launcher key: the launch was rejected and its note sent the whole request to
+            # Flash (6 s a step on Android); Jev's own steps tap the app's icon instead.
+            self.mode = "plan"
         if self.mode == "none" and declined:
             return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
         if self.mode == "none":

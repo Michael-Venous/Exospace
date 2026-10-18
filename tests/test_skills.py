@@ -54,7 +54,7 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change()])
 
     def test_unsupported_has_no_input(self):
-        for os in ("android", "ios", "unknown"):
+        for os in ("ios", "unknown"):
             with self.assertRaises(SkillUnavailable):
                 run_skill("open_app", {"name": "Notes"}, self.profile(os), self.controller)
         with self.assertRaises(SkillUnavailable):
