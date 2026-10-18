@@ -117,7 +117,11 @@ async function listMics() {
     ...found.map((d, i) => new Option(d.label || `Microphone ${i + 1}`, d.deviceId)));
   mics.value = found.some(d => d.deviceId === saved) ? saved : "";
 }
-mics.onchange = () => { try { localStorage.mic = mics.value; } catch {} if (stopListening) stopListening(); };
+mics.onchange = () => {
+  try { localStorage.mic = mics.value; } catch {}
+  if (stopListening) stopListening();
+  if (liveMic) { liveMic.getTracks().forEach(t => t.stop()); liveMic = null; }  // the next press opens the new one
+};
 navigator.mediaDevices.ondevicechange = listMics;
 listMics();
 
@@ -171,6 +175,14 @@ async function send(text, continues) {
   if (r.error) showError(r.error);
 }
 
+// The mic stays open between presses: opening it took most of the delay before listening.
+let liveMic = null;
+async function openMic() {
+  if (liveMic && liveMic.getTracks().every(t => t.readyState === "live")) return liveMic;
+  liveMic = await navigator.mediaDevices.getUserMedia({audio: mics.value ? {deviceId: {exact: mics.value}} : true});
+  return liveMic;
+}
+
 let starting = false;
 async function start() {
   if (starting) return;      // a double tap must not open a second mic session
@@ -180,11 +192,15 @@ async function start() {
   stopAudio();
   post("/talk");             // barge in on whatever the agent is doing
   let mic;
-  try { mic = await navigator.mediaDevices.getUserMedia({audio: mics.value ? {deviceId: {exact: mics.value}} : true}); }
+  try { mic = await openMic(); }
   catch (err) { starting = false; return showError("Microphone blocked: " + err.message); }
-  if (!held) { starting = false; waiting(false); return mic.getTracks().forEach(t => t.stop()); }  // let go before the mic opened
+  if (!held) { starting = false; waiting(false); return; }  // let go before the mic opened
   listMics();
   const rec = new MediaRecorder(mic), sock = new WebSocket(`ws://${location.hostname}:__WS_PORT__`);
+  // Record from the press, not from when the speech service answers: audio waits here until it does,
+  // so the first words are neither delayed nor lost.
+  const queued = [];
+  let ended = false;
   let done = "", sent = false;
   const ctx = new AudioContext(), an = ctx.createAnalyser(), buf = new Uint8Array(512);
   an.fftSize = buf.length;
@@ -199,14 +215,19 @@ async function start() {
     requestAnimationFrame(tick);
   })();
   stopListening = () => rec.state === "recording" ? rec.stop() : sock.close();
-  rec.ondataavailable = e => { if (e.data.size && sock.readyState === 1) sock.send(e.data); };
-  rec.onstop = () => { if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
+  rec.ondataavailable = e => {
+    if (!e.data.size) return;
+    if (sock.readyState === 1) sock.send(e.data); else queued.push(e.data);
+  };
+  rec.onstop = () => { ended = true; if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
+  rec.start(100);
+  starting = false;
+  waiting(false);
+  document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Listening";
+  said.className = ""; said.textContent = ""; live.textContent = "";
   sock.onopen = () => {
-    starting = false;
-    waiting(false);
-    rec.start(100);
-    document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Listening";
-    said.className = ""; said.textContent = ""; live.textContent = "";
+    queued.splice(0).forEach(chunk => sock.send(chunk));
+    if (ended) sock.send(JSON.stringify({type: "CloseStream"}));
   };
   sock.onmessage = e => {
     const m = JSON.parse(e.data);
@@ -224,7 +245,6 @@ async function start() {
     stopListening = null;
     starting = false;
     if (rec.state !== "inactive") rec.stop();
-    mic.getTracks().forEach(t => t.stop());
     ctx.close();
     document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Hold to talk";
     live.textContent = "";
