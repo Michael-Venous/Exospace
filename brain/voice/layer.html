@@ -28,6 +28,8 @@ footer{display:flex;align-items:center;gap:28px}
 #hint::after{content:"Hold to talk"}
 .on #hint::after{content:"Listening"}
 .wait #hint::after{content:"Working on it"}
+#describe{padding:8px 16px;border-radius:999px;background:var(--tone);color:var(--dim)}
+#describe[aria-pressed=true]{background:#fff;color:#000}
 #mics{max-width:30vw;font:inherit;font-size:16px;color:var(--dim);background:var(--tone);border:0;border-radius:999px;
   padding:8px 16px;cursor:pointer}
 /* The connected device: its icon follows the live picture's shape (portrait means a phone). */
@@ -79,6 +81,7 @@ body:not(.on,.wait,.done) #orbi [data-mood=idle],.on #orbi [data-mood=listen],
 <footer>
   <button id=talk aria-label="Hold to talk" aria-pressed=false></button>
   <span id=hint></span>
+  <button id=describe aria-pressed=false>Describe</button>
   <select id=mics aria-label=Microphone></select>
   <button id=device class=none aria-label="Show the connected screen" aria-expanded=false>
     <svg class=computer viewBox="0 0 24 24" aria-hidden=true><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>
@@ -123,13 +126,41 @@ listMics();
 let unspoken = [], doneTimer;
 const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 new EventSource("/narration").onmessage = e => {
-  const {say} = JSON.parse(e.data);
+  const m = JSON.parse(e.data);
+  if (m.pcm) return stopListening || play(m.pcm, m.rate);  // never over the user
+  const line = m.say || m.show;
   waiting(false);
   document.body.classList.add("done");
   clearTimeout(doneTimer); doneTimer = setTimeout(() => document.body.classList.remove("done"), 4000);
-  says.textContent = say;
-  if (stopListening) unspoken.push(say); else speak(say);
+  says.textContent = line;
+  if (!m.say) return;
+  if (stopListening) unspoken.push(line); else speak(line);
 };
+
+// Describe mode: after each request, Gemini Live's spoken description of the screen streams in as
+// PCM chunks, queued back to back. Talking cuts it off.
+let out, playAt = 0, playing = [];
+function play(b64, rate) {
+  out ??= new AudioContext();
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0)), pcm = new Int16Array(bytes.buffer);
+  const buffer = out.createBuffer(1, pcm.length, rate);
+  buffer.getChannelData(0).set(Float32Array.from(pcm, v => v / 32768));
+  const source = out.createBufferSource();
+  source.buffer = buffer; source.connect(out.destination);
+  playAt = Math.max(playAt, out.currentTime);
+  source.start(playAt); playAt += buffer.duration;
+  playing.push(source); source.onended = () => playing = playing.filter(s => s !== source);
+}
+function stopAudio() { playing.forEach(s => s.stop()); playing = []; playAt = 0; }
+let describing = false; try { describing = localStorage.describe === "1"; } catch {}
+async function setDescribe(on) {
+  const r = await post("/describe", {on});
+  describing = !!r.on;
+  describe.setAttribute("aria-pressed", describing);
+  try { localStorage.describe = describing ? "1" : ""; } catch {}
+}
+describe.onclick = () => setDescribe(!describing);
+setDescribe(describing);
 function speakHeld() { if (unspoken.length) { speak(unspoken.at(-1)); unspoken = []; } }
 
 // Later segments of one hold continue its request ("go to youtube" ... "and search lofi").
@@ -144,6 +175,7 @@ async function start() {
   starting = true;
   waiting(true);
   speechSynthesis.cancel();  // the user is talking: stop speaking at once
+  stopAudio();
   post("/talk");             // barge in on whatever the agent is doing
   let mic;
   try { mic = await navigator.mediaDevices.getUserMedia({audio: mics.value ? {deviceId: {exact: mics.value}} : true}); }

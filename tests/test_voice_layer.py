@@ -72,7 +72,7 @@ class AgentLinkTests(unittest.TestCase):
         self.stop.assert_called_once_with("barge-in")
 
     def test_follow_tracks_busy_state_and_narrates_only_new_events(self):
-        lines: queue.Queue[str] = queue.Queue()
+        lines: queue.Queue[dict] = queue.Queue()
         self.bus.publish("result", status="fail", message="before the layer connected")
         threading.Thread(target=self.agent.follow, args=(lines,), daemon=True).start()
         time.sleep(0.2)
@@ -82,8 +82,28 @@ class AgentLinkTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertTrue(self.agent.busy)
         self.bus.publish("result", status="ask_user", message="This can't be undone. Should I go ahead?")
-        self.assertEqual(lines.get(timeout=2), "This can't be undone. Should I go ahead?")
+        self.assertEqual(lines.get(timeout=2), {"say": "This can't be undone. Should I go ahead?"})
         self.assertFalse(self.agent.busy)
+
+    def test_describe_mode_describes_a_finished_request(self):
+        describer = Mock()
+        describer.describe.side_effect = lambda jpeg, request, outcome, emit: emit({"pcm": "AAAA", "rate": 24000}) or True
+        agent, lines = Agent(self.display.url, describer), queue.Queue()
+        agent.describe_on, agent._goal = True, "search youtube for lofi"
+        self.bus.set_frame(b"jpeg")
+        self.assertTrue(agent.describing({"ev": "result", "status": "done"}))
+        self.assertFalse(agent.describing({"ev": "result", "status": "ask_user"}))  # questions are read verbatim
+        agent._describe(lines, "Search results are shown")
+        self.assertEqual([lines.get(), lines.get()], [{"show": "Search results are shown"}, {"pcm": "AAAA", "rate": 24000}])
+        self.assertEqual(describer.describe.call_args.args[:3], (b"jpeg", "search youtube for lofi", "Search results are shown"))
+
+    def test_a_failed_description_still_says_the_result(self):
+        describer = Mock()
+        describer.describe.return_value = False
+        agent, lines = Agent(self.display.url, describer), queue.Queue()
+        self.bus.set_frame(b"jpeg")
+        agent._describe(lines, "Done.")
+        self.assertEqual([lines.get(), lines.get()], [{"show": "Done."}, {"say": "Done."}])
 
     def test_screen_is_the_latest_frame(self):
         self.assertIsNone(self.agent.screen())
@@ -110,6 +130,17 @@ class PageServerTests(unittest.TestCase):
                 return response.status
         except urllib.error.HTTPError as exc:
             return exc.code
+
+    def test_describe_toggle_needs_a_describer(self):
+        self.assertEqual(self.post("/describe", {"on": True}), 200)
+        self.assertTrue(self.agent.describe_on)
+        self.agent.describer = None
+        self.post("/describe", {"on": True})
+        self.assertFalse(self.agent.describe_on)
+
+    def test_talking_cuts_off_a_description(self):
+        self.post("/talk", {})
+        self.agent.describer.cancel.assert_called_once()
 
     def test_page_names_the_relay_port(self):
         with urllib.request.urlopen(self.base + "/", timeout=2) as response:

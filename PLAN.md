@@ -157,6 +157,6 @@ It never writes HID. Its only controls, all through the commit gate (§10):
 | `confirm(action_id, yes/no)` | answers an irreversible-action prompt; bound to that action and generation, so a late "yes" can't approve anything else |
 | `answer(question_id, text)` | replies to a planner `ask_user` |
 
-Built: `brain/voice/layer.py`. Talk = `submit_segment`, talking while busy = `interrupt`, and confirmations/answers are the next utterance (the race executor checks approval with Jev).
+Built: `brain/voice/layer.py`. Talk = `submit_segment`, talking while busy = `interrupt`, and confirmations/answers are the next utterance (the race executor checks approval with Jev). Later segments of one push-to-talk hold continue the same request ("go to youtube" … "and search lofi").
 
-Output: it subscribes to the agent **event stream** (`brain/events.py`, shared with the touch display) and narrates intent and results. Speech never blocks execution; output stops when the user speaks.
+Output: it subscribes to the agent **event stream** (`brain/events.py`, shared with the touch display) and narrates intent and results. Speech never blocks execution; output stops when the user speaks. A running request is never silent: "On it." after 2.5 s, then progress every 10 s, and deep mode announces itself. The page's **Describe** toggle (for blind users) has Gemini Live (`gemini-3.8-live`) describe the screen after each request, streamed as audio (`brain/voice/describe.py`).

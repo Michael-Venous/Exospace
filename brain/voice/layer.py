@@ -10,7 +10,9 @@ agent is busy sends POST /stop first. Later segments of the same hold continue t
 request ("go to youtube" ... "and search lofi", "actually go back"). Narration comes from the
 agent's event stream: questions (including irreversible-action confirmations) are
 always spoken, plan stages briefly, then the result; a request that runs silently gets
-"On it." and then a progress line every few seconds, so a hard task never leaves dead air. The page can also show the
+"On it." and then a progress line every few seconds, so a hard task never leaves dead air.
+With the page's Describe toggle on, Gemini Live describes the screen after each request
+instead of the bare result line (brain/voice/describe.py). The page can also show the
 target's live screen, relayed from the agent's GET /screen.jpg. This process never
 writes HID.
 
@@ -33,6 +35,8 @@ from importlib import resources
 from typing import Any
 
 from dotenv import load_dotenv
+
+from brain.voice.describe import DESCRIBE_MODEL, Describer
 
 DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=300&smart_format=true"
 KEEPALIVE_S = 15.0
@@ -74,9 +78,12 @@ def filler(quiet_s: float, spoken: bool) -> str | None:
 class Agent:
     """The agent's display server, reached as a local program (no Origin header)."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, describer: Describer | None = None) -> None:
         self.base = base_url.rstrip("/")
+        self.describer = describer
+        self.describe_on = False  # the page's Describe toggle
         self.busy = False
+        self._goal = ""
         self._said_at = 0.0  # monotonic time of the last line for the running request
         self._spoken = False  # anything said for it yet
         self._last = ""  # its last line: a result that repeats the final stage is said once
@@ -102,7 +109,7 @@ class Agent:
         if self.busy:
             self.post("/stop", {})
 
-    def follow(self, lines: queue.Queue[str]) -> None:
+    def follow(self, lines: queue.Queue[dict[str, Any]]) -> None:
         """Track busy state and queue narration from the agent's server-sent events, forever."""
         while True:
             try:
@@ -116,18 +123,33 @@ class Agent:
                         event = json.loads(raw[6:])
                         fresh = event.get("t", since) >= since
                         if event.get("ev") == "run":
-                            self.busy = True
+                            self.busy, self._goal = True, str(event.get("goal", ""))
                             self._said_at, self._spoken, self._last = time.monotonic(), False, ""
                         elif event.get("ev") == "result":
                             self.busy = False
                         line = narrate(event)
-                        if line and fresh:
+                        if not (line and fresh):
+                            continue
+                        if self.describing(event):
+                            threading.Thread(target=self._describe, args=(lines, line), daemon=True).start()
+                        else:
                             self._say(lines, line)
             except OSError:
                 threading.Event().wait(1.0)  # agent restarting; reconnect
 
 
-    def pace(self, lines: queue.Queue[str]) -> None:
+    def describing(self, event: dict[str, Any]) -> bool:
+        """A finished request is described; questions are always read word for word."""
+        return self.describe_on and self.describer is not None and event.get("ev") == "result" \
+            and event.get("status") in ("done", "fail")
+
+    def _describe(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
+        lines.put({"show": line})
+        jpeg = self.screen()
+        if not (jpeg and self.describer and self.describer.describe(jpeg, self._goal, line, lines.put)):
+            lines.put({"say": line})
+
+    def pace(self, lines: queue.Queue[dict[str, Any]]) -> None:
         """Fill silence while a request runs, forever."""
         while True:
             time.sleep(0.5)
@@ -135,14 +157,14 @@ class Agent:
             if line:
                 self._say(lines, line)
 
-    def _say(self, lines: queue.Queue[str], line: str) -> None:
+    def _say(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
         self._said_at, self._spoken = time.monotonic(), True
         if line != self._last:
             self._last = line
-            lines.put(line)
+            lines.put({"say": line})
 
 
-def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) -> ThreadingHTTPServer:
+def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[str, Any]]) -> ThreadingHTTPServer:
     """The voice page, narration stream and agent forwarding (no audio). Port 0 picks a free port."""
     page = resources.files("brain.voice").joinpath("layer.html").read_text().replace("__WS_PORT__", str(ws_port))
     hosts: set[str] = set()
@@ -177,7 +199,12 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
             body = json.loads(self.rfile.read(length)) if 0 < length <= MAX_BODY else {}
             try:
                 if self.path == "/talk":  # the user started speaking: barge in on running work
+                    if agent.describer is not None:
+                        agent.describer.cancel()
                     agent.interrupt()
+                elif self.path == "/describe":
+                    agent.describe_on = body.get("on") is True and agent.describer is not None
+                    return self._reply(200, json.dumps({"ok": True, "on": agent.describe_on}).encode())
                 elif self.path == "/segment":
                     text = str(body.get("text", "")).strip()
                     if not 0 < len(text) <= 500:
@@ -198,8 +225,8 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
             try:
                 while True:
                     try:
-                        line = lines.get(timeout=KEEPALIVE_S)
-                        self.wfile.write(b"data: " + json.dumps({"say": line}).encode() + b"\n\n")
+                        message = lines.get(timeout=KEEPALIVE_S)
+                        self.wfile.write(b"data: " + json.dumps(message).encode() + b"\n\n")
                     except queue.Empty:
                         self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
@@ -223,7 +250,7 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
 
 
 def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
-    lines: queue.Queue[str] = queue.Queue()
+    lines: queue.Queue[dict[str, Any]] = queue.Queue()
     threading.Thread(target=agent.follow, args=(lines,), name="agent-events", daemon=True).start()
     threading.Thread(target=agent.pace, args=(lines,), name="agent-pace", daemon=True).start()
     page_server(agent, port, ws_port, lines)
@@ -272,7 +299,9 @@ def main() -> int:
     if not key:
         print("Set DEEPGRAM_API_KEY in the project .env (see .env.example).", flush=True)
         return 1
-    serve(Agent(args.agent), args.port, args.ws_port, key)
+    gemini = os.environ.get("GEMINI_API_KEY", "")
+    describer = Describer(gemini, os.environ.get("DESCRIBE_MODEL") or DESCRIBE_MODEL) if gemini else None
+    serve(Agent(args.agent, describer), args.port, args.ws_port, key)
     return 0
 
 
