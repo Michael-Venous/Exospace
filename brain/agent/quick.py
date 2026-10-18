@@ -107,6 +107,10 @@ class QuickStart:
 
     def next_actions(self, image_jpeg: bytes, ctx: StepContext) -> Plan:
         if ctx.step == 1 and (actions := quick_actions(ctx.goal, ctx.profile.os)):
+            from brain.agent.jev_only import scroll_actions  # the pointer moves onto the page first
+
+            actions = [step for a in actions
+                       for step in (scroll_actions(a.dy, ctx.profile.input) if a.type == "scroll" else [a])]
             return Plan("Quick command: " + ", ".join(a.brief() for a in actions), actions, [])
         return self.inner.next_actions(image_jpeg, ctx)
 

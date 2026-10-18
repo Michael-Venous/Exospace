@@ -50,9 +50,41 @@ NEXT_CRITERIA = {
     "enter": "Press Enter to submit or confirm the text that was just typed.",
     "scroll_down": "Scroll down to reveal something the goal needs that is below the visible area.",
     "scroll_up": "Scroll up to reveal something the goal needs that is above the visible area.",
-    "stuck": "The next step needs reasoning, writing new text, information that isn't visible, a key other "
-             "than Enter, or the goal is unclear.",
+    "shortcut": "Press one standard key or keyboard shortcut other than Enter: New (a new note, document or "
+                "window), new or close tab, find, save, undo, copy, paste, go back, Escape, Tab, an arrow key...",
+    "stuck": "The next step needs reasoning, writing new text, information that isn't visible, or the goal "
+             "is unclear.",
 }
+SHORTCUT_QUESTION = "Which standard key or keyboard shortcut does the next step press?"
+SHORTCUT_CRITERIA = {
+    "new": "New: create a new note, document, file, message or window in the app in front",
+    "new_tab": "Open a new browser tab", "close_tab": "Close the current tab or document window",
+    "quit_app": "Quit the app in front", "find": "Find text on this page or document", "save": "Save",
+    "undo": "Undo", "redo": "Redo", "select_all": "Select all", "copy": "Copy", "cut": "Cut", "paste": "Paste",
+    "back": "Go back to the previous page", "forward": "Go forward to the next page",
+    "refresh": "Reload the page", "escape": "Escape: close a menu, dialog or search box",
+    "tab": "Tab: move to the next field", "backspace": "Backspace: delete the character before the cursor",
+    "delete": "Delete", "space": "Space bar", "up": "Up arrow", "down": "Down arrow", "left": "Left arrow",
+    "right": "Right arrow", "page_up": "Page up", "page_down": "Page down", "home": "Home", "end": "End",
+}
+_PLAIN_KEYS = {"escape": "ESC", "tab": "TAB", "backspace": "BACKSPACE", "delete": "DELETE", "space": "SPACE",
+               "up": "UP", "down": "DOWN", "left": "LEFT", "right": "RIGHT", "page_up": "PAGEUP",
+               "page_down": "PAGEDOWN", "home": "HOME", "end": "END"}
+_COMMAND_LETTERS = {"new": "N", "new_tab": "T", "close_tab": "W", "find": "F", "save": "S", "undo": "Z",
+                    "select_all": "A", "copy": "C", "cut": "X", "paste": "V"}
+# The only per-OS knowledge: which modifier carries the standard shortcuts, and a few that differ by OS.
+_OS_SHORTCUTS: dict[str, dict[str, tuple[str, ...]]] = {
+    "macos": {"redo": ("GUI", "SHIFT", "Z"), "quit_app": ("GUI", "Q"), "back": ("GUI", "LEFT"),
+              "forward": ("GUI", "RIGHT"), "refresh": ("GUI", "R")},
+    "windows": {"redo": ("CTRL", "Y"), "quit_app": ("ALT", "F4"), "back": ("ALT", "LEFT"),
+                "forward": ("ALT", "RIGHT"), "refresh": ("F5",)},
+    "linux": {"redo": ("CTRL", "SHIFT", "Z"), "quit_app": ("CTRL", "Q"), "back": ("ALT", "LEFT"),
+              "forward": ("ALT", "RIGHT"), "refresh": ("F5",)},
+    "chromeos": {"redo": ("CTRL", "SHIFT", "Z"), "back": ("ALT", "LEFT"), "forward": ("ALT", "RIGHT"),
+                 "refresh": ("CTRL", "R")},
+}
+SHORTCUT_GATE = 0.6  # the chosen shortcut's probability; below it the step fails instead of guessing a key
+SAME_SPOT = 20  # history coordinates are 0-1000: a click this close to the last one is the same click
 TEXT_QUESTION = ("Which text does the next step type? It must be copied word for word from the `goal`, without the "
                  "command words or field name around it. Choose none if the text must be computed, looked up, "
                  "translated or written rather than copied.")
@@ -111,6 +143,7 @@ class JevOnlyPlanner:
             "text": {"type": "choice", "instructions": TEXT_QUESTION,
                      "criteria": {"none": "No text to type."} | options},
             "replace": {"type": "noul", "instructions": REPLACE_QUESTION},
+            "shortcut": {"type": "choice", "instructions": SHORTCUT_QUESTION, "criteria": SHORTCUT_CRITERIA},
         }, run_id=ctx.run_id, step=ctx.step, state={"goal": ctx.goal, "executed_steps": ctx.history}, label="step",
            gates={"complete": COMPLETION_GATE, "present": self.jev.min_presence, "replace": GATE, "fits": GATE,
                   "app_present": self.jev.min_presence, "launcher": self.jev.min_presence})
@@ -120,7 +153,7 @@ class JevOnlyPlanner:
         if probability(answers["complete"].get("noul")) >= COMPLETION_GATE and not unsent:
             return Plan("Jev verified the completed goal", [Action("done", summary="Done.")], [])
         if "unchanged" in ctx.note:
-            return _fail("the last step had no visible effect")  # Jev would choose it again
+            return _fail("the last step had no visible effect", ctx.history)  # Jev would choose it again
         if routing:
             # Before the fits check: Jev can judge the open launcher itself as fitting and type the whole goal.
             search = self._search(answers, ctx, texts)
@@ -135,7 +168,7 @@ class JevOnlyPlanner:
             point = box_center(answers["target"], size, padded)
             sure = probability(answers["present"].get("noul"))
             if point is None or sure < NEAR_PRESENCE:
-                return _fail("its target isn't clearly visible")
+                return _fail("its target isn't clearly visible", ctx.history)
             # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
             # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
             # shortcuts). Keeping the zoom nearer the first box is a majority of the three looks.
@@ -150,13 +183,16 @@ class JevOnlyPlanner:
             agree = len(looks) == 2 and (all(box_contains(answers["target"], size, padded, p) for p in looks)
                                          or math.dist(*looks) < ZOOMS_AGREE)
             if not looks or sure < self.jev.min_presence and not agree:
-                return _fail("its target isn't clearly visible")
+                return _fail("its target isn't clearly visible", ctx.history)
             point = min(looks, key=lambda p: math.dist(p, point))
             actions.append(Action("click" if step == "fill" else step, x=point[0], y=point[1]))
         if step in ("type", "fill"):
             choice = answers["text"].get("choice")
             if choice not in {str(i) for i in range(len(texts))}:
-                return _fail("the text to type isn't in the request")
+                return _fail("the text to type isn't in the request", ctx.history)
+            if _is_the_request(texts[int(choice)], ctx.goal):
+                # "write a short note about my day": the request asks for new text, it doesn't dictate it.
+                return _fail("the request asks for text to be written, not typed word for word", ctx.history)
             if probability(answers["replace"].get("noul")) >= GATE and ctx.profile.os != "bios":
                 # Select-all only in a filled single-line box: in a document it would replace everything.
                 actions.append(Action("hotkey", keys=("GUI" if ctx.profile.os in ("macos", "ios") else "CTRL", "A")))
@@ -164,9 +200,19 @@ class JevOnlyPlanner:
         if step == "enter":
             actions.append(Action("hotkey", keys=("ENTER",)))
         if step in ("scroll_down", "scroll_up") and ctx.profile.os != "bios":  # firmware has no wheel
-            actions.append(Action("scroll", dy=5 if step == "scroll_down" else -5))
+            actions += scroll_actions(5 if step == "scroll_down" else -5, ctx.profile.input)
+        if step == "shortcut":
+            answer = answers["shortcut"]
+            keys = shortcut_keys(answer.get("choice"), ctx.profile.os)
+            if keys is None or _chosen_probability(answer) < SHORTCUT_GATE:
+                return _fail("it isn't sure which key the step needs", ctx.history)
+            actions.append(Action("hotkey", keys=keys))
         if not actions:
-            return _fail("it needs reasoning or content Jev can't supply")
+            return _fail("it needs reasoning or content Jev can't supply", ctx.history)
+        if _repeats(actions, ctx.history):
+            # The same click, text or key again right after it ran: a click on "1" twice typed "11" for "12",
+            # and Enter twice submitted twice. Never repeat input to find out whether it worked.
+            return _fail("it would repeat the step it just took", ctx.history)
         return Plan(f"Jev next step: {step}", actions, [])
 
     def _search(self, answers: dict, ctx: StepContext, texts: list[str]) -> Plan | None:
@@ -195,7 +241,7 @@ class JevOnlyPlanner:
             return Plan("Open the app launcher", [launcher], [])
         if ctx.history[-1] != WAIT.brief():  # the launcher, its results or the chosen app still appearing
             return Plan("Waiting for the app", [WAIT], [])
-        return _fail("no app suited to the request is visible")
+        return _fail("no app suited to the request is visible", ctx.history)
 
     def classify_os(self, image: bytes) -> OSName:
         answers, _, _ = self.jev.evaluate(image, {"os": {"type": "choice", "instructions": OS_PROMPT,
@@ -219,7 +265,66 @@ def spans(goal: str) -> list[str]:
     return [run for run in dict.fromkeys(runs) if run][:MAX_SPANS]
 
 
-def _fail(why: str) -> Plan:
+def shortcut_keys(choice: object, os: str) -> tuple[str, ...] | None:
+    """The keys for a SHORTCUT_CRITERIA choice on this OS, or None where it has none (phones, firmware)."""
+    if choice in _PLAIN_KEYS:
+        return (_PLAIN_KEYS[choice],)
+    if os in _OS_SHORTCUTS and choice in _OS_SHORTCUTS[os]:
+        return _OS_SHORTCUTS[os][choice]
+    if os in _OS_SHORTCUTS and choice in _COMMAND_LETTERS:
+        return ("GUI" if os == "macos" else "CTRL", _COMMAND_LETTERS[choice])
+    return None
+
+
+def scroll_actions(dy: int, input_mode: str) -> list[Action]:
+    """A scroll, first moving the pointer to the middle of the screen with a mouse: a Mac scrolls whatever is
+    under the pointer, so one resting on a toolbar or the dock scrolls nothing ("no visible effect")."""
+    hover = [Action("skill", name="hover", args={"x": 0.5, "y": 0.5})] if input_mode == "mouse" else []
+    return hover + [Action("scroll", dy=dy)]
+
+
+def _chosen_probability(answer: dict) -> float:
+    value = (answer.get("probabilities") or {}).get(answer.get("choice"), answer.get("confidence", 1.0))
+    try:
+        return probability(value)
+    except ValueError:
+        return 0.0
+
+
+def _words(text: str) -> list[str]:
+    return re.sub(r"[^\w\s]", " ", text.lower()).split()
+
+
+def _is_the_request(text: str, goal: str) -> bool:
+    """True when the text to type is (nearly) the whole request: an instruction, not dictated words."""
+    request = _words(goal.splitlines()[-1])
+    return len(request) >= 3 and len(_words(text)) >= len(request) - 1
+
+
+_POINT = re.compile(r"^(click|double_click|right_click)\((\d+),(\d+)\)$")
+
+
+def _repeats(actions: list[Action], history: list[str]) -> bool:
+    """True when these actions are the same input as the last ones that ran (a click within SAME_SPOT, the same
+    text or the same keys). Scrolls, waits and pointer moves may repeat."""
+    inputs = [a.brief() for a in actions if a.type not in ("scroll", "skill")]
+    recent = [h for h in history if not h.startswith(("scroll(", "skill("))][-len(inputs):] if inputs else []
+    if not inputs or len(recent) < len(inputs):
+        return False
+    for new, old in zip(inputs, recent):
+        a, b = _POINT.match(new), _POINT.match(old)
+        if a and b:
+            if a[1] != b[1] or abs(int(a[2]) - int(b[2])) > SAME_SPOT or abs(int(a[3]) - int(b[3])) > SAME_SPOT:
+                return False
+        elif new != old:
+            return False
+    return True
+
+
+def _fail(why: str, done: list[str] | tuple[str, ...] = ()) -> Plan:
+    """Fail, saying what already ran: "typed it, pressed Enter, then couldn't confirm" reads very differently
+    from "did nothing" to someone who can't see the screen."""
+    so_far = f" Done so far: {', '.join(done[-4:])}." if done else ""
     return Plan("Jev can't take the next step", [Action(
-        "fail", reason=f"Jev alone can't take the next step: {why}. "
+        "fail", reason=f"Jev alone can't take the next step: {why}.{so_far} "
                        "The language-model planner (EXECUTOR=race) can.")], [])

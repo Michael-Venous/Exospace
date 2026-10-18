@@ -206,17 +206,18 @@ class JevOnlyTests(unittest.TestCase):
 
     def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", zoom_present=.9,
-             zooms=None):
+             zooms=None, shortcut="new", shortcut_p=.9, input="mouse"):
         step = {"complete": {"noul": complete}, "next": {"choice": next}, "present": {"noul": present},
                 "target": BOX, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
-                "app": {"box": {"left": .1, "right": .5, "top": .6, "bottom": .7}}}
+                "app": {"box": {"left": .1, "right": .5, "top": .6, "bottom": .7}},
+                "shortcut": {"choice": shortcut, "probabilities": {shortcut: shortcut_p}}}
         # The zoomed second look boxes the middle of its crop: the click stays where the first box was.
         zoom = {"present": {"noul": zoom_present}, "target": {"box": {"left": .4, "right": .6, "top": .4, "bottom": .6}}}
         zooms = iter(zooms or [zoom, zoom]).__next__  # `next` is the step choice here
         self.planner.jev.evaluate.side_effect = lambda image, questions, **kw: (
             step if "next" in questions else zooms(), (400, 300), (400, 300))
-        profile = DeviceProfile(os, Rect(0, 0, 400, 300), "mouse", 1)
+        profile = DeviceProfile(os, Rect(0, 0, 400, 300), input, 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id="r")
         return self.planner.next_actions(jpeg(), ctx).actions
 
@@ -278,6 +279,46 @@ class JevOnlyTests(unittest.TestCase):
         actions = self.plan(goal, next="fill", text=str(spans(goal).index("Morgan")))
         self.assertEqual([a.type for a in actions], ["click", "type_text"])
         self.assertEqual(self.step("enter it in Name", next="fill", present=.3).type, "fail")
+
+    # Live session 2026-10-18 on a Mac: each test below is a failure seen there.
+    def test_new_note_presses_the_os_new_shortcut(self):
+        self.assertEqual(self.step("create a new note", next="shortcut", os="macos").brief(), "hotkey(GUI+N)")
+        self.assertEqual(self.step("create a new note", next="shortcut", os="windows").brief(), "hotkey(CTRL+N)")
+        self.assertEqual(self.step("quit it", next="shortcut", shortcut="quit_app", os="windows").brief(),
+                         "hotkey(ALT+F4)")
+        self.assertEqual(self.step("press escape", next="shortcut", shortcut="escape", os="android").brief(),
+                         "hotkey(ESC)")
+
+    def test_an_unsure_or_unavailable_shortcut_fails(self):
+        self.assertEqual(self.step("do the thing", next="shortcut", shortcut_p=.3).type, "fail")
+        self.assertEqual(self.step("new note", next="shortcut", os="android").type, "fail")  # phones: plain keys only
+
+    def test_the_same_click_twice_in_a_row_fails(self):
+        # "12 times eight": the "1" key clicked twice typed 118.
+        self.assertEqual(self.step("type 12 times eight", history=["click(300,300)"]).type, "fail")
+        self.assertEqual(self.step("type 12 times eight", history=["click(300,300)", "click(500,700)"]).type, "click")
+
+    def test_enter_twice_in_a_row_fails(self):
+        history = ["type_text('dogs')", "hotkey(ENTER)"]
+        self.assertEqual(self.step("search dogs and press enter", next="enter", history=history).type, "fail")
+
+    def test_the_request_itself_is_never_typed(self):
+        goal = "Write a short note about my day."
+        self.assertEqual(self.step(goal, next="type", text=str(spans(goal).index(goal.rstrip(".")))).type, "fail")
+        dictated = "Type the sentence mitochondria is the powerhouse of the cell."
+        text = str(spans(dictated).index("mitochondria is the powerhouse of the cell"))
+        self.assertEqual(self.step(dictated, next="type", text=text).type, "type_text")
+
+    def test_scrolling_moves_the_pointer_onto_the_page_first(self):
+        actions = self.plan("scroll down to the reviews", next="scroll_down")
+        self.assertEqual([a.brief() for a in actions], ["skill(hover {'x': 0.5, 'y': 0.5})", "scroll(5)"])
+        touch = self.plan("scroll down to the reviews", next="scroll_down", input="touch")
+        self.assertEqual([a.brief() for a in touch], ["scroll(5)"])
+
+    def test_a_failure_says_what_already_ran(self):
+        history = ["click(530,180)", "type_text('shopping list')", "hotkey(ENTER)"]
+        reason = self.step("type shopping list and press enter", next="stuck", history=history).reason
+        self.assertIn("Done so far: click(530,180), type_text('shopping list'), hotkey(ENTER).", reason)
 
     def test_spans_are_unique_and_unquoted(self):
         self.assertEqual(spans('enter "a b" here.'), ["enter", "a", "b", "here", 'enter "a', 'a b', 'b" here',

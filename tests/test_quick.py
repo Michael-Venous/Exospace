@@ -109,3 +109,14 @@ class QuickStartTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class QuickScrollTests(unittest.TestCase):
+    def test_a_quick_scroll_moves_the_pointer_onto_the_page_first(self):
+        from unittest.mock import Mock
+        from brain.agent.executor import StepContext
+        from brain.agent.quick import QuickStart
+        from brain.types import DeviceProfile, Rect
+        ctx = StepContext("scroll down", DeviceProfile("macos", Rect(0, 0, 400, 300), "mouse", 1), Mock(), [], 1, 10)
+        plan = QuickStart(Mock()).next_actions(b"img", ctx)
+        self.assertEqual([a.brief() for a in plan.actions], ["skill(hover {'x': 0.5, 'y': 0.5})", "scroll(5)"])
