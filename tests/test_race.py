@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from brain.agent.executor import Plan, StepContext
-from brain.agent.jev_only import JevOnlyPlanner, spans as goal_spans
+from brain.agent.jev_only import LOOK_AGAIN, JevOnlyPlanner, spans as goal_spans
 from brain.agent.memory import Memory
 from brain.agent.race import RaceExecutor
 from brain.agent.triage import ZOOM_WINDOW, Triage, refine, spans, triage, zoom_window
@@ -389,7 +389,8 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))
 
     def test_unclear_target_fails_instead_of_guessing(self):
-        self.assertEqual(self.step("click the other one", present=.4).type, "skill")  # it may still be drawing
+        self.assertEqual(self.step("click the other one", present=.4), LOOK_AGAIN)  # it may still be drawing
+        self.assertEqual(self.step("click the other one", history=[LOOK_AGAIN.brief()] * 3, present=.4).type, "fail")
         self.assertEqual(self.step("click the other one", history=["skill(wait {})"] * 3, present=.4).type, "fail")
         self.assertEqual(self.step("click the other one", zoom_present=.2, history=["skill(wait {})"] * 3).type, "fail")  # lost on the second look
 
@@ -480,6 +481,9 @@ class JevOnlyTests(unittest.TestCase):
 
     def test_text_the_request_does_not_give_word_for_word_is_left_to_flash(self):
         self.assertEqual(self.step("work out 12 times 9", composed=.9).type, "fail")
+        self.assertEqual(self.step("search for cats", composed=.9, history=["hotkey(ENTER)"]), LOOK_AGAIN)  # loading
+        self.assertEqual(self.step("search for cats", composed=.9, history=["hotkey(ENTER)", LOOK_AGAIN.brief()]).type,
+                         "fail")
 
     def test_step_with_no_visible_effect_fails(self):
         self.assertEqual(self.step("open it", note="Screen unchanged; try something different.").type, "fail")

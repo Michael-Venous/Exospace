@@ -83,6 +83,10 @@ STEP_CONTROL = "the one control that the next step of the `goal` acts on, after 
 # Peter's chat already open) and lost Discord's message bar (present 0.21-0.25, 2026-10-18).
 FILL_CONTROL = "the input field that the next step of the `goal` types {} into"
 WAIT = Action("skill", name="wait")
+# Looking again needs only a moment: a finished page never changes, and the full wait burned 10 s of the 20 s deadline
+# on YouTube's settled results (2026-10-18).
+LOOK_AGAIN = Action("skill", name="wait", args={"seconds": 2.5})
+WAITS = {WAIT.brief(), LOOK_AGAIN.brief()}
 LOADING = ("Is a page or app in `screen` still loading: a browser's stop (X) button where reload would be, "
            "a spinner, a progress bar, or a page only partly drawn?")
 MAX_WAITS = 3  # a page that never settles (lazy-loading feeds) still gets its next step
@@ -147,13 +151,21 @@ class JevOnlyPlanner:
         if probability(answers["question"].get("noul")) >= GATE:
             # Jev called "what is this page about?" complete and said "Done." with no answer.
             return _fail("the request asks for an answer, not an action")
+        waits = next((i for i, a in enumerate(reversed(ctx.history)) if a not in WAITS), len(ctx.history))
+
+        def hand_off(why: str) -> Plan:
+            # Judged on the frame of a page still loading, a hand-off is looked at again first: right after YouTube's
+            # Enter, "composed" scored 0.58 and "next" was "stuck" for "search for embedded systems videos" (2026-10-18).
+            if ctx.history and not waits:
+                return Plan("Looking again before handing off", [LOOK_AGAIN], [])
+            return _fail(why)
+
         if probability(answers["composed"].get("noul")) >= GATE:
             # "work out 12 times 9": Jev pressed keypad keys one per step and missed one (41.7 s; Flash typed
             # "12*9=" in one step, 12.2 s).
-            return _fail("the rest needs text the request doesn't give word for word")
+            return hand_off("the rest needs text the request doesn't give word for word")
         # A click that starts loading a page leaves the old page on screen, unchanged, for about a second: acting
         # on it typed into Google's box while YouTube loaded, and then the typed spaces scrolled YouTube.
-        waits = next((i for i, a in enumerate(reversed(ctx.history)) if a != WAIT.brief()), len(ctx.history))
         if probability(answers["loading"].get("noul")) >= GATE and waits < MAX_WAITS:
             return Plan("Waiting for the page", [WAIT], [])
         # Jev choosing no next step counts too: two sent Discord chats scored "complete" 0.29 and 0.59 but "done"
@@ -178,7 +190,7 @@ class JevOnlyPlanner:
         step = answers["next"].get("choice")
         # A screenshot can't show focus: typing holds only right after a click put it there, else the target is
         # clicked first. YouTube's unfocused search box took "type" and the query went nowhere (2026-10-18).
-        if step == "type" and not next((a for a in reversed(ctx.history) if a != WAIT.brief()), "").startswith(
+        if step == "type" and not next((a for a in reversed(ctx.history) if a not in WAITS), "").startswith(
                 ("click(", "double_click(")):
             step = "fill"
         choice = answers["text"].get("choice")
@@ -190,7 +202,7 @@ class JevOnlyPlanner:
             # search box 0.38 sure with loading 0.46; the third Short 0.82 with the zooms apart, 0.86 on a later
             # screen (2026-10-18).
             if waits < MAX_WAITS:
-                return Plan("Looking again for the target", [WAIT], [])
+                return Plan("Looking again for the target", [LOOK_AGAIN], [])
             return _fail("its target isn't clearly visible")
 
         actions: list[Action] = []
@@ -249,7 +261,7 @@ class JevOnlyPlanner:
             return Plan("Jev can't confirm the request is finished",
                         [Action("ask_user", question="That looks finished, but I can't confirm it. Is it?")], [])
         if not actions:
-            return _fail("it needs reasoning or content Jev can't supply")
+            return hand_off("it needs reasoning or content Jev can't supply")
         return Plan(f"Jev next step: {step}", actions, [])
 
     def _text_only(self, image: bytes, ctx: StepContext, state: dict, text: str) -> str:

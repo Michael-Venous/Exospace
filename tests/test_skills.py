@@ -48,7 +48,9 @@ class SkillTests(unittest.TestCase):
 
     def test_wait_only_watches_the_screen(self):
         run_skill("wait", {}, self.profile("windows"), self.controller)
-        self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change()])
+        run_skill("wait", {"seconds": 2.5}, self.profile("windows"), self.controller)
+        self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change(None),
+                                                        unittest.mock.call.wait_for_change(2.5)])
 
     def test_unsupported_has_no_input(self):
         for os in ("android", "ios", "unknown"):

@@ -63,7 +63,7 @@ def run_skill(
     """Run a named skill (hover, wait, open_app), checking cancellation between stages."""
     controller.cancel.check()
     if name == "wait":
-        controller.wait_for_change()
+        controller.wait_for_change(float(args["seconds"]) if args.get("seconds") else None)
         return
     if name == "hover":
         if profile.input == "touch":
