@@ -15,7 +15,7 @@ from typing import Literal
 import cv2
 import numpy as np
 
-from brain.agent.jev import JevVision, probability
+from brain.agent.jev import IRREVERSIBLE_KINDS, JevVision, probability
 from brain.cancel import CancelToken
 
 Mode = Literal["act", "plan", "none", "scroll", "launch"]
@@ -52,12 +52,11 @@ GESTURE_CRITERIA = {
                     "icon or row in a desktop file-manager window.",
     "right_click": "The user asks for a right-click, a context menu, or more options for an item.",
 }
-IRREVERSIBLE_KINDS = ("do something irreversible or high-impact: "
-                "sending or posting a message, deleting or emptying data, purchasing or paying, submitting a "
-                "form, formatting, changing and saving firmware/BIOS settings, or a public action on the user's "
-                "account (starring, liking, following, subscribing, voting, sharing)? Opening, navigating, "
-                "selecting, typing a draft, adding to or removing from a cart, and creating something new are not.")
 IRREVERSIBLE = "Would carrying out the `utterance` on this screen " + IRREVERSIBLE_KINDS
+CORRECTION_SCOPE = (" The `utterance` corrects or continues the `earlier_request`: judge the whole request as "
+                    "corrected, not the `utterance` alone.")
+HELD_STEP = " The user was asked to approve this `held_step` of it."
+NOT_APPROVAL = " A question, a hesitation or a change to it is not an approval."
 
 
 @dataclass(frozen=True)
@@ -72,7 +71,7 @@ class Triage:
 
 
 def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
-           run_id: str = "", step: int = 0) -> Triage:
+           earlier: str = "", run_id: str = "", step: int = 0) -> Triage:
     names = spans(utterance)
     questions = {
         "intent": {"type": "choice", "criteria": INTENT_CRITERIA, "instructions":
@@ -82,7 +81,7 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
                     "Is there a control visible in `screen` that the `utterance` asks to click, tap or open right now?"},
         "unique": {"type": "noul", "instructions":
                    "Does the `utterance` identify exactly one visible control in `screen`, with no ambiguity?"},
-        "irreversible": {"type": "noul", "instructions": IRREVERSIBLE},
+        "irreversible": {"type": "noul", "instructions": IRREVERSIBLE + (CORRECTION_SCOPE if earlier else "")},
         "direction": {"type": "choice", "criteria": {"down": "Down, further along, the next page.",
                                                      "up": "Up, back towards the top, the previous page."},
                       "instructions": "Which way does the `utterance` ask to scroll, if it asks to scroll?"},
@@ -97,7 +96,8 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
                    "The single visible control in `screen` that the `utterance` asks to click, tap or open "
                    "right now. For an item in a list or grid, locate the whole item."},
     }
-    answers, size, padded = jev.evaluate(jpeg, questions, run_id=run_id, step=step, state={"utterance": utterance})
+    state = {"utterance": utterance, **({"earlier_request": earlier} if earlier else {})}
+    answers, size, padded = jev.evaluate(jpeg, questions, run_id=run_id, step=step, state=state)
     irreversible = probability(answers["irreversible"].get("noul")) >= GATE
     choice = answers["intent"].get("choice")
     if choice == "no_action":
@@ -176,16 +176,18 @@ def _look(jev: JevVision, jpeg: bytes, state: dict, control: str, point: tuple[f
 Reply = Literal["approve", "decline", "other"]
 
 
-def answer_to_pending(jev: JevVision, jpeg: bytes, pending: str, reply: str, *,
+def answer_to_pending(jev: JevVision, jpeg: bytes, pending: str, reply: str, *, held: str = "",
                       run_id: str = "", step: int = 0) -> Reply:
-    """How the user's reply answers a pending irreversible request: approve, decline, or
-    neither (a new command or a correction, which is then handled as its own request)."""
-    state = {"pending_request": pending, "reply": reply}
+    """How the user's reply answers a pending irreversible request, or the `held` step of it the
+    user was asked about: approve, decline, or neither (a new command or a correction, which is
+    then handled as its own request)."""
+    state = {"pending_request": pending, "reply": reply, **({"held_step": held} if held else {})}
+    scope = HELD_STEP if held else ""
     answers, _, _ = jev.evaluate(jpeg, {
-        "approve": {"type": "noul", "instructions":
-                    "Does the user's `reply` clearly approve carrying out the `pending_request`?"},
+        "approve": {"type": "noul", "instructions": "Does the user's `reply` clearly approve carrying out the "
+                    "`pending_request`?" + scope + (NOT_APPROVAL if held else "")},
         "decline": {"type": "noul", "instructions":
-                    "Does the user's `reply` refuse, cancel or say no to the `pending_request`?"},
+                    "Does the user's `reply` refuse, cancel or say no to the `pending_request`?" + scope},
     }, run_id=run_id, step=step, state=state)
     if probability(answers["approve"].get("noul")) >= GATE:
         return "approve"

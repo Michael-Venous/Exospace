@@ -15,10 +15,11 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from brain.agent.executor import Plan, StepContext
-from brain.agent.jev import COMPLETION_QUESTION, JevVision, probability
+from brain.agent.jev import COMPLETION_QUESTION, IRREVERSIBLE_KINDS, JevVision, probability
 from brain.agent.triage import GATE, box_center, box_contains, refine, spans
 from brain.skills import OPEN_APP_KEYS
 from brain.types import Action
@@ -56,6 +57,7 @@ QUESTION = ("Does the `goal` ask for information, an answer or an explanation, r
 COMPOSED = ("Does what remains of the `goal`, after the `executed_steps`, need text, numbers or an expression "
             "that the `goal` doesn't contain word for word, to be computed, translated or composed?")
 STEP_CONTROL = "the one control that the next step of the `goal` acts on, after the `executed_steps`"
+NEXT_IRREVERSIBLE = "Would the next step of the `goal`, after the `executed_steps`, " + IRREVERSIBLE_KINDS
 WAIT = Action("skill", name="wait")
 # Race's COMPLETION_GATE (0.3) let two unfinished goals through here, at 0.57 and 0.63 (2026-10-18: Google
 # results for "go to Wikipedia", a typed search never sent); finished ones scored 0.68-0.89.
@@ -70,8 +72,9 @@ FAILED = "Jev can't take the next step"
 
 
 class JevOnlyPlanner:
-    def __init__(self, jev: JevVision) -> None:
+    def __init__(self, jev: JevVision, approved_run: Callable[[StepContext], bool] | None = None) -> None:
         self.jev = jev
+        self.approved_run = approved_run
         self.routed: str | None = None  # the run whose app Jev has seen can do its goal
 
     def acknowledge(self, executed: bool) -> None:
@@ -88,7 +91,9 @@ class JevOnlyPlanner:
                  "app_name": {"type": "choice", "instructions": APP_NAME,
                               "criteria": {"none": "The goal names no app or kind of app."} | options},
                  "launcher": {"type": "noul", "instructions": LAUNCHER_OPEN}} if routing else {}
-        answers, size, padded = self.jev.evaluate(image, route | {
+        guard = self.approved_run is not None and not self.approved_run(ctx)
+        irreversible = {"irreversible": {"type": "noul", "instructions": NEXT_IRREVERSIBLE}} if guard else {}
+        answers, size, padded = self.jev.evaluate(image, route | irreversible | {
             "complete": {"type": "noul", "instructions": COMPLETION_QUESTION},
             "question": {"type": "noul", "instructions": QUESTION},
             "composed": {"type": "noul", "instructions": COMPOSED},
@@ -165,6 +170,8 @@ class JevOnlyPlanner:
             actions.append(Action("scroll", dy=5 if step == "scroll_down" else -5))
         if not actions:
             return _fail("it needs reasoning or content Jev can't supply")
+        if guard and probability(answers["irreversible"].get("noul")) >= GATE:
+            return Plan("Irreversible step needs approval", [], [], held=f'the next step of "{ctx.goal.splitlines()[-1]}"')
         return Plan(f"Jev next step: {step}", actions, [])
 
     def _search(self, answers: dict, ctx: StepContext, texts: list[str]) -> Plan | None:
