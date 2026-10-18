@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import probability
+from brain.agent.jev_first import JevFirstPlanner
 from brain.agent.jev_flash import COMPLETION_GATE, JevFlashExecutor
 from brain.agent.triage import GATE, answer_to_pending, triage
 from brain.cancel import Cancelled, CancelToken
@@ -39,7 +40,7 @@ class RaceExecutor:
     image_side = JevFlashExecutor.image_side
 
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
-        self.planner = JevFlashExecutor(cfg, cancel)
+        self.planner = JevFirstPlanner(cfg, cancel) if cfg.jev_first else JevFlashExecutor(cfg, cancel)
         self.jev = self.planner.jev
         self.cancel = cancel
         # One worker: a speculative plan for an earlier segment always finishes before

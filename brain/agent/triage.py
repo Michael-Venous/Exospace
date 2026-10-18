@@ -103,7 +103,7 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
         # step, done there by phrase rules); its plan for what follows keeps running meanwhile.
         return Triage("launch", None, irreversible, app=names[int(app)])
     present = min(probability(answers["present"].get("noul")), probability(answers["unique"].get("noul")))
-    point = _box_center(answers["target"], size, padded)
+    point = box_center(answers["target"], size, padded)
     if choice != "act_now" or present < GATE or point is None:
         return Triage("plan", None, irreversible)
     cancel.check()
@@ -113,40 +113,42 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
     return Triage("act", refined, irreversible, gesture) if refined else Triage("plan", None, irreversible)
 
 
-def spans(utterance: str) -> list[str]:
+def spans(utterance: str, limit: int = MAX_SPANS) -> list[str]:
     """Each run of whole words in the utterance without wrapping quotes or punctuation, shortest first
     (from EXECUTOR=jev: whole runs bind a name better than separate words)."""
     words = list(re.finditer(r"\S+", utterance))
     runs = (utterance[words[a].start():words[a + n].end()].strip("\"'“”‘’,;.!?")
             for n in range(len(words)) for a in range(len(words) - n))
-    return [run for run in dict.fromkeys(runs) if run][:MAX_SPANS]
+    return [run for run in dict.fromkeys(runs) if run][:limit]
 
 
-def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], *,
-           run_id: str = "", step: int = 0) -> tuple[float, float] | None:
+UTTERANCE_CONTROL = "the control the `utterance` asks to click, tap or open"
+
+
+def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], *, run_id: str = "",
+           step: int = 0, state: dict | None = None, control: str = UTTERANCE_CONTROL) -> tuple[float, float] | None:
     """Re-locate `target` in an enlarged crop around `point`, then in a tighter one around that;
     None if Jev no longer sees it. On 49 OCR-labelled targets (Blender, Wikipedia, KCalc, GitHub)
     the point landed in the target 4 times from the full screen, 28 after one zoom and 35 after
     both (a median of three zooms: 27)."""
-    coarse = _look(jev, jpeg, target, point, ZOOM_WINDOW, run_id, step)
+    state = state or {"utterance": target}
+    coarse = _look(jev, jpeg, state, control, point, ZOOM_WINDOW, run_id, step)
     if coarse is None:
         return None
-    return _look(jev, jpeg, target, coarse, FINE_WINDOW, run_id, step) or coarse
+    return _look(jev, jpeg, state, control, coarse, FINE_WINDOW, run_id, step) or coarse
 
 
-def _look(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], window: float,
+def _look(jev: JevVision, jpeg: bytes, state: dict, control: str, point: tuple[float, float], window: float,
           run_id: str, step: int) -> tuple[float, float] | None:
     crop, (x0, y0, x1, y1) = _crop_around(jpeg, point, window)
     questions = {
         "present": {"type": "noul", "instructions":
-                    "This is a zoomed-in part of a screen. Is the control the `utterance` asks to click, "
-                    "tap or open visible here?"},
+                    f"This is a zoomed-in part of a screen. Is {control} visible here?"},
         "target": {"type": "box", "instructions":
-                   "This is a zoomed-in part of a screen. Locate exactly the control the `utterance` asks "
-                   "to click, tap or open."},
+                   f"This is a zoomed-in part of a screen. Locate exactly {control}."},
     }
-    answers, size, padded = jev.evaluate(crop, questions, run_id=run_id, step=step, state={"utterance": target})
-    local = _box_center(answers["target"], size, padded)
+    answers, size, padded = jev.evaluate(crop, questions, run_id=run_id, step=step, state=state)
+    local = box_center(answers["target"], size, padded)
     if local is None or probability(answers["present"].get("noul")) < GATE:
         return None
     return x0 + local[0] * (x1 - x0), y0 + local[1] * (y1 - y0)
@@ -173,7 +175,18 @@ def answer_to_pending(jev: JevVision, jpeg: bytes, pending: str, reply: str, *,
     return "other"
 
 
-def _box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float] | None:
+def box_contains(answer: dict, size: tuple[int, int], padded: tuple[int, int], point: tuple[float, float]) -> bool:
+    """Whether a box answer contains `point` (0-1 within the image)."""
+    box = answer.get("box") or {}
+    try:
+        left, right, top, bottom = (probability(box.get(k)) for k in ("left", "right", "top", "bottom"))
+    except ValueError:
+        return False
+    (w, h), (pw, ph) = size, padded
+    return left * pw / w <= point[0] <= right * pw / w and top * ph / h <= point[1] <= bottom * ph / h
+
+
+def box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float] | None:
     box = answer.get("box") or {}
     try:
         left, right, top, bottom = (probability(box.get(k)) for k in ("left", "right", "top", "bottom"))
