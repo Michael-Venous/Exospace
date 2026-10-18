@@ -46,7 +46,9 @@ from brain.agent.quick import spoken_commands
 from brain.types import TERMINAL_ACTIONS
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
-DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=300&smart_format=true"
+# A 200 ms pause ends a segment: the short break after "open chrome" in "open chrome and search cats" is
+# enough, so Chrome opens while the user is still talking.
+DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=200&smart_format=true"
 KEEPALIVE_S = 15.0
 MAX_BODY = 4096
 ACK_S = 2.5  # a request still running this long with nothing said gets "On it."

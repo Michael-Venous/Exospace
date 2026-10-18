@@ -90,6 +90,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(rows[-1]["success"], "1")
         self.assertEqual(len(rows), 3)
 
+    def test_words_said_mid_run_join_the_request_at_the_next_step(self):
+        goals = []
+        executor = Mock()
+        executor.next_actions.side_effect = lambda image, ctx: goals.append(ctx.goal) or (
+            Plan("type", [Action("type_text", text="x")], []) if len(goals) == 1 else
+            Plan("verified", [Action("done", summary="Searched")], []))
+        words = iter(["", "and search for cats"])
+        agent = Agent(executor, self.controller, self.memory, self.telemetry, max_steps=8,
+                      more_words=lambda: next(words, None))
+        self.assertEqual(agent.run("open chrome", self.profile).status, "done")
+        self.assertEqual(goals, ["open chrome", "open chrome\nUser correction: and search for cats"])
+        self.assertEqual(agent.goal, "open chrome\nUser correction: and search for cats")
+        self.assertEqual(self.hid.commands[0], {"op": "type", "text": "x"})  # the first step was not cancelled
+
     def test_complex_goal_acknowledges_before_planning_and_refreshes_screen(self):
         self.fast.next_actions.side_effect = [
             Plan("complex", [], [], needs_planner=True, message="I'll draft the invite"),

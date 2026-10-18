@@ -41,10 +41,13 @@ class Agent:
                  on_status: Callable[[str], None] = lambda message: None,
                  events: EventBus | None = None,
                  reconnect: Callable[[str], DeviceProfile | None] | None = None,
-                 stall_s: float = STALL_S, deadline_s: float | None = None) -> None:
+                 stall_s: float = STALL_S, deadline_s: float | None = None,
+                 more_words: Callable[[], str | None] = lambda: None) -> None:
         """`reconnect(reason)` waits for the target to return and gives its new profile
         (None if unchanged), or raises Cancelled; without it a disconnect ends the run. `deadline_s` cancels a
-        run still going after that many seconds."""
+        run still going after that many seconds. `more_words()` gives what the user said since, in the same
+        breath, or None: it joins the running request at the next step instead of cancelling it
+        ("open chrome" ... "no, firefox")."""
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
@@ -53,6 +56,8 @@ class Agent:
         self._shown_scores: object = None
         self.reconnect = reconnect
         self.stall_s, self.deadline_s = stall_s, deadline_s
+        self.more_words = more_words
+        self.goal = ""  # the running request, with any words that joined it
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
@@ -79,6 +84,13 @@ class Agent:
         try:
             progress_at = time.monotonic()
             for step in range(1, self.max_steps + 1):
+                token.check()  # words said after a stop belong to the next run, not this one
+                extra = self.more_words()
+                if extra:
+                    goal = f"{goal}\nUser correction: {extra}"
+                    self.memory.add_turn("user", extra)
+                    progress_at = time.monotonic()  # new words: the request itself moved on
+                self.goal = goal
                 override = getattr(self.executor, "stall_s", None)  # deep mode allows slower steps
                 stall_s = override if isinstance(override, (int, float)) and override else self.stall_s
                 if stall_s and time.monotonic() - progress_at > stall_s:

@@ -131,7 +131,8 @@ def main(argv: list[str] | None = None) -> int:
 
             agent = Agent(executor, controller, Memory.load(cfg.session_path),
                           Telemetry(cfg.bench_csv, args.config_name or cfg.executor), args.max_steps, status,
-                          bus, reconnect, deadline_s=DEADLINE_S if cfg.executor == "jev" else None)
+                          bus, reconnect, deadline_s=DEADLINE_S if cfg.executor == "jev" else None,
+                          more_words=lambda: _more_words(commands))
             previous_goal = ""
             correction = False
             pointed: tuple[float, float] | None = None
@@ -194,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
                         token.sleep(2)
                     result = agent.run(goal, profile, args.task_id)
                     status(f"{result.status}: {result.message}")
-                    previous_goal = goal
+                    previous_goal = agent.goal or goal
                     # Spoken or page requests after an interruption are new ones (the voice layer interrupts
                     # whenever the user talks); only an answer to the agent's question continues a goal.
                     correction = result.status == "ask_user" or (bus is None and result.status == "cancelled")
@@ -216,6 +217,14 @@ def _report_failure(status: Callable[[str], None], bus: EventBus | None, message
     status(f"fail: {message}")
     if bus is not None:
         bus.publish("result", status="fail", message=message, steps=0, total_s=0)
+
+
+def _more_words(commands: queue.Queue[Command]) -> str | None:
+    """The user's next words if they continue the running request (same push-to-talk hold), else None."""
+    with commands.mutex:
+        if commands.queue and commands.queue[0].kind == "goal" and commands.queue[0].continues:
+            return commands.queue.popleft().text
+    return None
 
 
 def _next_command(commands: queue.Queue[Command]) -> Command:

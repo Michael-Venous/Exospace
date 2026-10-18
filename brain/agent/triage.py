@@ -1,4 +1,4 @@
-"""Jev triage for one spoken segment: act now, plan, or no action (bench/arch study 1, 6).
+"""Jev triage for one spoken segment: act now, launch an app, scroll, plan, or no action (bench/arch study 1, 6).
 
 One Jev call classifies the utterance against the current screen, locates the target
 it names, and flags irreversible requests. A second, zoomed call refines the target
@@ -7,6 +7,8 @@ point (fixed every near miss on small targets in the study). No regex or phrase 
 
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -16,7 +18,7 @@ import numpy as np
 from brain.agent.jev import JevVision, probability
 from brain.cancel import CancelToken
 
-Mode = Literal["act", "plan", "none", "scroll"]
+Mode = Literal["act", "plan", "none", "scroll", "launch"]
 Gesture = Literal["click", "double_click", "right_click"]
 
 GATE = 0.5  # presence/uniqueness, zoom presence, irreversible, approval: 0 unsafe acts at this gate
@@ -25,6 +27,12 @@ ZOOM_SCALE = 2.5
 UTTERANCE_CONTROL = "the control the `utterance` asks to click, tap or open"
 FINE_WINDOW = 0.12  # the second, tighter look: Jev's boxes come in 0.005 steps of whatever it is shown
 SCROLL = 5  # wheel notches for "scroll down a bit": about a screenful
+MAX_SPANS = 40  # word runs of the utterance offered as the app's name
+# Box width (fraction of the screen) below which a click is hover-checked first. Jev's boxes come in 0.01
+# steps: KCalc's close X was boxed 0.97-0.99, minimize included.
+SMALL_TARGET = 0.03
+POINTED = ("This is a zoomed-in part of a screen. The mouse pointer rests on a control, which may be highlighted "
+           "or show a tooltip naming it. Is that control the one that does what the `utterance` asks?")
 
 INTENT_CRITERIA = {
     "act_now": "The utterance asks to click, tap, open or select ONE specific control that is visible on "
@@ -33,6 +41,8 @@ INTENT_CRITERIA = {
             "an irreversible or destructive action, or its intended target is ambiguous or not visible.",
     "scroll": "The utterance only asks to scroll or page the current view up or down, not to find or open "
               "anything in particular.",
+    "launch": "The next step is to open or start an app that is not the one in front on this screen "
+              "(whatever the utterance asks for after that).",
     "no_action": "The utterance is a remark, background context, a feeling or an acknowledgement; "
                  "it does not ask for any action.",
 }
@@ -58,10 +68,13 @@ class Triage:
     irreversible: bool
     gesture: Gesture = "click"
     scroll: int = 0  # wheel notches for mode "scroll", positive = down
+    app: str = ""  # for mode "launch": the utterance's own words naming the app
+    small: bool = False  # for mode "act": a small target, worth a hover check before the click
 
 
 def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
            run_id: str = "", step: int = 0) -> Triage:
+    names = spans(utterance)
     questions = {
         "intent": {"type": "choice", "criteria": INTENT_CRITERIA, "instructions":
                    "The user is talking to an AI assistant that operates the device shown in `screen` with a "
@@ -76,6 +89,11 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
                       "instructions": "Which way does the `utterance` ask to scroll, if it asks to scroll?"},
         "gesture": {"type": "choice", "criteria": GESTURE_CRITERIA, "instructions":
                     "Which pointer gesture carries out the `utterance` on the control it names in `screen`?"},
+        "app": {"type": "choice", "instructions": "Which words of the `utterance` name the app, or the kind of "
+                "app, to open? Only the name, without \"the\", \"a\" or other words around it: it is typed into "
+                "the app launcher's search.",
+                "criteria": {"none": "The utterance names no app or kind of app."} | {str(i): json.dumps(text)
+                                                                                    for i, text in enumerate(names)}},
         "target": {"type": "box", "instructions":
                    "The single visible control in `screen` that the `utterance` asks to click, tap or open "
                    "right now. For an item in a list or grid, locate the whole item."},
@@ -88,6 +106,11 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
         return Triage("none", None, irreversible)
     if choice == "scroll":
         return Triage("scroll", None, irreversible, scroll=-SCROLL if answers["direction"].get("choice") == "up" else SCROLL)
+    app = answers["app"].get("choice")
+    if choice == "launch" and app in {str(i) for i in range(len(names))}:
+        # Launching needs no plan: Flash took 3-12 s to plan open_app (EXECUTOR=jev's speed came from this
+        # step, done there by phrase rules); its plan for what follows keeps running meanwhile.
+        return Triage("launch", None, irreversible, app=names[int(app)])
     present = min(probability(answers["present"].get("noul")), probability(answers["unique"].get("noul")))
     point = box_center(answers["target"], size, padded)
     if choice != "act_now" or present < GATE or point is None:
@@ -96,7 +119,28 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
     refined = refine(jev, jpeg, {"utterance": utterance}, point, run_id=run_id, step=step)
     gesture = answers["gesture"].get("choice")
     gesture = gesture if gesture in GESTURE_CRITERIA else "click"
-    return Triage("act", refined, irreversible, gesture) if refined else Triage("plan", None, irreversible)
+    small = box_width(answers["target"], size, padded) < SMALL_TARGET
+    return Triage("act", refined, irreversible, gesture, small=small) if refined else Triage("plan", None, irreversible)
+
+
+def pointed(jev: JevVision, jpeg: bytes, utterance: str, point: tuple[float, float], *,
+            run_id: str = "", step: int = 0) -> bool:
+    """With the pointer resting on `point`, is it on the control the utterance asks for? Its hover highlight
+    and tooltip tell neighbours apart that look alike: KCalc's close X scored 0.97, the minimize chevron next
+    to it (which Jev aimed at 3/3 for "close the calculator") 0.01-0.21."""
+    crop, _ = _crop_around(jpeg, point, ZOOM_WINDOW)
+    answers, _, _ = jev.evaluate(crop, {"on": {"type": "noul", "instructions": POINTED}}, run_id=run_id, step=step,
+                                 state={"utterance": utterance})
+    return probability(answers["on"].get("noul")) >= GATE
+
+
+def spans(utterance: str, limit: int = MAX_SPANS) -> list[str]:
+    """Each run of whole words in the utterance without wrapping quotes or punctuation, shortest first
+    (from EXECUTOR=jev: whole runs bind a name better than separate words)."""
+    words = list(re.finditer(r"\S+", utterance))
+    runs = (utterance[words[a].start():words[a + n].end()].strip("\"'“”‘’,;.!?")
+            for n in range(len(words)) for a in range(len(words) - n))
+    return [run for run in dict.fromkeys(runs) if run][:limit]
 
 
 def refine(jev: JevVision, jpeg: bytes, state: dict, point: tuple[float, float], *, control: str = UTTERANCE_CONTROL,
@@ -155,6 +199,15 @@ def answer_to_pending(jev: JevVision, jpeg: bytes, pending: str, reply: str, *,
     if probability(answers["decline"].get("noul")) >= GATE:
         return "decline"
     return "other"
+
+
+def box_width(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> float:
+    box = answer.get("box") or {}
+    try:
+        left, right = probability(box.get("left")), probability(box.get("right"))
+    except ValueError:
+        return 1.0
+    return max(0.0, right - left) * padded[0] / size[0]
 
 
 def box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float] | None:

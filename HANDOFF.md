@@ -35,8 +35,11 @@ three-field form and its paraphrase are cancelled at 5.0 s partway through the f
 passed in 6.2-6.7 s); cancelling releases keys but doesn't undo what was typed.
 
 ## What works (2026-10-17)
-- **Runtime:** race executor is the default with either a Gemini or a z.ai key (PLAN.md §10).
-  236 offline tests pass (`.venv/bin/python -m unittest discover -s tests`, no API calls); `test_capture` skips
+- **Runtime:** race executor is the default with either a Gemini or a z.ai key (PLAN.md §10). Its planner is
+  Jev-first (`JEV_FIRST=1`, ported from `origin/jev-only`): Jev picks each step and Flash is called only when
+  Jev can't. Laptop: main suite 12/12 in 152 s with 8 Flash calls (Flash-first: 11/12, 211 s, 30 calls); judge
+  stress suite 9/9.
+  331 offline tests pass (`.venv/bin/python -m unittest discover -s tests`, no API calls); `test_capture` skips
   without `mss`, which only the `local` extra installs.
 - **Voice layer:** `brain/voice/layer.py` with the Deepgram relay (key stays server-side), smoke-tested
   through the real agent; the newest request wins, and push to talk works.

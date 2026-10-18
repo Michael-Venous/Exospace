@@ -15,8 +15,8 @@ class ReconnectTests(unittest.TestCase):
         monitor.wait_connected.side_effect = lambda: monitor.generation
 
         class FakeAgent:
-            def __init__(self, *args, deadline_s=None):
-                self.reconnect = args[-1]
+            def __init__(self, *args, **kwargs):
+                self.reconnect, self.goal = args[-1], ""
 
             def run(self, goal, profile, task_id):
                 seen.append((goal, profile.connected_at, detect.call_count))
@@ -44,8 +44,8 @@ class DisplayGoalTests(unittest.TestCase):
         goals = []
 
         class FakeAgent:
-            def __init__(self, *args, deadline_s=None):
-                pass
+            def __init__(self, *args, **kwargs):
+                self.goal = ""
 
             def run(self, goal, profile, task_id):
                 goals.append(goal)

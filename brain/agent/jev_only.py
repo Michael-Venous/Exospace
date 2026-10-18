@@ -1,10 +1,11 @@
-"""Pure-Jev stand-in for race's planner (EXECUTOR=jev): no language model is called.
+"""Jev's own next step, with no language model: race's planner under EXECUTOR=jev, and the first try
+of brain/agent/jev_first.py, which hands a request to Flash once a step fails here.
 
 Race keeps everything Jev does alone: confident clicks, remembered remarks and the
 irreversible-action gate. A request that needs a plan runs here one step per screen:
 one batched Jev call judges completion, picks the next action and its target, and picks
 the text to type from runs of the goal's own words (Jev selects; it never writes text).
-A step Jev can't take, or one with no visible effect, fails and names EXECUTOR=race.
+A step Jev can't take, or one with no visible effect, fails.
 
 Each request first finds its app the way a person would: the app in front if Jev sees it can do
 the request, else a visible window, tab or icon of one, else the OS launcher's list. Nothing
@@ -15,16 +16,13 @@ from __future__ import annotations
 
 import json
 import math
-import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import cast
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import COMPLETION_QUESTION, JevVision, probability
 from brain.agent.prompts import OS_PROMPT
-from brain.agent.triage import GATE, box_center, box_contains, refine
-from brain.cancel import CancelToken
-from brain.config import Config
+from brain.agent.triage import GATE, box_center, box_contains, refine, spans
 from brain.skills import OPEN_APP_KEYS
 from brain.types import Action, OSName
 
@@ -65,6 +63,10 @@ APP_TARGET = "The visible window, tab or app icon in `screen` of the app best su
 APP_NAME = ("Which words of the `goal` name the app, or the kind of app, to open? They are typed into the app "
             "launcher's search.")
 LAUNCHER_OPEN = "Is an app launcher or start menu open in `screen`, with a search field for typing an app's name?"
+QUESTION = ("Does the `goal` ask for information, an answer or an explanation, rather than for something to be "
+            "done on the device?")
+COMPOSED = ("Does what remains of the `goal`, after the `executed_steps`, need text, numbers or an expression "
+            "that the `goal` doesn't contain word for word, to be computed, translated or composed?")
 STEP_CONTROL = "the one control that the next step of the `goal` acts on, after the `executed_steps`"
 WAIT = Action("skill", name="wait")
 # Race's COMPLETION_GATE (0.3) let two unfinished goals through here, at 0.57 and 0.63 (2026-10-18: Google
@@ -76,20 +78,20 @@ NEAR_PRESENCE = 0.75  # a target this sure is clicked only where both zoomed loo
 # can stray together; tighten or drop this if a run clicks a neighbour both zooms picked.
 ZOOMS_AGREE = 0.01
 MAX_SPANS = 250  # Jev's choice budget (bench/interpreter_screen.py)
+FAILED = "Jev can't take the next step"
 DEADLINE_S = 20.0  # user decision (raised from 5 s): a request Jev alone can't finish in 20 s isn't reliable enough
 
 
 class JevOnlyPlanner:
-    def __init__(self, cfg: Config, cancel: CancelToken) -> None:
-        self.jev = JevVision(cfg.typesafe_api_key, cancel, cfg.model_log, cfg.jev_model,
-                             cfg.jev_timeout_s, cfg.jev_min_presence, cfg.jev_min_confidence)
+    def __init__(self, jev: JevVision) -> None:
+        self.jev = jev
         self.routed: str | None = None  # the run whose app Jev has seen can do its goal
 
     def acknowledge(self, executed: bool) -> None:
         pass  # no plan cursor: every step is chosen afresh from the screen and the history
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
-        texts = spans(ctx.goal)
+        texts = spans(ctx.goal, MAX_SPANS)
         options = {str(i): json.dumps(text, ensure_ascii=False) for i, text in enumerate(texts)}
         # Until Jev sees the app in front can do the goal, each step also picks the app to use.
         routing = ctx.profile.os in OPEN_APP_KEYS and self.routed != ctx.run_id  # firmware has no apps
@@ -110,12 +112,22 @@ class JevOnlyPlanner:
             "text": {"type": "choice", "instructions": TEXT_QUESTION,
                      "criteria": {"none": "No text to type."} | options},
             "replace": {"type": "noul", "instructions": REPLACE_QUESTION},
+            "question": {"type": "noul", "instructions": QUESTION},
+            "composed": {"type": "noul", "instructions": COMPOSED},
         }, run_id=ctx.run_id, step=ctx.step, state={"goal": ctx.goal, "executed_steps": ctx.history}, label="step",
            gates={"complete": COMPLETION_GATE, "present": self.jev.min_presence, "replace": GATE, "fits": GATE,
-                  "app_present": self.jev.min_presence, "launcher": self.jev.min_presence})
+                  "app_present": self.jev.min_presence, "launcher": self.jev.min_presence,
+                  "question": GATE, "composed": GATE})
         # Jev's own next step is Enter right after typing: the text isn't submitted, whatever the completion score.
         unsent = bool(ctx.history) and ctx.history[-1].startswith("type_text") and answers["next"].get(
             "choice") == "enter"
+        if probability(answers["question"].get("noul")) >= GATE:
+            # Jev called "what is this page about?" complete and said "Done." with no answer.
+            return _fail("the request asks for an answer, not an action")
+        if probability(answers["composed"].get("noul")) >= GATE:
+            # "work out 12 times 9": Jev pressed keypad keys one per step and missed one (41.7 s; Flash typed
+            # "12*9=" in one step, 12.2 s).
+            return _fail("the rest needs text the request doesn't give word for word")
         if probability(answers["complete"].get("noul")) >= COMPLETION_GATE and not unsent:
             return Plan("Jev verified the completed goal", [Action("done", summary="Done.")], [])
         if "unchanged" in ctx.note:
@@ -125,7 +137,9 @@ class JevOnlyPlanner:
             search = self._search(answers, ctx, texts)
             if search:
                 return search
-            if probability(answers["fits"].get("noul")) < GATE:
+            # Only a request that names an app is routed: gibberish ("asdkjh qwe zxcv") opened the launcher.
+            if probability(answers["fits"].get("noul")) < GATE and answers["app_name"].get("choice") in {
+                    str(i) for i in range(len(texts))}:
                 return self._route(answers, size, padded, ctx)
             self.routed = ctx.run_id
         step = answers["next"].get("choice")
@@ -211,17 +225,7 @@ class JevOnlyPlanner:
         self.jev.close()
 
 
-def spans(goal: str) -> list[str]:
-    """Each run of whole words in the goal without wrapping quotes or trailing punctuation,
-    shortest first. Whole runs bind text better than separate first/last words (HANDOFF.md)."""
-    words = list(re.finditer(r"\S+", goal))
-    runs = (goal[words[a].start():words[a + n].end()].strip("\"'“”‘’,;.")
-            for n in range(len(words)) for a in range(len(words) - n))
-    # shortcut: a long goal loses its longest runs past the budget; split the goal if long literals get cut.
-    return [run for run in dict.fromkeys(runs) if run][:MAX_SPANS]
-
-
 def _fail(why: str) -> Plan:
-    return Plan("Jev can't take the next step", [Action(
+    return Plan(FAILED, [Action(
         "fail", reason=f"Jev alone can't take the next step: {why}. "
                        "The language-model planner (EXECUTOR=race) can.")], [])
