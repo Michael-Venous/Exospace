@@ -14,6 +14,8 @@ UNITS="$HOME/.config/systemd/user"
 mkdir -p "$UNITS"
 for unit in exospace-agent exospace-voice; do
   sed "s#@ROOT@#$ROOT#g" "scripts/pi/$unit.service" > "$UNITS/$unit.service"
+  # OS=linux|macos|windows|...: pin the target's OS for the agent (detection can't read a black, empty screen)
+  [ -n "${OS:-}" ] && [ "$unit" = exospace-agent ] && sed -i "s#-m brain #-m brain --os $OS #" "$UNITS/$unit.service"
 done
 systemctl --user daemon-reload 2>/dev/null || true
 # Running services keep the old code (and hold the Pico UART) until restarted.
