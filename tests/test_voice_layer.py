@@ -153,6 +153,7 @@ class PageServerTests(unittest.TestCase):
     def test_a_later_segment_is_forwarded_as_a_continuation(self):
         self.assertEqual(self.post("/segment", {"text": "and search lofi", "continues": True}), 200)
         self.agent.submit.assert_called_once_with("and search lofi", True)
+        self.agent.interrupt.assert_not_called()  # it joins the running request; the step in progress finishes
 
     def test_talk_barges_in(self):
         self.assertEqual(self.post("/talk", {}), 200)

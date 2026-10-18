@@ -7,7 +7,8 @@ Run the agent with a display server, then this:
 Hold the button (or Space) and speak. Each pause sends what was said to the agent's
 POST /goal, so work starts while the user keeps talking; starting to speak while the
 agent is busy sends POST /stop first. Later segments of the same hold continue that
-request ("go to youtube" ... "and search lofi", "actually go back"). Narration comes from the
+request ("go to youtube" ... "and search lofi", "actually go back"): they join it at its
+next step without cancelling the step in progress. Narration comes from the
 agent's event stream: questions (including irreversible-action confirmations) are
 always spoken, plan stages briefly, then the result; a request that runs silently gets
 "On it." and then a progress line every few seconds, so a hard task never leaves dead air.
@@ -38,7 +39,9 @@ from dotenv import load_dotenv
 
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
-DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=300&smart_format=true"
+# A 200 ms pause ends a segment: the short break after "open chrome" in "open chrome and search cats" is
+# enough, so Chrome opens while the user is still talking.
+DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=200&smart_format=true"
 KEEPALIVE_S = 15.0
 MAX_BODY = 4096
 ACK_S = 2.5  # a request still running this long with nothing said gets "On it."
@@ -209,8 +212,10 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[s
                     text = str(body.get("text", "")).strip()
                     if not 0 < len(text) <= 500:
                         return self._reply(400, b'{"error":"text must be 1-500 characters"}')
-                    agent.interrupt()  # speaking while it works ("stop", a correction) barges in
-                    agent.submit(text, body.get("continues") is True)
+                    continues = body.get("continues") is True
+                    if not continues:  # a new request barges in; more words of this one join it at the next step
+                        agent.interrupt()
+                    agent.submit(text, continues)
                 else:
                     return self._reply(404, b'{"error":"not found"}')
             except OSError as exc:
