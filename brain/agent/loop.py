@@ -20,6 +20,7 @@ from brain.telemetry import Telemetry
 from brain.types import Action, ActionError, DeviceProfile, Frame, POINTER_ACTIONS, TERMINAL_ACTIONS
 from brain.verification import visibly_changed
 
+STALL_S = 20.0  # no visible progress for this long ends the run (a demo must never look frozen)
 # A run survives these (PLAN.md §5.6): the target restarted, was replugged or blanked.
 RESUMABLE = frozenset({"target disconnected", "video lost"})
 
@@ -37,7 +38,8 @@ class Agent:
                  telemetry: Telemetry, max_steps: int = 30,
                  on_status: Callable[[str], None] = lambda message: None,
                  events: EventBus | None = None,
-                 reconnect: Callable[[str], DeviceProfile | None] | None = None) -> None:
+                 reconnect: Callable[[str], DeviceProfile | None] | None = None,
+                 stall_s: float = STALL_S) -> None:
         """`reconnect(reason)` waits for the target to return and gives its new profile
         (None if unchanged), or raises Cancelled; without it a disconnect ends the run."""
         if max_steps < 1:
@@ -47,6 +49,7 @@ class Agent:
         self.events = events
         self._shown_scores: object = None
         self.reconnect = reconnect
+        self.stall_s = stall_s
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
@@ -66,7 +69,12 @@ class Agent:
         self.on_status("Working on your request…")
         self._emit("run", goal=goal, run_id=run_id)
         try:
+            progress_at = time.monotonic()
             for step in range(1, self.max_steps + 1):
+                if self.stall_s and time.monotonic() - progress_at > self.stall_s:
+                    # No visible progress for a while is a failure the user should hear about, not a silent grind.
+                    status, message = "fail", "I'm stuck on this one and stopped. Could you try it another way?"
+                    break
                 times = dict(t_capture=0.0, t_upload=0.0, t_model=0.0, t_execute=0.0, t_settle=0.0)
                 try:
                     if settled_s is None:  # otherwise the previous step's last action already settled
@@ -188,6 +196,8 @@ class Agent:
                             token.check()
                         unchanged = not visibly_changed(frame, after)
                         unchanged_steps = unchanged_steps + 1 if unchanged else 0
+                        if not unchanged and not action_failed:
+                            progress_at = time.monotonic()
                         if unchanged:
                             notes.append("Screen unchanged; try something different.")
                         # A covered result can leave pixels unchanged. The Jev

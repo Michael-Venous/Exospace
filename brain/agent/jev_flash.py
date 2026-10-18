@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 import json
 import re
 
@@ -11,7 +12,7 @@ from brain.agent.model import language_model
 from brain.agent.prompts import PLAN_SCHEMA
 from brain.agent.triage import GATE as ZOOM_GATE, refine
 from brain.imaging import shrink
-from brain.cancel import CancelToken
+from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
 
@@ -136,6 +137,9 @@ def validate_steps(data, allow_visual_fallback=False):
     return steps
 
 
+SMALL_WINDOW=('The app window the goal works in is much smaller than the screen, leaving large empty or unrelated '
+              'areas around it, and it is not maximized.')
+TITLE_BAR='The title bar of the app window the goal works in: its empty middle part, not a button.'
 FOCUS_CHECK=('A text cursor or focused input is visible exactly where the next text should go, so typing '
              'now would land there.')
 FIELD_TARGET='The editable text field, search box or document area that the text "{text}" should be typed into.'
@@ -147,12 +151,17 @@ class PlanError(ValueError):
 
 class JevFlashExecutor:
     image_grid=False
+    check_window=True  # Jev maximizes a small app window once per request
     image_side=FULL_SIDE
     verifies_stages=True
 
     def __init__(self,cfg:Config,cancel:CancelToken):
         self.cancel=cancel
         self.model=language_model(cfg,cancel)
+        # A plan Jev rejected is replanned with more thinking on the same model: the fast first
+        # plan stays fast, and only the hard cases pay for deeper reasoning.
+        self.replanner=language_model(replace(cfg,gemini_thinking=cfg.replan_thinking,zai_thinking=cfg.replan_thinking),
+                                      cancel) if cfg.replan_thinking else self.model
         try:
             self.jev=JevVision(cfg.typesafe_api_key,cancel,cfg.model_log,cfg.jev_model,
                               cfg.jev_timeout_s,cfg.jev_min_presence,cfg.jev_min_confidence)
@@ -172,6 +181,7 @@ class JevFlashExecutor:
         self.completion=''
         self.last_reason=''
         self._fallback_image=None
+        self._window_done=False
         self._plan_image=None  # the screenshot the current plan was made from
 
     def acknowledge(self,executed:bool):
@@ -205,7 +215,7 @@ class JevFlashExecutor:
         else:
             prompt+='\nDo not provide fallback_x or fallback_y: Jev handles grounding for this plan.'
         for attempt in range(2):
-            data=self.model.generate(shrink(image),prompt,PROMPT,SCHEMA,role='flash',run_id=ctx.run_id,step=ctx.step)
+            data=self._generate(shrink(image),prompt,ctx,replan=bool(reason))
             self.cancel.check()
             try:
                 self.stages=validate_steps(data,visual_fallback)
@@ -310,9 +320,22 @@ class JevFlashExecutor:
                 # re-check of "ready" here only adds a flaky veto (0.55 vs 0.97 on one desktop).
                 self.cursor=next_cursor
                 return Plan(f'Stage {self.cursor+1}/{len(self.stages)}: '+stage['expected'],self._ground(stage,{}),[])
+            # Once per plan, on the first stage that works inside an app (not one that launches it):
+            # a small window makes every control small.
+            check_window=self.check_window and not getattr(self,'_window_done',False)
+            if check_window:
+                self._window_done=True
+                checks['small_window']=SMALL_WINDOW
+                targets['title_bar']=TITLE_BAR
             values,points=self.jev.assess(image,checks,targets,run_id=ctx.run_id,step=ctx.step,
                                           request=ctx.goal,proposal=stage['actions'])
             self.cancel.check()
+            maximize=None
+            if check_window:
+                small=values.pop('small_window',0.0)>=self.jev.min_presence
+                title=points.pop('title_bar',None); targets.pop('title_bar',None)
+                if small and title is not None:  # double-click the title bar: the targets move, so plan again
+                    maximize=Action('double_click',x=title[0],y=title[1])
             focus_click=None
             if 'focused' in values:
                 focused=values.pop('focused')>=ZOOM_GATE
@@ -321,12 +344,13 @@ class JevFlashExecutor:
             points=self._zoom(image,targets,points,ctx)
             if 'field' in targets:
                 field=points.pop('field',None); targets.pop('field')
-                if field is None:
-                    values['focused']=0.0  # nowhere to type: replan
-                else:
+                if field is not None:  # no field found (a calculator takes keys anywhere): type as planned
                     focus_click=Action('click',x=field[0],y=field[1])
             if image==self._plan_image:  # Flash planned from this very screen: its route vote is redundant
                 values.pop('route_execute',None)  # (it vetoed 3 fresh plans in a row and cancelled a run)
+            if maximize is not None:
+                self._key=None  # the window changes size: re-plan on the next screen
+                return Plan('Maximize the app window first',[maximize],[])
             mismatch=[name for name,value in values.items() if value<self.jev.min_presence]
             if not mismatch and all(p is not None for p in points.values()):
                 self.pending=False
@@ -345,6 +369,18 @@ class JevFlashExecutor:
                 self._reset()
                 return Plan('Plan could not be grounded',[],[reason])
         raise AssertionError('unreachable')
+
+    def _generate(self,image,prompt,ctx,replan):
+        """Replans think more (medium: 4.1 s median vs 2.9 s; high took 15-37 s and hit the server's
+        deadline). A failed replan falls back to the fast planner instead of ending the request."""
+        if replan and self.replanner is not self.model:
+            try:
+                return self.replanner.generate(image,prompt,PROMPT,SCHEMA,role='replan',run_id=ctx.run_id,step=ctx.step)
+            except Cancelled:
+                raise
+            except Exception:  # noqa: BLE001 - e.g. 504 deadline exceeded
+                pass
+        return self.model.generate(image,prompt,PROMPT,SCHEMA,role='flash',run_id=ctx.run_id,step=ctx.step)
 
     def _zoom(self,image,targets,points,ctx):
         """Re-aim each target in a zoomed crop, as the direct path does (planner clicks landed
@@ -374,6 +410,8 @@ class JevFlashExecutor:
     def close(self):
         self.jev.close()
         self.model.close()
+        if self.replanner is not self.model:
+            self.replanner.close()
 
 
 def _describe(action:dict)->str:

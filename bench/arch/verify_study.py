@@ -107,8 +107,9 @@ def check(jev: JevVision, jpeg: bytes, kind: str, goal: str, steps: list[str], c
                    f"Original user request: {goal}\nProposed completion evidence: {completion}")
     if kind == "concrete":
         return ask(jev, jpeg, {}, f"Based only on the visible `screen`, is this condition true? The screen shows this state: {completion}")
-    if kind == "hinted":
-        return ask(jev, jpeg, {"goal": goal, "executed_steps": steps, "expected_evidence": completion}, HINTED)
+    if kind == "hinted":  # the runtime check: hint used only when it proves the whole goal
+        started = time.monotonic()
+        return jev.completion(jpeg, goal, steps, evidence=completion), time.monotonic() - started
     return ask(jev, jpeg, {"goal": goal, "executed_steps": steps},
                "Considering the `executed_steps` (what was actually done) together with the current `screen`, "
                "has the user's ENTIRE `goal` been accomplished? Every part of the goal must be covered by an "

@@ -29,7 +29,7 @@ class RecipeTests(unittest.TestCase):
 
     def executor(self):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup)
-        ex=object.__new__(RecipeExecutor);ex.cancel=CancelToken();ex.model=Mock();ex.jev=Mock()
+        ex=object.__new__(RecipeExecutor);ex.cancel=CancelToken();ex.model=Mock();ex.jev=Mock();ex.replanner=ex.model;ex.check_window=False
         zoom=patch('brain.agent.jev_flash.refine',return_value=None);zoom.start();self.addCleanup(zoom.stop)
         ex.jev.min_presence=.85;ex.jev.last_scores={};ex.jev.last_points={};ex.jev.completion.return_value=.99;ex._key=None;ex._hover_context=None;ex._menu_click=False;ex.executed=[];ex._reset()
         ex.forbid_llm=True;ex.recipe_admitted=False;ex.recipe_attempted=False

@@ -55,16 +55,20 @@ COMPLETION_QUESTION = (
     'that it was used; text typed but not submitted is not a completed search or send.')
 # With the planner's expected evidence, so Jev knows what to look for when it cannot work it out
 # itself (a calculator result scored 0.02 without it, 0.7 with it).
+EVIDENCE_SUFFICIENT = ('Would a screen showing `expected_evidence` prove that the user\'s ENTIRE `goal` is done, '
+                       'not just a first step towards it?')
 COMPLETION_HINTED = COMPLETION_QUESTION + (
     ' `expected_evidence` is what the planner expects the screen to show once the goal is done: use it '
     'to know what to look for, but judge the goal itself against the steps and the screen, not the claim.')
 
 
+SIDE_EFFECT_GATE = 0.7
 # Recovery once pressed Alt+Tab, landed on another app and closed it with Alt+F4 (laptop suite).
 SIDE_EFFECTS = (
     'Would carrying out the proposed `actions` on this `screen` close, quit, minimize or discard any window, '
     'tab, app, file or unsaved work that the user\'s `request` does not ask to close or discard? Confirming, '
-    'saving or closing a dialog, menu or popup as part of doing the request is not such a side effect.')
+    'saving or closing a dialog, menu or popup as part of doing the request, or dismissing a splash screen, '
+    'welcome screen or notification, is not such a side effect.')
 
 
 class JevVision:
@@ -156,11 +160,18 @@ class JevVision:
         `evidence` (the planner's expected end state) only tells Jev what to look for:
         12/12 finished and 0/18 traps accepted, 12/15 and 0/15 held out (bench/arch/verify_study)."""
         state = {'goal': goal, 'executed_steps': executed}
+        questions = {'complete': {'type': 'noul', 'instructions': COMPLETION_QUESTION}}
         if evidence:
+            # The hint is used only when it would prove the whole goal: a plan whose evidence was just
+            # "Blender is open" for "make me a house in blender" passed as done (laptop suite).
             state['expected_evidence'] = evidence
-        answers, _, _ = self.evaluate(
-            jpeg, {'complete': {'type': 'noul', 'instructions': COMPLETION_HINTED if evidence else COMPLETION_QUESTION}},
-            run_id=run_id, step=step, state=state)
+            questions['complete'] = {'type': 'noul', 'instructions': COMPLETION_QUESTION +
+                                     ' Ignore `expected_evidence` for this question.'}
+            questions['hinted'] = {'type': 'noul', 'instructions': COMPLETION_HINTED}
+            questions['sufficient'] = {'type': 'noul', 'instructions': EVIDENCE_SUFFICIENT}
+        answers, _, _ = self.evaluate(jpeg, questions, run_id=run_id, step=step, state=state)
+        if evidence and probability(answers['sufficient'].get('noul')) >= 0.5:
+            return probability(answers['hinted'].get('noul'))
         return probability(answers['complete'].get('noul'))
 
     def close(self):
@@ -196,7 +207,8 @@ class JevVision:
         probability(route.get('confidence'))
         values['route_execute']=float(route.get('choice')=='execute')
         if proposal:  # a stage that closes or discards something nobody asked for never runs
-            values['safe']=float(probability(answers['side_effects'].get('noul'))<0.5)
+            # Only a clear yes blocks: borderline verdicts vetoed dismissing a splash screen (0.5-0.7).
+            values['safe']=float(probability(answers['side_effects'].get('noul'))<SIDE_EFFECT_GATE)
         self.last_scores={'route':route.get('choice'),'route_confidence':route.get('confidence')}
         points={}
         self.last_points={}  # every target's box center, before the presence/confidence gates

@@ -19,6 +19,8 @@ class SemanticTests(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.executor=object.__new__(JevFlashExecutor)
         self.executor.cancel=CancelToken();self.executor.model=Mock();self.executor.jev=Mock()
+        self.executor.replanner=self.executor.model  # the same mock: call counts cover both
+        self.executor.check_window=False  # the window-size check has its own test
         self.executor.jev.min_presence=.85
         self.executor._key=None;self.executor.executed=[];self.executor._reset()
         self.ctx=StepContext('create event',DeviceProfile('linux',Rect(0,0,900,600),'mouse',1),
@@ -185,5 +187,28 @@ class SemanticTests(unittest.TestCase):
         self.executor._key=None
         self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: ({'ready':.99,'focused':.95},{})
         self.assertEqual([a.type for a in self.executor.next_actions(b'other',self.ctx).actions],['type_text'])
+
+    def test_a_rejected_plan_is_replanned_with_more_thinking(self):
+        self.executor.replanner=Mock()
+        self.executor.replanner.generate.return_value=self.plan
+        self.executor.jev.assess.side_effect=[({'ready':.2},{'target':(.5,.5)}),({'ready':.99},{'target':(.2,.3)})]
+        self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual(self.executor.model.generate.call_count,1)  # the first plan: fast
+        self.assertEqual(self.executor.replanner.generate.call_count,1)  # after Jev's veto: high thinking
+
+    def test_a_failed_replan_falls_back_to_the_fast_planner(self):
+        self.executor.replanner=Mock()
+        self.executor.replanner.generate.side_effect=RuntimeError('504 deadline exceeded')
+        self.executor.jev.assess.side_effect=[({'ready':.2},{'target':(.5,.5)}),({'ready':.99},{'target':(.2,.3)})]
+        self.assertEqual(self.executor.next_actions(b'image',self.ctx).actions[0].x,.2)
+        self.assertEqual(self.executor.model.generate.call_count,2)
+
+    def test_a_small_window_is_maximized_before_planning_on(self):
+        self.executor.check_window=True
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: (
+            {k:.99 for k in checks},{k:((.5,.02) if k=='title_bar' else (.25,.75)) for k in targets})
+        plan=self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual((plan.actions[0].type,plan.actions[0].x,plan.actions[0].y),('double_click',.5,.02))
+        self.assertIsNone(self.executor._key)  # re-planned on the maximized screen
 
 if __name__=='__main__':unittest.main()

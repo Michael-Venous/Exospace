@@ -458,6 +458,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status,'done')
         self.assertEqual(executor.acknowledge.call_count,3)
 
+    def test_no_visible_progress_for_too_long_ends_the_run(self):
+        self.hid.change = False
+        executor = Mock()
+        executor.verifies_stages = True
+        executor.next_actions.side_effect = lambda image, ctx: (time.sleep(0.02) or
+                                                               Plan("try", [Action("hotkey", keys=("F%d" % ctx.step,))], []))
+        agent = Agent(executor, self.controller, self.memory, self.telemetry, max_steps=8, stall_s=0.05)
+        result = agent.run("Do the impossible", self.profile)
+        self.assertEqual(result.status, "fail")
+        self.assertIn("stuck", result.message)
+
     def test_semantic_executor_stops_when_the_screen_never_changes(self):
         self.hid.change = False
         executor = Mock()
