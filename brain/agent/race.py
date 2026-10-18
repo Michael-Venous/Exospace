@@ -47,8 +47,11 @@ class RaceExecutor:
     image_side = JevFlashExecutor.image_side
 
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
-        planner = JevFirstPlanner if cfg.jev_first else JevFlashExecutor
-        self.planner = planner(cfg, cancel, approved_run=self.approved_run)
+        if cfg.executor == "jev":  # speed first: Jev's steps only, a step Jev can't take ends the request
+            self.planner = JevFirstPlanner(cfg, cancel, approved_run=self.approved_run, handoff=False)
+        else:
+            planner = JevFirstPlanner if cfg.jev_first else JevFlashExecutor
+            self.planner = planner(cfg, cancel, approved_run=self.approved_run)
         self.jev = self.planner.jev
         self.cancel = cancel
         # One worker: a speculative plan for an earlier segment always finishes before

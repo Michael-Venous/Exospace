@@ -1,5 +1,6 @@
 """Explicit executor selection. Default `race`: Jev triage racing the Jev + language-model planner,
-with or without ZAI_API_KEY; `direct` is one model call per step."""
+with or without ZAI_API_KEY; `jev` is race with Jev's steps only (no Flash or deep hand-off, fastest);
+`direct` is one model call per step."""
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.race import RaceExecutor
 from brain.agent.executor import ModelExecutor
@@ -16,7 +17,7 @@ def build_executor(cfg, token, cleanup, status):
 
 
 def _build(cfg, token, cleanup, status):
-    if cfg.executor == 'race':
+    if cfg.executor in ('race', 'jev'):
         executor = RaceExecutor(cfg, token)
         cleanup.callback(executor.close)
         return executor
@@ -34,4 +35,4 @@ def _build(cfg, token, cleanup, status):
         planner = ModelPlanner(cfg, token)
         cleanup.callback(planner.close)
         return Orchestrator(fast, planner, token, status)
-    raise ValueError('Unknown EXECUTOR; use race, jev-flash, direct or legacy-dual')
+    raise ValueError('Unknown EXECUTOR; use race, jev, jev-flash, direct or legacy-dual')

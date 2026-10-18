@@ -234,6 +234,12 @@ class RaceTests(unittest.TestCase):
             race._approved_goal, race._approved_connected_at = "delete this email\nThe user approved this request.", 1
             self.assertTrue(approved(ctx))
 
+    def test_executor_jev_never_hands_off_to_flash(self):
+        with patch("brain.agent.race.JevFirstPlanner") as planner:
+            race = RaceExecutor(Mock(executor="jev", jev_first=True), CancelToken())
+        self.addCleanup(race.close)
+        self.assertFalse(planner.call_args.kwargs["handoff"])
+
     def test_correction_carries_the_request_it_corrects(self):
         goal = "reply to john and send it saying five\nUser correction: actually make it six"
         with patch("brain.agent.race.triage", return_value=Triage("plan", None, True)) as tri:
