@@ -60,10 +60,6 @@ class ActiveRectTests(unittest.TestCase):
         self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (0, 0, 2880, 1800))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class CaptureReadLoopTests(unittest.TestCase):
     def test_a_bad_mjpg_frame_does_not_end_the_capture_thread(self):
         """The card's occasional empty MJPG frame makes OpenCV raise; reading must carry on."""
@@ -88,3 +84,7 @@ class CaptureReadLoopTests(unittest.TestCase):
         capture._running = False
         thread.join(timeout=1)
         self.assertIsNotNone(capture.grab())
+
+
+if __name__ == "__main__":
+    unittest.main()
