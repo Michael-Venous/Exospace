@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
                     if current == generation:
                         return None
                     try:
-                        found = detect_profile(capture, executor, args.os, cancel=token)
+                        found = detect_profile(capture, executor, args.os, cancel=token, pointer=controller.hover)
                     except Cancelled as exc:
                         if exc.reason not in RESUMABLE:
                             raise
@@ -120,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
                     generation = current
                     if found is not None:
                         profile = found
-                        status(f"Target: {profile.os} ({profile.input})")
+                        status(f"Target: {profile.os} ({profile.input}), screen {profile.rect.as_list()} of the frame")
                     return found
 
             agent = Agent(executor, controller, Memory.load(cfg.session_path),
@@ -146,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                 if command.kind == "click":
                     try:
                         profile, generation = _connected_profile(
-                            monitor, capture, executor, args.os, token, profile, generation, status)
+                            monitor, capture, executor, args.os, token, profile, generation, status, controller.hover)
                         controller.execute(Action("click", x=command.x, y=command.y), profile)
                         controller.wait_settled()
                         if bus is not None:
@@ -178,7 +178,7 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 try:
                     profile, generation = _connected_profile(
-                        monitor, capture, executor, args.os, token, profile, generation, status)
+                        monitor, capture, executor, args.os, token, profile, generation, status, controller.hover)
                     # Goals from the page, the voice layer or a pipe need no window switch first.
                     if args.backend == "local" and bus is None and sys.stdin.isatty():
                         status("Focus the target window; starting in 2 seconds.")
@@ -255,7 +255,8 @@ def _pump_live_frames(capture: Capture, bus: EventBus) -> None:
 def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: Executor,
                        os_override: OSName | None, token: CancelToken,
                        profile: DeviceProfile | None,
-                       generation: int, status: Callable[[str], None]) -> tuple[DeviceProfile, int]:
+                       generation: int, status: Callable[[str], None],
+                       pointer: Callable[[float, float], None] | None = None) -> tuple[DeviceProfile, int]:
     """Wait for a target and re-detect it if it changed. A disconnect during
     detection retries instead of dropping the user's pending goal."""
     while True:
@@ -266,13 +267,13 @@ def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: E
         if profile is not None and current == generation:
             return profile, generation
         try:
-            detected = detect_profile(capture, executor, os_override, cancel=token)
+            detected = detect_profile(capture, executor, os_override, cancel=token, pointer=pointer)
         except Cancelled:
             if monitor.connected:
                 raise  # a real interruption, not an unplug
             continue
         if monitor.connected and monitor.generation == current:
-            status(f"Target: {detected.os} ({detected.input})")
+            status(f"Target: {detected.os} ({detected.input}), screen {detected.rect.as_list()} of the frame")
             return detected, current
         status("Target changed during detection; retrying.")
 
