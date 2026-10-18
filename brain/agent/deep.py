@@ -6,8 +6,9 @@ effect is hard to see. Once DEEP_AFTER of race's last WINDOW steps were unproduc
 of that request goes to a one-call-per-step agent on DEEP_MODEL (Argon, lowest thinking), free
 to take any route; it chose Blender's Python console and built the house where race failed
 11/12 times. Strategy-only Argon with race's gated steps, and ungrounded Flash steps, both
-stalled. Every deep action batch still passes Jev's side-effect question; the request's
-irreversible gate already ran in race. Requests race finishes are untouched.
+stalled. Every deep action batch passes Jev's side-effect question and, unless the user approved
+the run, the irreversible one: a request that only drafts a reply must still ask before Send.
+Requests race finishes are untouched.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from typing import Any
 
 from brain.agent.executor import ModelExecutor, Plan, StepContext
 from brain.agent.jev import SIDE_EFFECT_GATE, SIDE_EFFECTS, probability
+from brain.agent.triage import GATE, IRREVERSIBLE_KINDS
 from brain.cancel import CancelToken, Cancelled
 from brain.config import Config
 from brain.imaging import grid_copy
@@ -25,6 +27,7 @@ from brain.types import OSName
 
 UNPRODUCTIVE = ("unchanged", "Rejected action", "Recovery required")
 WINDOW = 6  # race steps looked at; deep mode once DEEP_AFTER of them were unproductive
+STEP_IRREVERSIBLE = "Would carrying out the proposed `actions` on this `screen` " + IRREVERSIBLE_KINDS
 DEEP_STALL_S = 60.0  # one Argon step can take 20 s+; race keeps the 20 s no-progress rule
 
 
@@ -82,17 +85,24 @@ class DeepFallback:
             self.inner.acknowledge(executed)
 
     def _guard(self, image_jpeg: bytes, plan: Plan, ctx: StepContext) -> Plan:
-        """Deep actions that would close or discard something nobody asked for never run."""
+        """Deep actions that would close or discard something nobody asked for never run; irreversible
+        ones (a send, a delete) wait for the user's yes."""
         acting = [a for a in plan.actions if a.type not in ("done", "ask_user", "fail", "remember")]
         if not acting:
             return plan
-        answers, _, _ = self.inner.jev.evaluate(
-            image_jpeg, {"side_effects": {"type": "noul", "instructions": SIDE_EFFECTS}}, run_id=ctx.run_id,
-            step=ctx.step, state={"request": ctx.goal, "actions": json.dumps([a.brief() for a in acting])})
-        if probability(answers["side_effects"].get("noul")) < SIDE_EFFECT_GATE:
-            return plan
-        return replace(plan, actions=[], rejected=["Blocked: those actions would close or discard something the "
-                                                   "request did not ask for. Find another way."])
+        approved = self.inner.approved_run()
+        questions = {"side_effects": {"type": "noul", "instructions": SIDE_EFFECTS}}
+        if not approved:
+            questions["irreversible"] = {"type": "noul", "instructions": STEP_IRREVERSIBLE}
+        briefs = [a.brief() for a in acting]
+        answers, _, _ = self.inner.jev.evaluate(image_jpeg, questions, run_id=ctx.run_id, step=ctx.step,
+                                                state={"request": ctx.goal, "actions": json.dumps(briefs)})
+        if probability(answers["side_effects"].get("noul")) >= SIDE_EFFECT_GATE:
+            return replace(plan, actions=[], rejected=["Blocked: those actions would close or discard something "
+                                                       "the request did not ask for. Find another way."])
+        if not approved and probability(answers["irreversible"].get("noul")) >= GATE:
+            return self.inner.hold(ctx, "; ".join(briefs))
+        return plan
 
     def classify_os(self, image_jpeg: bytes) -> OSName:
         return self.inner.classify_os(image_jpeg)

@@ -42,11 +42,12 @@ GESTURE_CRITERIA = {
                     "icon or row in a desktop file-manager window.",
     "right_click": "The user asks for a right-click, a context menu, or more options for an item.",
 }
-IRREVERSIBLE = ("Would carrying out the `utterance` on this screen do something irreversible or high-impact: "
+IRREVERSIBLE_KINDS = ("do something irreversible or high-impact: "
                 "sending or posting a message, deleting or emptying data, purchasing or paying, submitting a "
                 "form, formatting, changing and saving firmware/BIOS settings, or a public action on the user's "
                 "account (starring, liking, following, subscribing, voting, sharing)? Opening, navigating, "
                 "selecting, typing a draft, adding to or removing from a cart, and creating something new are not.")
+IRREVERSIBLE = "Would carrying out the `utterance` on this screen " + IRREVERSIBLE_KINDS
 
 
 @dataclass(frozen=True)

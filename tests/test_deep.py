@@ -21,7 +21,9 @@ class DeepTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         cfg = replace(Config.load(), deep_model="deep-model", deep_after=2)
         self.inner = Mock()
-        self.inner.jev.evaluate.return_value = ({"side_effects": {"noul": .05}}, None, None)
+        self.inner.jev.evaluate.return_value = ({"side_effects": {"noul": .05}, "irreversible": {"noul": .05}},
+                                                None, None)
+        self.inner.approved_run.return_value = False
         with patch("brain.agent.deep.ModelExecutor") as model:
             self.agent = DeepFallback(self.inner, cfg, Mock())
         self.deep = model.return_value
@@ -56,6 +58,19 @@ class DeepTests(unittest.TestCase):
         self.agent.acknowledge(True)
         self.inner.acknowledge.assert_called_with(True)
         self.assertTrue(self.agent.active)  # the next step tries the deep model again
+
+    def test_an_unapproved_irreversible_deep_batch_asks_first(self):
+        self.inner.jev.evaluate.return_value = ({"side_effects": {"noul": .05}, "irreversible": {"noul": .9}}, None, None)
+        self.inner.hold.return_value = Plan("held", [Action("ask_user", question="?")], [])
+        plan = self.agent._guard(b"img", Plan("deep", [Action("click", x=.5, y=.9)], []), self.ctx(1))
+        self.assertIs(plan, self.inner.hold.return_value)
+        self.assertIn("click", self.inner.hold.call_args.args[1])
+
+    def test_an_approved_run_lets_the_deep_batch_through(self):
+        self.inner.approved_run.return_value = True
+        batch = Plan("deep", [Action("click", x=.5, y=.9)], [])
+        self.assertIs(self.agent._guard(b"img", batch, self.ctx(1)), batch)
+        self.assertNotIn("irreversible", self.inner.jev.evaluate.call_args.args[1])
 
     def test_deep_actions_with_side_effects_are_blocked(self):
         self.inner.next_actions.return_value = STUCK

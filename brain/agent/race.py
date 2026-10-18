@@ -109,10 +109,7 @@ class RaceExecutor:
         self._plan = self._pool.submit(self.planner.next_actions, image, self._planner_ctx(ctx))
         result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, run_id=ctx.run_id))
         if result.irreversible and not confirmed:
-            self.mode = "none"
-            self._pending = _Pending(utterance, ctx.goal, ctx.profile.connected_at)
-            return Plan("Irreversible request needs approval",
-                        [Action("ask_user", question=f'This can\'t be undone: "{utterance}". Should I go ahead?')], [])
+            return self.hold(ctx, f'"{utterance}"')
         self.mode, self._point, self._gesture, self._scroll = result.mode, result.point, result.gesture, result.scroll
         if self.mode == "none" and declined:
             return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
@@ -125,6 +122,16 @@ class RaceExecutor:
         if self.mode == "scroll":  # no target and no plan needed (it took 10.8 s through the planner)
             return Plan("Jev scroll", [Action("scroll", dy=result.scroll)], [])
         return self.cancel.run(self._plan.result)
+
+    def approved_run(self) -> bool:
+        return self._approved_goal is not None
+
+    def hold(self, ctx: StepContext, what: str) -> Plan:
+        """Ask before an irreversible request or step; the user's next reply answers it."""
+        self.mode = "none"
+        self._pending = _Pending(ctx.goal.splitlines()[-1], ctx.goal, ctx.profile.connected_at)
+        return Plan("Irreversible request needs approval",
+                    [Action("ask_user", question=f"This can't be undone: {what}. Should I go ahead?")], [])
 
     def _goal_met(self, image: bytes, ctx: StepContext) -> bool:
         """One Jev completion call on the new screen: a changed screen alone is no proof
