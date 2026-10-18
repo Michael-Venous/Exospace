@@ -42,6 +42,19 @@ class CalibrateTests(unittest.TestCase):
         self.assertLessEqual(max(abs(a - b) for a, b in zip(rect.as_list(), SCREEN.as_list())), 2)
         self.assertEqual(target.at, (0.5, 0.5))  # the pointer is left in the middle
 
+    def test_other_changes_on_screen_are_ignored(self):
+        class Busy(FakeTarget):
+            ticks = 0
+
+            def grab(self):
+                frame = super().grab()
+                Busy.ticks += 1
+                frame[600:612, 100 + 30 * (Busy.ticks % 3):112 + 30 * (Busy.ticks % 3)] = 255  # a redraw
+                return frame
+        target = Busy()
+        rect = pointer_rect(target, target.move)
+        self.assertLessEqual(max(abs(a - b) for a, b in zip(rect.as_list(), SCREEN.as_list())), 2)
+
     def test_no_cursor_means_no_answer(self):
         target = FakeTarget(cursor=False)
         self.assertIsNone(pointer_rect(target, target.move))
