@@ -22,10 +22,9 @@ class DeepTests(unittest.TestCase):
         cfg = replace(Config.load(), deep_model="deep-model", deep_after=2)
         self.inner = Mock()
         self.inner.jev.evaluate.return_value = ({"side_effects": {"noul": .05}}, None, None)
-        with patch("brain.agent.deep.language_model") as strategist:
+        with patch("brain.agent.deep.ModelExecutor") as model:
             self.agent = DeepFallback(self.inner, cfg, Mock())
-        strategist.return_value.generate.return_value = {"strategy": "use the script console"}
-        self.deep = self.inner.planner
+        self.deep = model.return_value
         self.deep.next_actions.return_value = Plan("deep", [Action("hotkey", keys=("TAB",))], [])
         self.memory = Memory.load(Path(self.temp.name) / "m.json")
 
@@ -55,14 +54,6 @@ class DeepTests(unittest.TestCase):
         self.assertEqual(plan.actions, [])
         self.assertIn("Blocked", plan.rejected[0])
 
-
-    def test_deep_steps_follow_one_strategy(self):
-        self.inner.next_actions.return_value = STUCK
-        self.agent.next_actions(b"img", self.ctx(1))
-        self.agent.next_actions(b"img", self.ctx(2))
-        self.agent.next_actions(b"img", self.ctx(3))
-        self.assertEqual(self.agent.strategist.generate.call_count, 1)
-        self.assertEqual(self.deep.next_actions.call_args.args[1].guidance, "use the script console")
 
     def test_alternating_progress_and_vetoes_still_escalates(self):
         ok = Plan("ok", [Action("click", x=.1, y=.1)], [])

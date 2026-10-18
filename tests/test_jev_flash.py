@@ -206,9 +206,12 @@ class SemanticTests(unittest.TestCase):
     def test_a_small_window_is_maximized_before_planning_on(self):
         self.executor.check_window=True
         self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: (
-            {k:.99 for k in checks},{k:((.5,.02) if k=='title_bar' else (.25,.75)) for k in targets})
-        plan=self.executor.next_actions(b'image',self.ctx)
-        self.assertEqual((plan.actions[0].type,plan.actions[0].x,plan.actions[0].y),('double_click',.5,.02))
+            {k:.99 for k in checks},{k:((.9,.02) if k=='maximize' else (.25,.75)) for k in targets})
+        with patch('brain.agent.jev_flash.refine',return_value=(.91,.02)) as zoom:
+            plan=self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual((plan.actions[0].type,plan.actions[0].x,plan.actions[0].y),('click',.91,.02))
+        self.assertEqual(zoom.call_count,2)  # the usual zoom, then a tighter one
         self.assertIsNone(self.executor._key)  # re-planned on the maximized screen
+        self.assertNotEqual(self.executor.next_actions(b'image',self.ctx).reasoning,'Maximize the app window first')
 
 if __name__=='__main__':unittest.main()

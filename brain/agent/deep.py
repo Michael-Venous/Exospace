@@ -1,14 +1,13 @@
-"""Deep mode: when race is stuck, a stronger model sets the strategy and a fast one carries it out.
+"""Deep mode: when race is stuck, a stronger model takes over the rest of the request.
 
 Race handles almost everything fast (Jev triage + Jev-checked Flash stages). Long, open-ended
 work in dense apps ("make me a house in Blender") stalls it: its stage checks veto steps whose
-effect is hard to see. After DEEP_AFTER unproductive steps in a row, one DEEP_MODEL call (Argon)
-writes a short strategy for the rest of the request, and race's own Jev-grounded planner follows
-it as guidance (precise, checked clicks). The strategy is rewritten when execution stalls again.
-Measured on "make me a house in blender": Argon at every step built it in 507 s (10-68 s per
-step); Flash alone circled for 39 steps modelling by hand; Argon's strategy with ungrounded
-Flash steps chose the right route (the script console) but kept missing small controls. Requests race finishes are untouched. Every deep action batch still passes
-Jev's side-effect question, and the request-level irreversible gate already ran in race.
+effect is hard to see. Once DEEP_AFTER of race's last WINDOW steps were unproductive, the rest
+of that request goes to a one-call-per-step agent on DEEP_MODEL (Argon, lowest thinking), free
+to take any route; it chose Blender's Python console and built the house where race failed
+11/12 times. Strategy-only Argon with race's gated steps, and ungrounded Flash steps, both
+stalled. Every deep action batch still passes Jev's side-effect question; the request's
+irreversible gate already ran in race. Requests race finishes are untouched.
 """
 
 from __future__ import annotations
@@ -17,9 +16,8 @@ import json
 from dataclasses import replace
 from typing import Any
 
-from brain.agent.executor import Plan, StepContext, context_prompt
+from brain.agent.executor import ModelExecutor, Plan, StepContext
 from brain.agent.jev import SIDE_EFFECT_GATE, SIDE_EFFECTS, probability
-from brain.agent.model import language_model
 from brain.cancel import CancelToken
 from brain.config import Config
 from brain.imaging import grid_copy
@@ -27,13 +25,7 @@ from brain.types import OSName
 
 UNPRODUCTIVE = ("unchanged", "Rejected action", "Recovery required")
 WINDOW = 6  # race steps looked at; deep mode once DEEP_AFTER of them were unproductive
-RESTRATEGIZE = 3  # unproductive deep steps in a row before the strategy is rewritten
-STRATEGY_PROMPT = """You set the strategy for an agent that operates a device through its screen, keyboard and
-mouse. A fast step-by-step agent got stuck on the user's goal. From the screenshot, the goal and what was
-tried, write the most reliable route to finish it: prefer routes whose every step has a clearly visible
-result, such as keyboard shortcuts, menus, typed values, or an app's own command line or script console
-when it has one, over long chains of precise mouse work. Name the concrete steps. At most 80 words."""
-STRATEGY_SCHEMA = {"type": "object", "properties": {"strategy": {"type": "string"}}, "required": ["strategy"]}
+DEEP_STALL_S = 60.0  # one Argon step can take 20 s+; race keeps the 20 s no-progress rule
 
 
 class DeepFallback:
@@ -42,12 +34,9 @@ class DeepFallback:
     def __init__(self, inner: Any, cfg: Config, cancel: CancelToken, on_status=lambda message: None) -> None:
         self.inner, self.cancel, self.on_status = inner, cancel, on_status
         self.after = cfg.deep_after
-        self.deep = inner.planner  # race's Jev + Flash planner: grounded, zoom-refined, checked stages
-        self.strategist = language_model(replace(cfg, gemini_model=cfg.deep_model, gemini_thinking=cfg.deep_thinking,
-                                                 fallback_model="", model_timeout_s=cfg.deep_timeout_s,
-                                                 zai_api_key=""), cancel)
-        self.strategy = ""
-        self._deep_stuck = 0
+        self.deep = ModelExecutor(replace(cfg, gemini_model=cfg.deep_model, gemini_thinking=cfg.deep_thinking,
+                                          fallback_model="", model_timeout_s=cfg.deep_timeout_s, zai_api_key=""),
+                                  cancel, routing=False)
         self._run: tuple[str, str] | None = None
         self._recent: list[bool] = []  # unproductive flags of the last WINDOW race steps
         self.active = False
@@ -57,11 +46,15 @@ class DeepFallback:
 
     @property
     def verifies_stages(self) -> bool:
-        return True if self.active else getattr(self.inner, "verifies_stages", False) is True
+        return False if self.active else getattr(self.inner, "verifies_stages", False) is True
+
+    @property
+    def stall_s(self) -> float | None:
+        return DEEP_STALL_S if self.active else None
 
     def next_actions(self, image_jpeg: bytes, ctx: StepContext) -> Plan:
         if self._run != (ctx.run_id, ctx.goal):
-            self._run, self._recent, self.active, self.strategy = (ctx.run_id, ctx.goal), [], False, ""
+            self._run, self._recent, self.active = (ctx.run_id, ctx.goal), [], False
         if not self.active:
             plan = self.inner.next_actions(image_jpeg, ctx)
             unproductive = (not plan.actions and bool(plan.rejected)) or any(w in (ctx.note or "") for w in UNPRODUCTIVE)
@@ -71,23 +64,14 @@ class DeepFallback:
             if sum(self._recent) < self.after or any(a.type in ("done", "ask_user") for a in plan.actions):
                 return plan
             self.active = True
-            self.deep._key = None  # plan afresh, with the strategy
             self.on_status("This one needs more thought; switching to deep mode…")
-        stalled = any(w in (ctx.note or "") for w in UNPRODUCTIVE)
-        self._deep_stuck = self._deep_stuck + 1 if stalled else 0
-        if not self.strategy or self._deep_stuck >= RESTRATEGIZE:
-            self.strategy, self._deep_stuck = self._strategize(image_jpeg, ctx), 0
-        plan = self.deep.next_actions(image_jpeg, replace(ctx, guidance=self.strategy))
+        plan = self.deep.next_actions(grid_copy(image_jpeg), replace(ctx, note=ctx.note or "Deep mode: the fast "
+                                                                     "planner was stuck; take any route that works."))
         return self._guard(image_jpeg, plan, ctx)
 
-    def _strategize(self, image_jpeg: bytes, ctx: StepContext) -> str:
-        previous = f"\nThe previous strategy stalled: {self.strategy}" if self.strategy else ""
-        data = self.strategist.generate(grid_copy(image_jpeg), context_prompt(ctx) + previous, STRATEGY_PROMPT,
-                                        STRATEGY_SCHEMA, role="strategy", run_id=ctx.run_id, step=ctx.step)
-        return str(data.get("strategy", ""))
-
     def acknowledge(self, executed: bool) -> None:
-        (self.deep if self.active else self.inner).acknowledge(executed)
+        if not self.active:
+            self.inner.acknowledge(executed)
 
     def _guard(self, image_jpeg: bytes, plan: Plan, ctx: StepContext) -> Plan:
         """Deep actions that would close or discard something nobody asked for never run."""
@@ -106,7 +90,7 @@ class DeepFallback:
         return self.inner.classify_os(image_jpeg)
 
     def close(self) -> None:
-        self.strategist.close()
+        self.deep.close()
         close = getattr(self.inner, "close", None)
         if callable(close):
             close()

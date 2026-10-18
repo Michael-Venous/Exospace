@@ -33,5 +33,21 @@ class BlankTests(unittest.TestCase):
         self.assertFalse(is_blank(frame))
 
 
+class ActiveRectTests(unittest.TestCase):
+    def test_a_pillarboxed_phone_is_cropped(self):
+        from brain.capture import active_rect
+        frame = np.zeros((1080, 1920, 3), np.uint8)
+        frame[:, 700:1220] = 200
+        rect = active_rect(frame)
+        self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (700, 0, 1220, 1080))
+
+    def test_a_window_on_a_black_wallpaper_is_not_the_screen(self):
+        from brain.capture import active_rect
+        frame = np.zeros((1800, 2880, 3), np.uint8)
+        frame[460:1340, 738:2142] = 200  # a small app window, black all around it
+        rect = active_rect(frame)
+        self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (0, 0, 2880, 1800))
+
+
 if __name__ == "__main__":
     unittest.main()

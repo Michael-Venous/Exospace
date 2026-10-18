@@ -22,6 +22,7 @@ Gesture = Literal["click", "double_click", "right_click"]
 GATE = 0.5  # presence/uniqueness, zoom presence, irreversible, approval: 0 unsafe acts at this gate
 ZOOM_WINDOW = 0.30  # crop side as a fraction of the longer screen side
 ZOOM_SCALE = 2.5
+FINE_WINDOW = 0.12  # a second, tighter look for controls a few pixels apart (window buttons)
 SCROLL = 5  # wheel notches for "scroll down a bit": about a screenful
 
 INTENT_CRITERIA = {
@@ -96,9 +97,9 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
 
 
 def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], *,
-           run_id: str = "", step: int = 0) -> tuple[float, float] | None:
+           run_id: str = "", step: int = 0, window: float = ZOOM_WINDOW) -> tuple[float, float] | None:
     """Re-locate `target` in an enlarged crop around `point`; None if Jev no longer sees it."""
-    crop, (x0, y0, x1, y1) = _crop_around(jpeg, point)
+    crop, (x0, y0, x1, y1) = _crop_around(jpeg, point, window)
     questions = {
         "present": {"type": "noul", "instructions":
                     "This is a zoomed-in part of a screen. Is the control the `utterance` asks to click, "
@@ -148,10 +149,11 @@ def _box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) ->
     return (x, y) if 0 <= x <= 1 and 0 <= y <= 1 else None  # padding must never become a click
 
 
-def _crop_around(jpeg: bytes, point: tuple[float, float]) -> tuple[bytes, tuple[float, float, float, float]]:
+def _crop_around(jpeg: bytes, point: tuple[float, float],
+                 window: float = ZOOM_WINDOW) -> tuple[bytes, tuple[float, float, float, float]]:
     image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     h, w = image.shape[:2]
-    side = ZOOM_WINDOW * max(w, h)
+    side = window * max(w, h)
     half_w, half_h = min(side, w) / 2, min(side * 0.66, h) / 2
     cx = min(max(point[0] * w, half_w), w - half_w)
     cy = min(max(point[1] * h, half_h), h - half_h)

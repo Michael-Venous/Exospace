@@ -163,8 +163,9 @@ def active_rect(frame: Frame) -> Rect:
     """Find the real screen inside the frame.
 
     A mirrored phone arrives as a portrait image with black bars on both sides
-    (pillarbox). Only symmetric bars count, so a dark desktop wallpaper doesn't
-    get cropped by mistake.
+    (pillarbox). Only symmetric bars on one axis count: a scaled-to-fit picture
+    always touches two opposite edges, while a window centred on a black wallpaper
+    has bars on all four sides and must not become the whole "screen".
     """
     h, w = frame.shape[:2]
     full = Rect(0, 0, w, h)
@@ -176,12 +177,10 @@ def active_rect(frame: Frame) -> Rect:
 
     left, right = int(cols[0]), w - 1 - int(cols[-1])
     top, bottom = int(rows[0]), h - 1 - int(rows[-1])
-    x0, x1, y0, y1 = 0, w, 0, h
-    if _symmetric_bars(left, right, w):
-        x0, x1 = left, w - right
-    if _symmetric_bars(top, bottom, h):
-        y0, y1 = top, h - bottom
-    return Rect(x0, y0, x1, y1)
+    sides, ends = _symmetric_bars(left, right, w), _symmetric_bars(top, bottom, h)
+    if sides == ends:
+        return full
+    return Rect(left, 0, w - right, h) if sides else Rect(0, top, w, h - bottom)
 
 
 def _symmetric_bars(a: int, b: int, size: int) -> bool:

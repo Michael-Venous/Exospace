@@ -10,7 +10,7 @@ from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, p
 from brain.agent.jev import JevVision
 from brain.agent.model import language_model
 from brain.agent.prompts import PLAN_SCHEMA
-from brain.agent.triage import GATE as ZOOM_GATE, refine
+from brain.agent.triage import FINE_WINDOW, GATE as ZOOM_GATE, refine
 from brain.imaging import shrink
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
@@ -68,9 +68,13 @@ positive down, about 5 per screenful; never pixels),
 skill(name=open_app,text=app), skill(name=wait) as its own stage ONLY when the
 screenshot shows a spinner, progress bar or blank page that is still loading (a
 loaded page never needs it), remember(key,text), ask_user(message), fail(message).
+To start an app that is not already open, use skill(open_app); never hunt
+for it in taskbars, docks or launcher menus.
 No done action is needed: completion is checked after the last stage.
 Never close, quit or minimize a window, tab or app, or switch to an unrelated
 app, unless the goal asks for it; recover inside the app the goal is about.
+Never click the small window-control buttons in a title bar's corner (they sit
+next to close): a small app window is maximized for you before your plan runs.
 Typing is literal. NEVER put tabs in text. Each hotkey is ONE simultaneous
 combination, not a sequence. Batch TAB and typing only when focus/tab order are
 clear. Separate field fills into stages with expected values to detect mistakes.
@@ -139,7 +143,8 @@ def validate_steps(data, allow_visual_fallback=False):
 
 SMALL_WINDOW=('The app window the goal works in is much smaller than the screen, leaving large empty or unrelated '
               'areas around it, and it is not maximized.')
-TITLE_BAR='The title bar of the app window the goal works in: its empty middle part, not a button.'
+MAXIMIZE=('The maximize button of the app window: the up-arrow or square icon among the window buttons in '
+          'its title bar corner, not close or minimize.')
 FOCUS_CHECK=('A text cursor or focused input is visible exactly where the next text should go, so typing '
              'now would land there.')
 FIELD_TARGET='The editable text field, search box or document area that the text "{text}" should be typed into.'
@@ -181,7 +186,6 @@ class JevFlashExecutor:
         self.completion=''
         self.last_reason=''
         self._fallback_image=None
-        self._window_done=False
         self._plan_image=None  # the screenshot the current plan was made from
 
     def acknowledge(self,executed:bool):
@@ -322,20 +326,27 @@ class JevFlashExecutor:
                 return Plan(f'Stage {self.cursor+1}/{len(self.stages)}: '+stage['expected'],self._ground(stage,{}),[])
             # Once per plan, on the first stage that works inside an app (not one that launches it):
             # a small window makes every control small.
-            check_window=self.check_window and not getattr(self,'_window_done',False)
+            check_window=self.check_window and getattr(self,'_window_run',None)!=ctx.run_id
             if check_window:
-                self._window_done=True
+                self._window_run=ctx.run_id  # one try per request: a window that will not grow stays as it is
                 checks['small_window']=SMALL_WINDOW
-                targets['title_bar']=TITLE_BAR
+                targets['maximize']=MAXIMIZE
             values,points=self.jev.assess(image,checks,targets,run_id=ctx.run_id,step=ctx.step,
                                           request=ctx.goal,proposal=stage['actions'])
             self.cancel.check()
-            maximize=None
             if check_window:
                 small=values.pop('small_window',0.0)>=self.jev.min_presence
-                title=points.pop('title_bar',None); targets.pop('title_bar',None)
-                if small and title is not None:  # double-click the title bar: the targets move, so plan again
-                    maximize=Action('double_click',x=title[0],y=title[1])
+                button={'maximize':targets.pop('maximize')}
+                point={'maximize':points.pop('maximize',None)}
+                # Window buttons sit ~13 px apart: one zoom aimed between maximize and minimize, a
+                # second, tighter one hit maximize 4/4. (A title-bar double-click is ignored by apps
+                # that draw their own title bar, such as Blender.)
+                found=self._zoom(image,button,point,ctx)['maximize'] if small else None
+                found=found and refine(self.jev,image,MAXIMIZE,found,run_id=ctx.run_id,step=ctx.step,
+                                       window=FINE_WINDOW)
+                if found:  # the targets move: re-plan on the next screen
+                    self._key=None
+                    return Plan('Maximize the app window first',[Action('click',x=found[0],y=found[1])],[])
             focus_click=None
             if 'focused' in values:
                 focused=values.pop('focused')>=ZOOM_GATE
@@ -348,9 +359,6 @@ class JevFlashExecutor:
                     focus_click=Action('click',x=field[0],y=field[1])
             if image==self._plan_image:  # Flash planned from this very screen: its route vote is redundant
                 values.pop('route_execute',None)  # (it vetoed 3 fresh plans in a row and cancelled a run)
-            if maximize is not None:
-                self._key=None  # the window changes size: re-plan on the next screen
-                return Plan('Maximize the app window first',[maximize],[])
             mismatch=[name for name,value in values.items() if value<self.jev.min_presence]
             if not mismatch and all(p is not None for p in points.values()):
                 self.pending=False

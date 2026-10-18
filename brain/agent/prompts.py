@@ -56,7 +56,8 @@ If the screen didn't change after your last actions, do something different inst
 repeating. If an unexpected dialog or popup appears, deal with it (usually dismiss it), \
 then continue. A black screen showing little more than a battery icon or pointer is an app \
 hiding itself from capture, not sleep: go back and try another way. \
-Never enter passwords or other credentials."""
+Never enter passwords or other credentials. Never click the small window-control buttons in a title bar's \
+corner (they sit next to close)."""
 
 USER_TEMPLATE = """Goal: {goal}
 Device: {os} ({input})

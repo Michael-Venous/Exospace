@@ -71,7 +71,9 @@ class Agent:
         try:
             progress_at = time.monotonic()
             for step in range(1, self.max_steps + 1):
-                if self.stall_s and time.monotonic() - progress_at > self.stall_s:
+                override = getattr(self.executor, "stall_s", None)  # deep mode allows slower steps
+                stall_s = override if isinstance(override, (int, float)) and override else self.stall_s
+                if stall_s and time.monotonic() - progress_at > stall_s:
                     # No visible progress for a while is a failure the user should hear about, not a silent grind.
                     status, message = "fail", "I'm stuck on this one and stopped. Could you try it another way?"
                     break
