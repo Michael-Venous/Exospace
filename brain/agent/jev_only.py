@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
@@ -160,6 +161,9 @@ class JevOnlyPlanner:
             choice = answers["text"].get("choice")
             if choice not in {str(i) for i in range(len(texts))}:
                 return _fail("the text to type isn't in the request")
+            if _is_the_request(texts[int(choice)], ctx.goal):
+                # "write a short note about my day" was typed as the note (Diego, agent/jev-only-fixes).
+                return _fail("the request asks for text to be written, not typed word for word")
             if probability(answers["replace"].get("noul")) >= GATE:
                 # Select-all only in a filled single-line box: in a document it would replace everything.
                 actions.append(Action("hotkey", keys=("GUI" if ctx.profile.os in ("macos", "ios") else "CTRL", "A")))
@@ -167,9 +171,15 @@ class JevOnlyPlanner:
         if step == "enter":
             actions.append(Action("hotkey", keys=("ENTER",)))
         if step in ("scroll_down", "scroll_up"):
+            if ctx.profile.input == "mouse":  # a Mac scrolls what is under the pointer: a toolbar scrolled nothing
+                actions.append(Action("skill", name="hover", args={"x": 0.5, "y": 0.5}))
             actions.append(Action("scroll", dy=5 if step == "scroll_down" else -5))
         if not actions:
             return _fail("it needs reasoning or content Jev can't supply")
+        if _repeats(actions, ctx.history):
+            # Clicking "1" twice typed 11 for "12 times eight", and Enter twice submitted twice: never repeat
+            # input to find out whether it worked (Diego, agent/jev-only-fixes).
+            return _fail("it would repeat the step it just took")
         if guard and probability(answers["irreversible"].get("noul")) >= GATE:
             return Plan("Irreversible step needs approval", [], [], held=f'the next step of "{ctx.goal.splitlines()[-1]}"')
         return Plan(f"Jev next step: {step}", actions, [])
@@ -201,6 +211,37 @@ class JevOnlyPlanner:
         if ctx.history[-1] != WAIT.brief():  # the launcher, its results or the chosen app still appearing
             return Plan("Waiting for the app", [WAIT], [])
         return _fail("no app suited to the request is visible")
+
+
+def _words(text: str) -> list[str]:
+    return re.sub(r"[^\w\s]", " ", text.lower()).split()
+
+
+def _is_the_request(text: str, goal: str) -> bool:
+    """True when the text to type is (nearly) the whole request: an instruction, not dictated words."""
+    request = _words(goal.splitlines()[-1])
+    return len(request) >= 3 and len(_words(text)) >= len(request) - 1
+
+
+_POINT = re.compile(r"^(click|double_click|right_click)\((\d+),(\d+)\)$")
+SAME_SPOT = 20  # history coordinates are 0-1000: a click this close to the last one is the same click
+
+
+def _repeats(actions: list[Action], history: list[str]) -> bool:
+    """True when these actions are the same input as the last ones that ran (a click within SAME_SPOT, the
+    same text or the same keys). Scrolls, waits and pointer moves may repeat."""
+    inputs = [a.brief() for a in actions if a.type not in ("scroll", "skill")]
+    recent = [h for h in history if not h.startswith(("scroll(", "skill("))][-len(inputs):] if inputs else []
+    if not inputs or len(recent) < len(inputs):
+        return False
+    for new, old in zip(inputs, recent):
+        a, b = _POINT.match(new), _POINT.match(old)
+        if a and b:
+            if a[1] != b[1] or abs(int(a[2]) - int(b[2])) > SAME_SPOT or abs(int(a[3]) - int(b[3])) > SAME_SPOT:
+                return False
+        elif new != old:
+            return False
+    return True
 
 
 def _fail(why: str) -> Plan:

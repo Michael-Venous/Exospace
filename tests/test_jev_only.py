@@ -89,6 +89,20 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("what is this page about?", complete=.9, question=.9).type, "fail")
         self.assertEqual(self.step("asdkjh qwe zxcv", fits=.1, next="stuck").type, "fail")  # no launcher
 
+    def test_the_same_input_is_never_repeated_right_after_it_ran(self):
+        self.assertEqual(self.step("open calculator, then click 7", history=["click(300,300)"]).type, "fail")
+        self.assertEqual(self.step("open calculator, then click 7", history=["click(600,300)"]).type, "click")
+        typed = self.plan("search for cats", next="enter", history=["type_text('cats')", "hotkey(ENTER)"])
+        self.assertEqual(typed[0].type, "fail")
+
+    def test_the_request_itself_is_never_typed(self):
+        goal = "write a short note about my day"
+        self.assertEqual(self.step(goal, next="type", text=str(spans(goal, 250).index(goal))).type, "fail")
+
+    def test_a_scroll_first_moves_the_pointer_over_the_page(self):
+        actions = self.plan("scroll down to the comments", next="scroll_down")
+        self.assertEqual([a.brief() for a in actions], ["skill(hover {'x': 0.5, 'y': 0.5})", "scroll(5)"])
+
     def test_text_the_request_does_not_give_word_for_word_is_left_to_flash(self):
         self.assertEqual(self.step("work out 12 times 9", composed=.9).type, "fail")
 
@@ -156,6 +170,15 @@ class JevOnlyGuardTests(unittest.TestCase):
             JevFirstPlanner(Mock(), Mock(), policy)
         self.assertIs(flash.call_args.args[2], policy)
         self.assertIs(steps.call_args.args[1], policy)
+
+
+class PlannerInterfaceTests(unittest.TestCase):
+    def test_both_race_planners_answer_everything_race_calls(self):
+        # EXECUTOR=jev crashed on a missing forget_plan after a launch (nrebolloso, origin/live-speech).
+        from brain.agent.jev_flash import JevFlashExecutor
+        for planner in (JevFirstPlanner, JevFlashExecutor):
+            for name in ("next_actions", "acknowledge", "forget_plan", "classify_os", "close", "image_side"):
+                self.assertTrue(hasattr(planner, name), f"{planner.__name__}.{name}")
 
 
 class JevFirstTests(unittest.TestCase):
