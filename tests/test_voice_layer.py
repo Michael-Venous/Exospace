@@ -1,5 +1,6 @@
 """Voice layer: narration, forwarding to the agent, barge-in, and request guards."""
 
+import importlib.util
 import json
 import queue
 import threading
@@ -10,9 +11,14 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock
 
+import cv2
+import numpy as np
+
 from brain.display.server import Command, DisplayServer
 from brain.events import EventBus
 from brain.voice.layer import Agent, filler, narrate, page_server
+
+HAS_PLAYWRIGHT = importlib.util.find_spec("playwright") is not None
 
 
 class NarrationTests(unittest.TestCase):
@@ -190,6 +196,38 @@ class PageServerTests(unittest.TestCase):
         self.assertEqual(self.post("/segment", {"text": "send it"}, origin=False), 403)
         self.assertEqual(self.post("/segment", {"text": ""}), 400)
         self.agent.submit.assert_not_called()
+
+
+@unittest.skipUnless(HAS_PLAYWRIGHT, "playwright is only installed with the browser extra")
+class LiveViewTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from playwright.sync_api import Error, sync_playwright
+        playwright = sync_playwright().start()
+        cls.addClassCleanup(playwright.stop)
+        try:
+            cls.browser = playwright.chromium.launch()
+        except Error as exc:
+            raise unittest.SkipTest(f"no Chromium to drive: {exc}")
+        cls.addClassCleanup(cls.browser.close)
+
+    def test_reopening_the_view_at_once_runs_one_frame_loop(self):
+        agent = Mock()
+        agent.screen.return_value = cv2.imencode(".jpg", np.zeros((8, 8, 3), np.uint8))[1].tobytes()
+        server = page_server(agent, 0, 8781, queue.Queue())
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        page = self.browser.new_page()
+        self.addCleanup(page.close)
+        page.goto(f"http://127.0.0.1:{server.server_address[1]}/")
+        page.click("#device")
+        while agent.screen.call_count < 4:
+            time.sleep(0.01)
+        page.wait_for_timeout(100)  # the loop is now asleep between two frames
+        page.evaluate("() => { dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape'})); device.click(); }")
+        reopened = agent.screen.call_count
+        page.wait_for_timeout(1500)
+        self.assertLessEqual(agent.screen.call_count - reopened, 8)  # one loop asks every 250 ms: about 6
 
 
 if __name__ == "__main__":
