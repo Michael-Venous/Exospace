@@ -2,17 +2,18 @@
 <title>Exospace Voice</title>
 <style>
 :root{--ink:#f5f5f7;--dim:#8e8e93;--tone:#1c1c1e;--edge:clamp(32px,7vw,140px)}
-body{margin:0;min-height:100dvh;display:grid;grid-template-rows:1fr auto;gap:48px;box-sizing:border-box;
+body{margin:0;height:100dvh;display:grid;grid-template-rows:minmax(0,1fr) auto;gap:48px;box-sizing:border-box;
   padding:clamp(32px,6vmin,96px) var(--edge);overflow:hidden;background:#000;color:var(--ink);
   font:500 16px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;-webkit-tap-highlight-color:transparent}
 button{font:inherit;color:inherit;border:0;cursor:pointer}
 /* What you say is the headline. */
-main{align-self:center}
+main{align-self:center;max-height:100%;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end}
 #heard{margin:0;max-width:11ch;font-size:clamp(56px,5.8vw,112px);line-height:1;letter-spacing:-.035em;text-wrap:balance}
 #heard.long{max-width:16ch;font-size:clamp(40px,3.8vw,72px)}
+#heard.longer{max-width:30ch;font-size:clamp(24px,2.4vw,44px)}
 body:not(.on,.wait) #said:empty~#live:empty::before{content:"What are we doing today?";color:var(--ink)}
 #live,#says{color:var(--dim)}
-#says{margin-top:.9em;max-width:40ch;min-height:1.3em;font-size:clamp(24px,2vw,36px);letter-spacing:-.01em}
+#says{flex:none;margin-top:.9em;max-width:40ch;min-height:1.3em;font-size:clamp(24px,2vw,36px);letter-spacing:-.01em}
 .err{color:#ff6961}
 footer{display:flex;align-items:center;gap:28px}
 /* The control: a white dot; the dark disc behind it swells with the voice (--lvl, eased in the script). */
@@ -38,9 +39,9 @@ footer{display:flex;align-items:center;gap:28px}
 #device .phone,#device.phone .computer{display:none}
 #device.phone .phone{display:block}
 #device.none svg{stroke:var(--dim)}
-#view{position:fixed;inset:0;z-index:2;display:grid;place-items:center;background:#000}
+#view{position:fixed;inset:0;z-index:2;display:grid;grid-template-rows:100%;place-items:center;background:#000}
 #view[hidden]{display:none}
-#frame{max-width:100%;max-height:100%;object-fit:contain}
+#frame{width:100%;height:100%;object-fit:contain}
 #view.empty #frame{display:none}
 #view:not(.empty) #nodevice{display:none}
 #nodevice{font-size:clamp(32px,3vw,56px);letter-spacing:-.02em;color:var(--dim)}
@@ -212,7 +213,9 @@ async function start() {
     const words = m.channel.alternatives[0].transcript;
     if (m.is_final && words) done = (done + " " + words).trim();
     if (words) { said.className = ""; said.textContent = done; live.textContent = m.is_final ? "" : words; }
-    heard.classList.toggle("long", (said.textContent + live.textContent).length > 80);
+    const shown = (said.textContent + live.textContent).length;
+    heard.classList.toggle("long", shown > 80);
+    heard.classList.toggle("longer", shown > 120);
     // Each pause ends a segment: send it now so execution starts while the user keeps talking.
     if (m.speech_final && done) { send(done, sent); done = ""; sent = true; }
   };
@@ -243,7 +246,7 @@ addEventListener("blur", release);  // the keyup goes to another window
 // Live view of the connected device: the agent's capture-card frame (/screen.jpg, relayed by this server).
 // While closed, a probe every 5 s keeps the device icon current (dim when nothing is connected).
 const FRAME_MS = 250;
-let viewing = false;
+let viewing = false, loops = 0;  // loops numbers each open; a loop from an earlier open stops
 const loadFrame = img => new Promise(done => {
   img.onload = () => done(true); img.onerror = () => done(false);
   img.src = `/screen.jpg?t=${Date.now()}`;
@@ -252,8 +255,8 @@ function showDevice(ok, img) {
   device.classList.toggle("none", !ok);
   if (ok) device.classList.toggle("phone", img.naturalHeight > img.naturalWidth);
 }
-async function streamFrames() {
-  while (viewing) {
+async function streamFrames(mine) {
+  while (viewing && mine === loops) {
     const ok = await loadFrame(frame);
     showDevice(ok, frame);
     view.classList.toggle("empty", !ok);
@@ -263,7 +266,7 @@ async function streamFrames() {
 function openView(on) {
   if (viewing === on) return;
   viewing = on; view.hidden = !on; device.setAttribute("aria-expanded", on);
-  if (on) streamFrames();
+  if (on) streamFrames(++loops);
 }
 device.onclick = () => openView(true);
 back.onclick = () => openView(false);
