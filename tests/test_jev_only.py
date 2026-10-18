@@ -67,13 +67,20 @@ class JevOnlyTests(unittest.TestCase):
 
     def test_typed_text_is_a_run_of_the_goals_words(self):
         goal = 'type "hello world", then press enter'
-        action = self.step(goal, next="type", text=str(spans(goal, 250).index("hello world")))
+        action = self.step(goal, next="type", text=str(spans(goal, 250).index("hello world")),
+                           history=["click(300,300)"])
         self.assertEqual((action.type, action.text), ("type_text", "hello world"))
         self.assertEqual(self.step("write a poem", next="type").type, "fail")
         self.assertEqual(self.step("type hi", next="type", text="99").type, "fail")
 
+    def test_typing_not_right_after_a_click_clicks_the_field_first(self):
+        goal = "search for cats"
+        actions = self.plan(goal, next="type", text=str(spans(goal, 250).index("cats")), history=["hotkey(GUI)"])
+        self.assertEqual([a.type for a in actions], ["click", "type_text"])
+
     def test_filled_box_is_selected_before_typing(self):
-        actions = self.plan("search for cats", next="type", text=str(spans("search for cats").index("cats")), replace=.9)
+        actions = self.plan("search for cats", next="type", text=str(spans("search for cats").index("cats")), replace=.9,
+                            history=["click(300,300)"])
         self.assertEqual([a.brief() for a in actions], ["hotkey(CTRL+A)", "type_text('cats')"])
 
     def test_fill_clicks_the_field_then_types(self):

@@ -134,6 +134,10 @@ class JevOnlyPlanner:
             self.routed = ctx.run_id
         step = answers["next"].get("choice")
         actions: list[Action] = []
+        if step == "type" and not (ctx.history and ctx.history[-1].startswith("click(")):
+            # Focus doesn't show in a screenshot: a "type" not right after a click went nowhere, so the field
+            # is clicked first (nrebolloso, origin/live-speech b219465).
+            step = "fill"
         if step in ("click", "double_click", "right_click", "fill"):
             point = box_center(answers["target"], size, padded)
             sure = probability(answers["present"].get("noul"))
