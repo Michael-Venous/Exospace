@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import json
 import math
 import time
@@ -117,7 +118,8 @@ class JevVision:
                         raise JevError('Jev returned incomplete answers')
                     success = True
                     self.trace.append({'label': label, 'elapsed_s': round(time.monotonic()-started, 3),
-                                       'state': state or {}, 'gates': gates or {},
+                                       # a copy: callers pass their live history, which later steps extend
+                                       'state': copy.deepcopy(state or {}), 'gates': gates or {},
                                        'answers': {k: _on_screen(answers[k], size, padded, region) for k in questions}})
                     return answers, size, padded
             except httpx.TransportError as exc:  # a timeout or dropped connection: one retry

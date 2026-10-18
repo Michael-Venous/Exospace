@@ -50,10 +50,11 @@ Other executors: `EXECUTOR=direct` makes one vision-model call per step (p50 2.5
 input, a `done` claim costs one more call that must see the goal on screen); `jev-flash` runs the planner
 alone; `legacy-dual` is the older fast-executor + separate-planner pair.
 
-The loop is the single HID writer. It discards a plan when the screen moved during inference (unless the screen
-never settles, like a video), skips the rest of a batch when a click changed the screen, cancels after 3 failed
-verifications, and stops a run that repeats the same batch from the same screen. A run survives a restart, replug
-or blank screen: it waits up to 180 s for video, re-detects the device and continues on the new screen.
+The loop is the single HID writer. It discards a plan when the screen moved during inference where one of its
+clicks lands (motion elsewhere, like a video or a streaming terminal, doesn't count, and nothing does on a screen
+that never settles), skips the rest of a batch when a click changed the screen under the next one, cancels after 3
+failed verifications, and stops a run that repeats the same batch from the same screen. A run survives a restart,
+replug or blank screen: it waits up to 180 s for video, re-detects the device and continues on the new screen.
 
 ## Modules
 

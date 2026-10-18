@@ -294,6 +294,26 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(self.hid.commands, [{"op": "release_all"}])
 
+    def test_motion_away_from_the_click_keeps_the_plan(self):
+        def next_actions(image, ctx):
+            if ctx.step == 1:
+                self.capture.frame[:20, :40] = 210  # a video playing in a corner
+                return Plan("back", [Action("click", x=.5, y=.5)], [])
+            return Plan("ask", [Action("ask_user", question="Next?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.agent().run("Go back", self.profile)
+        self.assertIn("click", [command["op"] for command in self.hid.commands])
+
+    def test_keys_planned_on_a_moving_screen_still_run(self):
+        def next_actions(image, ctx):
+            if ctx.step == 1:
+                self.capture.frame[:] = 210
+                return Plan("submit", [Action("hotkey", keys=("ENTER",))], [])
+            return Plan("ask", [Action("ask_user", question="Next?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.agent().run("Search", self.profile)
+        self.assertIn({"op": "key", "keys": ["ENTER"]}, self.hid.commands)
+
     def test_a_screen_that_never_settles_still_runs_the_plan(self):
         frames = iter(range(10**6))  # a live camera preview: every grab differs
         self.capture.grab = lambda: np.full((100, 160, 3), 60 + next(frames) % 2 * 40, dtype=np.uint8)

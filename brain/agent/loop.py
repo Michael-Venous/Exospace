@@ -19,12 +19,13 @@ from brain.errors import describe
 from brain.events import EventBus
 from brain.imaging import MAX_SIDE, prepare
 from brain.telemetry import Telemetry
-from brain.types import Action, ActionError, DeviceProfile, Frame, POINTER_ACTIONS, TERMINAL_ACTIONS
+from brain.types import Action, ActionError, DeviceProfile, Frame, POINTER_ACTIONS, Rect, TERMINAL_ACTIONS
 from brain.verification import visibly_changed
 
 STALL_S = 20.0  # no visible progress for this long ends the run (a demo must never look frozen)
 # A run survives these (PLAN.md §5.6): the target restarted, was replugged or blanked.
 RESUMABLE = frozenset({"target disconnected", "video lost"})
+NEAR = 0.03  # an aimed action's target: this fraction of the screen each way around its point
 
 
 @dataclass(frozen=True)
@@ -142,7 +143,9 @@ class Agent:
                         if latest is None or is_blank(latest):
                             token.cancel("video lost")
                             token.check()
-                        if not moving and frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                        # Keys go to the focused control, which no pixel test can place, so only aimed actions go stale.
+                        if not moving and any(moved_under(a, frame, latest, profile.rect)
+                                              for a in plan.actions if a.x is not None):
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
                             continue
                     notes = list(plan.rejected)
@@ -167,7 +170,7 @@ class Agent:
                                 stamp = time.monotonic()
                                 latest = ctl.capture.grab()
                                 times["t_capture"] += time.monotonic() - stamp
-                                if latest is None or frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                                if latest is None or moved_under(action, frame, latest, profile.rect):
                                     notes.append("The screen changed mid-batch, so the rest was skipped. "
                                                  "Reground on this screen.")
                                     break
@@ -305,3 +308,12 @@ class Agent:
         while isinstance(trace, deque) and trace:  # the race's planner thread may still append
             taken.append(trace.popleft())
         return taken
+
+
+def moved_under(action: Action, frame: Frame, latest: Frame, rect: Rect) -> bool:
+    """Whether the screen changed where `action` lands since `frame`. Only the target counts: comparing
+    whole screens discarded every plan while a video played elsewhere (measured: 12 clicks in a row)."""
+    x, y = rect.x0 + action.x * rect.width, rect.y0 + action.y * rect.height
+    rows = slice(max(rect.y0, round(y - NEAR * rect.height)), min(rect.y1, round(y + NEAR * rect.height) + 1))
+    cols = slice(max(rect.x0, round(x - NEAR * rect.width)), min(rect.x1, round(x + NEAR * rect.width) + 1))
+    return visibly_changed(frame[rows, cols], latest[rows, cols])

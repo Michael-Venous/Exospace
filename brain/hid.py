@@ -13,7 +13,7 @@ import re
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Iterator, Protocol
 
 import serial
 
@@ -25,7 +25,8 @@ PING_ATTEMPTS = 3
 
 EventCallback = Callable[[str], None]  # receives "mounted" / "unmounted"
 VOICE_WINDOW = "Exospace Voice"  # brain/voice/layer.html's title
-_BROWSER_CLASS = re.compile(r"chrom|firefox|brave|edge|vivaldi|opera", re.I)  # WM_CLASS
+# freedesktop Categories whose apps run keys meant for a page as commands, or edit code with them.
+_NO_KEYS = frozenset({"TerminalEmulator", "TextEditor", "IDE"})
 
 
 class HIDError(RuntimeError):
@@ -178,6 +179,8 @@ class LocalHID:
             gui.click(*self._px(cmd["x"], cmd["y"]), clicks=cmd.get("count", 1),
                       button=cmd.get("button", "left"))
         elif op == "scroll":
+            if spot := _scroll_spot(gui.position()):
+                gui.moveTo(*spot)
             gui.scroll(-int(cmd["dy"]) * 5)  # pyautogui: positive = up
         elif op == "swipe":
             gui.moveTo(*self._px(cmd["x1"], cmd["y1"]))
@@ -222,24 +225,10 @@ class LocalHID:
 
 def _focus_window_below() -> bool:
     """Focus the topmost window on this workspace other than the voice app; False if none took it."""
-    def run(*cmd: str) -> str:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=1).stdout
     try:
-        workspace = run("xprop", "-root", "_NET_CURRENT_DESKTOP").split()[-1]
-        listed = {int(w, 16): (d, title) for w, d, _, title in
-                  ((line.split(None, 3) + [""])[:4] for line in run("wmctrl", "-l").splitlines())}
-        for window in reversed(re.findall(r"0x[0-9a-f]+", run("xprop", "-root", "_NET_CLIENT_LIST_STACKING"))):
-            on, title = listed.get(int(window, 16), ("", ""))
-            props = run("xprop", "-id", window, "WM_CLASS", "_NET_WM_WINDOW_TYPE")
-            if on == workspace and title != VOICE_WINDOW and "_DESKTOP" not in props:
-                # Never a terminal or an editor: keys meant for a page there run as commands.
-                # shortcut: browsers only; widen the list when another app needs spoken keys.
-                if not _BROWSER_CLASS.search(props.partition("_NET_WM_WINDOW_TYPE")[0]):
-                    return False
-                run("wmctrl", "-i", "-a", window)
-                break
-        else:
+        if (window := _window_below()) is None or not _takes_keys(window):
             return False
+        _run("wmctrl", "-i", "-a", window)
     except (OSError, subprocess.SubprocessError, IndexError, ValueError):
         return False
     for _ in range(10):  # activation lands a moment later; a key sent before it reaches the voice app
@@ -247,6 +236,91 @@ def _focus_window_below() -> bool:
             return True
         time.sleep(0.03)
     return False
+
+
+def _takes_keys(window: str) -> bool:
+    """Whether keys meant for the target can go to `window`: an app this machine's launcher names, and
+    never a terminal or an editor (`_NO_KEYS`)."""
+    from brain.skills import desktop_entries  # here: brain.skills imports brain.capture, which imports this
+
+    ids = {v.lower() for v in re.findall(r'"([^"]+)"', _run("xprop", "-id", window, "WM_CLASS", "_GTK_APPLICATION_ID"))}
+    kinds = [categories for _, entry_ids, categories in desktop_entries() if entry_ids & ids]
+    return bool(kinds) and not any(categories & _NO_KEYS for categories in kinds)
+
+
+def _scroll_spot(pointer: tuple[int, int]) -> tuple[int, int] | None:
+    """Where a scroll reaches the window the run drives (the topmost but the voice app, which keys go to too):
+    the middle of its part the voice app leaves bare, unless the pointer is on that part already. A scroll under
+    a pointer left elsewhere scrolled nothing the agent saw (a terminal beside the new browser, 2026-10-18).
+    None scrolls under the pointer."""
+    try:
+        stack = list(_stack())
+        if (below := next((window for window, title in stack if title != VOICE_WINDOW), None)) is None:
+            return None
+        x, y, w, h = window_rect(below)
+        for window, title in stack:
+            if window == below:
+                break
+            x, y, w, h = _beside((x, y, w, h), window_rect(window))
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError, TypeError):
+        return None
+    if w <= 0 or h <= 0 or (x <= pointer[0] < x + w and y <= pointer[1] < y + h):
+        return None
+    return x + w // 2, y + h // 2
+
+
+def _beside(rect: tuple[int, int, int, int], cover: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """The largest strip of `rect` that `cover` leaves bare, all as (left, top, width, height); `rect` when
+    they don't overlap."""
+    x, y, w, h = rect
+    cx, cy, cw, ch = cover
+    if cx >= x + w or cx + cw <= x or cy >= y + h or cy + ch <= y:
+        return rect
+    strips = [(x, y, cx - x, h), (cx + cw, y, x + w - cx - cw, h), (x, y, w, cy - y), (x, cy + ch, w, y + h - cy - ch)]
+    return max(strips, key=lambda s: max(s[2], 0) * max(s[3], 0))
+
+
+def _window_below() -> str | None:
+    """The topmost window on this workspace other than the voice app."""
+    return next((window for window, title in _stack() if title != VOICE_WINDOW), None)
+
+
+def _stack() -> Iterator[tuple[str, str]]:
+    """This workspace's windows as (X11 id, title), topmost first; never the desktop itself."""
+    workspace = _run("xprop", "-root", "_NET_CURRENT_DESKTOP").split()[-1]
+    listed = _listed()
+    for window in reversed(re.findall(r"0x[0-9a-f]+", _run("xprop", "-root", "_NET_CLIENT_LIST_STACKING"))):
+        on, title = listed.get(int(window, 16), ("", ""))
+        if on in (workspace, "-1") and "_DESKTOP" not in _run("xprop", "-id", window, "_NET_WM_WINDOW_TYPE"):
+            yield window, title
+
+
+def window_rects(title: str) -> list[tuple[int, int, int, int]]:
+    """Where each window whose title starts with `title` is, as `window_rect` gives it."""
+    return [rect for window, (_, name) in _listed().items() if name.startswith(title) and (rect := window_rect(hex(window)))]
+
+
+def window_rect(window: str) -> tuple[int, int, int, int] | None:
+    """`window`'s left, top, width and height in desktop pixels, frame included (`wmctrl -lG` misplaces
+    framed windows); None once it's closed."""
+    info = _run("xwininfo", "-id", window)
+    found = [re.search(rf"{key}:\s*(-?\d+)", info) for key in ("Absolute upper-left X", "Absolute upper-left Y", "Width", "Height")]
+    if not all(found):
+        return None
+    x, y, w, h = (int(m[1]) for m in found)  # type: ignore[index]
+    extents = re.findall(r"\d+", _run("xprop", "-id", window, "_NET_FRAME_EXTENTS").partition("=")[2])
+    left, right, top, bottom = (int(v) for v in extents) if len(extents) == 4 else (0, 0, 0, 0)
+    return x - left, y - top, w + left + right, h + top + bottom
+
+
+def _listed() -> dict[int, tuple[str, str]]:
+    """`wmctrl -l`: each window as its X11 id -> (its workspace, its title)."""
+    return {int(w, 16): (on, title) for w, on, _, title in
+            ((line.split(None, 3) + [""])[:4] for line in _run("wmctrl", "-l").splitlines())}
+
+
+def _run(*cmd: str) -> str:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=1).stdout
 
 
 def _focused_title() -> str:

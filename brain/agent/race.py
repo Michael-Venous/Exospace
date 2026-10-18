@@ -81,10 +81,15 @@ class RaceExecutor:
         key = (ctx.run_id, ctx.goal)
         if key != self._key:
             self._key, self._clicked, self._approved_goal = key, False, None
-            if ctx.history:  # a quick command already acted: triage would redo it ("+" after Ctrl+T), the planner checks it
-                self.mode = "plan"
-            else:
+            if not ctx.history:
                 return self._start(image, ctx)
+            # A quick command already acted: triage would redo it ("+" after Ctrl+T), so the planner checks it. Only
+            # triage's irreversible gate runs: "open Discord and text Peter ..." clicked Peter with no approval asked.
+            self.mode, utterance = "plan", ctx.goal.splitlines()[-1]
+            self._plan = self._pool.submit(self.planner.next_actions, image, self._planner_ctx(ctx))
+            if self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, run_id=ctx.run_id)).irreversible:
+                return self.hold(ctx, f'"{utterance}"')
+            return self.cancel.run(self._plan.result)
         if self.mode == "scroll":
             # "scroll down to the comments" also triages as a scroll: done only if the goal is met.
             if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):

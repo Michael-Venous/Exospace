@@ -2,7 +2,7 @@
 
 import sys
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from brain.hid import VOICE_WINDOW, LocalHID, _focus_window_below
 from brain.types import ActionError
@@ -56,9 +56,17 @@ class LocalHIDTests(unittest.TestCase):
         below.assert_called_once()
         gui.hotkey.assert_called_once_with("ctrl", "t")
 
-    def test_keys_never_go_to_a_terminal_below(self, title):
-        windows = {"0x1": ("Exospace - Visual Studio Code", "code"), "0x2": ("New Tab - Google Chrome", "google-chrome"),
-                   "0x3": ("claude", "gnome-terminal-server"), "0x4": (VOICE_WINDOW, "google-chrome")}
+    @patch("brain.skills.desktop_entries", return_value=[
+        ("visual studio code", {"code"}, {"Development", "IDE", "TextEditor"}),
+        ("google chrome", {"google-chrome"}, {"Network", "WebBrowser"}),
+        ("terminal", {"org.gnome.terminal", "gnome-terminal"}, {"System", "TerminalEmulator"}),
+        ("discord", {"com.discordapp.discord", "discord"}, {"Network", "InstantMessaging"})])
+    def test_keys_never_go_to_a_terminal_below(self, _entries, title):
+        windows = {"0x1": ("Exospace - Visual Studio Code", '"code", "Code"'),
+                   "0x2": ("New Tab - Google Chrome", '"google-chrome", "Google-chrome"'),
+                   "0x3": ("claude", '"gnome-terminal-server", "Gnome-terminal"'),
+                   "0x4": (VOICE_WINDOW, '"127.0.0.1", "Google-chrome"'), "0x5": ("Discord", '"discord", "discord"'),
+                   "0x6": ("Notes", '"sticky.py", "Sticky.py"')}
 
         def run(order):
             def fake(cmd, **_):
@@ -68,7 +76,7 @@ class LocalHIDTests(unittest.TestCase):
                     out = "\n".join(f"{w}  0 host {t}" for w, (t, _) in windows.items()) if cmd[1] == "-l" else ""
                     activated.extend(cmd[3:])
                 elif cmd[1] == "-id":
-                    out = f'WM_CLASS(STRING) = "{windows[cmd[2]][1]}"\n_NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_NORMAL'
+                    out = f'WM_CLASS(STRING) = {windows[cmd[2]][1]}\n_NET_WM_WINDOW_TYPE(ATOM) = _NET_WM_WINDOW_TYPE_NORMAL'
                 else:
                     out = out[cmd[-1]]
                 return Mock(stdout=out)
@@ -80,6 +88,23 @@ class LocalHIDTests(unittest.TestCase):
         self.assertEqual(run(["0x1", "0x3", "0x2", "0x4"]), (True, ["0x2"]))  # the browser the user was in
         self.assertEqual(run(["0x2", "0x3", "0x4"]), (False, []))  # never past it to a browser further down
         self.assertEqual(run(["0x2", "0x1", "0x4"]), (False, []))
+        self.assertEqual(run(["0x2", "0x5", "0x4"]), (True, ["0x5"]))  # any app but a terminal or an editor
+        self.assertEqual(run(["0x2", "0x6", "0x4"]), (False, []))  # one the launcher can't name
+
+    def test_a_scroll_reaches_the_window_below_the_voice_app(self, _title):
+        gui = Mock(**{"position.return_value": (100, 2000)})
+        with patch.dict(sys.modules, {"pyautogui": gui}):
+            hid = LocalHID()
+        rects = {"0x4": (0, 1800, 1440, 1800), "0x2": (0, 1800, 2880, 1800)}
+        with patch("brain.hid._stack", return_value=[("0x4", VOICE_WINDOW), ("0x2", "YouTube - Google Chrome")]), \
+                patch("brain.hid.window_rect", rects.get):
+            hid.send({"op": "scroll", "dy": 5})
+            gui.position.return_value = (2000, 2000)  # on the browser now: it scrolls there
+            hid.send({"op": "scroll", "dy": 5})
+            gui.position.return_value = (100, 100)  # on another monitor's terminal: the browser still
+            hid.send({"op": "scroll", "dy": 5})
+        self.assertEqual(gui.moveTo.call_args_list, [call(2160, 2700)] * 2)  # the browser's part beside the voice app
+        self.assertEqual(gui.scroll.call_count, 3)
 
 
 if __name__ == "__main__":

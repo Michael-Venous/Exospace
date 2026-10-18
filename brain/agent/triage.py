@@ -25,6 +25,7 @@ GATE = 0.5  # presence/uniqueness, zoom presence, irreversible, approval: 0 unsa
 ZOOM_WINDOW = 0.30  # crop side as a fraction of the longer screen side
 ZOOM_SCALE = 2.5
 UTTERANCE_CONTROL = "the control the `utterance` asks to click, tap or open"
+CROP_HEIGHT = 0.66  # a zoom crop's height over its width
 FINE_WINDOW = 0.12  # the second, tighter look: Jev's boxes come in 0.005 steps of whatever it is shown
 SCROLL = 5  # wheel notches for "scroll down a bit": about a screenful
 MAX_SPANS = 40  # word runs of the utterance offered as the app's name
@@ -144,19 +145,40 @@ def spans(utterance: str, limit: int = MAX_SPANS) -> list[str]:
 
 
 def refine(jev: JevVision, jpeg: bytes, state: dict, point: tuple[float, float], *, control: str = UTTERANCE_CONTROL,
-           tight: bool = True, run_id: str = "", step: int = 0) -> tuple[float, float] | None:
+           tight: bool = True, window: float = ZOOM_WINDOW, run_id: str = "",
+           step: int = 0) -> tuple[float, float] | None:
     """Re-locate `control` (described in terms of `state`) in an enlarged crop around `point`, then in a tighter
     one around that; None if Jev no longer sees it. On 49 OCR-labelled targets (Blender, Wikipedia, KCalc, GitHub)
     the point landed in the target 4 times from the full screen, 28 after one zoom and 35 after both.
-    `tight=False` stops after the first zoom: one Jev round-trip instead of two."""
-    coarse = _look(jev, jpeg, state, control, point, ZOOM_WINDOW, run_id, step)
+    `tight=False` stops after the first zoom: one Jev round-trip instead of two. `window` is the first crop's side."""
+    coarse = _settle(jev, look(jev, jpeg, state, control, point, window, run_id, step), point)
     if coarse is None or not tight:
         return coarse
-    return _look(jev, jpeg, state, control, coarse, FINE_WINDOW, run_id, step) or coarse
+    return _settle(jev, look(jev, jpeg, state, control, coarse, FINE_WINDOW, run_id, step), coarse) or coarse
 
 
-def _look(jev: JevVision, jpeg: bytes, state: dict, control: str, point: tuple[float, float], window: float,
-          run_id: str, step: int) -> tuple[float, float] | None:
+@dataclass(frozen=True)
+class Look:
+    """One zoomed look: where Jev boxed the control, how sure it is the control is there, and whether its box
+    holds the point the zoom was centred on."""
+    center: tuple[float, float]  # normalized screen coordinates
+    sure: float
+    contains: bool
+
+
+def _settle(jev: JevVision, seen: Look | None, point: tuple[float, float]) -> tuple[float, float] | None:
+    # A zoomed box around the first point only confirms it: its center can be a gap inside a larger control
+    # (a whole search result boxed, clicked between thumbnail and title). The zoom moves a first look that missed,
+    # but only when sure: zooms at 0.65-0.80 moved "Search YouTube." off Chrome's search bar onto the Gmail
+    # shortcut below it (8/10 replays); the zooms that found the new-tab "+" were 0.91.
+    if seen is None:
+        return None
+    return point if seen.sure < jev.min_presence or seen.contains else seen.center
+
+
+def look(jev: JevVision, jpeg: bytes, state: dict, control: str, point: tuple[float, float], window: float,
+         run_id: str = "", step: int = 0) -> Look | None:
+    """Locate `control` in a crop of side `window` around `point`; None if Jev doesn't see it there."""
     crop, (x0, y0, x1, y1) = _crop_around(jpeg, point, window)
     questions = {
         "present": {"type": "noul", "instructions":
@@ -170,14 +192,8 @@ def _look(jev: JevVision, jpeg: bytes, state: dict, control: str, point: tuple[f
     sure = probability(answers["present"].get("noul"))
     if local is None or sure < GATE:
         return None
-    # A zoomed box around the first point only confirms it: its center can be a gap inside a larger control
-    # (a whole search result boxed, clicked between thumbnail and title). The zoom moves a first look that missed,
-    # but only when sure: zooms at 0.65-0.80 moved "Search YouTube." off Chrome's search bar onto the Gmail
-    # shortcut below it (8/10 replays); the zooms that found the new-tab "+" were 0.91.
-    if sure < jev.min_presence or box_contains(answers["target"], size, padded,
-                                               ((point[0] - x0) / (x1 - x0), (point[1] - y0) / (y1 - y0))):
-        return point
-    return x0 + local[0] * (x1 - x0), y0 + local[1] * (y1 - y0)
+    return Look((x0 + local[0] * (x1 - x0), y0 + local[1] * (y1 - y0)), sure,
+                box_contains(answers["target"], size, padded, ((point[0] - x0) / (x1 - x0), (point[1] - y0) / (y1 - y0))))
 
 
 Reply = Literal["approve", "decline", "other"]
@@ -231,12 +247,20 @@ def box_contains(answer: dict, size: tuple[int, int], padded: tuple[int, int], p
             and box.get("top", 1) * ph / h <= point[1] <= box.get("bottom", 0) * ph / h)
 
 
+def zoom_window(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> float:
+    """A first zoom's window that takes in the whole control boxed in `answer`, or ZOOM_WINDOW if larger: a crop of
+    the empty middle of Discord's message bar had no placeholder or icon to know it by (present 0.16, twice)."""
+    box = {k: probability(v) for k, v in answer["box"].items()}
+    width, height = (box["right"] - box["left"]) * padded[0], (box["bottom"] - box["top"]) * padded[1]
+    return max(ZOOM_WINDOW, 1.2 * max(width, height / CROP_HEIGHT) / max(size))
+
+
 def _crop_around(jpeg: bytes, point: tuple[float, float],
                  window: float = ZOOM_WINDOW) -> tuple[bytes, tuple[float, float, float, float]]:
     image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
     h, w = image.shape[:2]
     side = window * max(w, h)
-    half_w, half_h = min(side, w) / 2, min(side * 0.66, h) / 2
+    half_w, half_h = min(side, w) / 2, min(side * CROP_HEIGHT, h) / 2
     cx = min(max(point[0] * w, half_w), w - half_w)
     cy = min(max(point[1] * h, half_h), h - half_h)
     x0, y0, x1, y1 = int(cx - half_w), int(cy - half_h), int(cx + half_w), int(cy + half_h)

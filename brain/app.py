@@ -15,7 +15,8 @@ from brain.agent.factory import build_executor
 from brain.agent.jev_only import DEADLINE_S
 from brain.agent.loop import RESUMABLE, Agent
 from brain.agent.memory import Memory
-from brain.agent.quick import JUST_DID
+from brain.agent import quick
+from brain.agent.quick import CORRECTION, JUST_DID
 from brain.cancel import Cancelled, CancelToken
 from brain.capture import Capture, CommandCapture, ScreenCapture, V4L2Capture, active_rect
 from brain.config import Config
@@ -27,6 +28,7 @@ from brain.events import EventBus
 from brain.hid import HID, VOICE_WINDOW, HIDError, LocalHID, PicoHID
 from brain.imaging import prepare
 from brain.monitor import ConnectionMonitor
+from brain.skills import installed_apps
 from brain.telemetry import Telemetry
 from brain.types import OS_NAMES, Action, ActionError, DeviceProfile, OSName
 
@@ -75,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
                     parser.error("--backend browser requires --url")
                 capture = hid = BrowserTarget(args.url, headed=args.headed)
             else:
+                quick.INSTALLED = installed_apps()  # the target is this machine: "go to X" can check X is an app
+                quick.BROWSERS = installed_apps("WebBrowser")
                 # The voice page shows the request being run: Jev reads it as already handled ("Noted."). Not
                 # while the desktop menu is open: it can open over the voice page.
                 capture = (CommandCapture(cfg.local_capture) if cfg.local_capture else
@@ -181,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                     # Its last line only: a chain of follow-ons stays one note long.
                     goal = f"{JUST_DID}{previous_goal.splitlines()[-1]}\n{line}"
                 elif correction or (command.continues and previous_goal):
-                    goal = previous_goal + "\nUser correction: " + line
+                    goal = f"{previous_goal}\n{CORRECTION}{line}"
                 else:
                     goal = line
                 if not goal:
