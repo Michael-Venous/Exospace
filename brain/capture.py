@@ -143,7 +143,9 @@ class CommandCapture:
 
 
 def is_blank(frame: Frame) -> bool:
-    return int(thumbnail(frame).max()) < BLANK_MAX
+    """No picture at all. Sampled at full resolution: a thumbnail averaged away the mouse
+    cursor on a black desktop, and a live but dark screen read as lost video."""
+    return int(frame[::4, ::4].max()) < BLANK_MAX
 
 
 def thumbnail(frame: Frame) -> np.ndarray:

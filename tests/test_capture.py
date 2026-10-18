@@ -24,5 +24,14 @@ class ScreenCaptureTests(unittest.TestCase):
         stale.close.assert_called_once()
 
 
+class BlankTests(unittest.TestCase):
+    def test_a_black_desktop_with_a_cursor_is_live_video(self):
+        from brain.capture import is_blank
+        frame = np.zeros((1800, 2880, 3), np.uint8)
+        self.assertTrue(is_blank(frame))
+        frame[900:930, 1400:1420] = 255  # the mouse cursor
+        self.assertFalse(is_blank(frame))
+
+
 if __name__ == "__main__":
     unittest.main()
