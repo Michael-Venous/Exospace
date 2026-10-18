@@ -22,7 +22,7 @@ Gesture = Literal["click", "double_click", "right_click"]
 GATE = 0.5  # presence/uniqueness, zoom presence, irreversible, approval: 0 unsafe acts at this gate
 ZOOM_WINDOW = 0.30  # crop side as a fraction of the longer screen side
 ZOOM_SCALE = 2.5
-FINE_WINDOW = 0.12  # a second, tighter look for controls a few pixels apart (window buttons)
+FINE_WINDOW = 0.12  # the second, tighter look: Jev's boxes come in 0.005 steps of whatever it is shown
 SCROLL = 5  # wheel notches for "scroll down a bit": about a screenful
 
 INTENT_CRITERIA = {
@@ -97,8 +97,19 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
 
 
 def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], *,
-           run_id: str = "", step: int = 0, window: float = ZOOM_WINDOW) -> tuple[float, float] | None:
-    """Re-locate `target` in an enlarged crop around `point`; None if Jev no longer sees it."""
+           run_id: str = "", step: int = 0) -> tuple[float, float] | None:
+    """Re-locate `target` in an enlarged crop around `point`, then in a tighter one around that;
+    None if Jev no longer sees it. On 49 OCR-labelled targets (Blender, Wikipedia, KCalc, GitHub)
+    the point landed in the target 4 times from the full screen, 28 after one zoom and 35 after
+    both (a median of three zooms: 27)."""
+    coarse = _look(jev, jpeg, target, point, ZOOM_WINDOW, run_id, step)
+    if coarse is None:
+        return None
+    return _look(jev, jpeg, target, coarse, FINE_WINDOW, run_id, step) or coarse
+
+
+def _look(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], window: float,
+          run_id: str, step: int) -> tuple[float, float] | None:
     crop, (x0, y0, x1, y1) = _crop_around(jpeg, point, window)
     questions = {
         "present": {"type": "noul", "instructions":

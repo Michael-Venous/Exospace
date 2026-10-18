@@ -41,10 +41,10 @@ class TriageTests(unittest.TestCase):
     def test_confident_target_is_zoom_refined(self):
         zoom = ({"present": {"noul": .9}, "target": {"box": {"left": .4, "right": .6, "top": .4, "bottom": .6}}},
                 *self.size)
-        self.jev.evaluate.side_effect = [self.answer("act_now"), zoom]
+        self.jev.evaluate.side_effect = [self.answer("act_now"), zoom, zoom]
         result = triage(self.jev, jpeg(), "open john's email", CancelToken())
         self.assertEqual(result.mode, "act")
-        self.assertEqual(self.jev.evaluate.call_count, 2)
+        self.assertEqual(self.jev.evaluate.call_count, 3)  # the screen, a zoom, a tighter zoom
         x, y = result.point
         self.assertTrue(0 <= x <= 1 and 0 <= y <= 1)
 

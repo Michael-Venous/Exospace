@@ -10,7 +10,7 @@ from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, p
 from brain.agent.jev import JevVision
 from brain.agent.model import language_model
 from brain.agent.prompts import PLAN_SCHEMA
-from brain.agent.triage import FINE_WINDOW, GATE as ZOOM_GATE, refine
+from brain.agent.triage import GATE as ZOOM_GATE, refine
 from brain.imaging import shrink
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
@@ -340,12 +340,9 @@ class JevFlashExecutor:
                 small=values.pop('small_window',0.0)>=ZOOM_GATE
                 button={'maximize':targets.pop('maximize')}
                 point={'maximize':points.pop('maximize',None)}
-                # Window buttons sit ~13 px apart: one zoom aimed between maximize and minimize, a
-                # second, tighter one hit maximize 4/4. (A title-bar double-click is ignored by apps
-                # that draw their own title bar, such as Blender.)
+                # Window buttons sit ~13 px apart; the two-step zoom hit maximize 4/4. (A title-bar
+                # double-click is ignored by apps that draw their own title bar, such as Blender.)
                 found=self._zoom(image,button,point,ctx)['maximize'] if small else None
-                found=found and refine(self.jev,image,MAXIMIZE,found,run_id=ctx.run_id,step=ctx.step,
-                                       window=FINE_WINDOW)
                 if found:  # the targets move: re-plan on the next screen
                     self._key=None
                     return Plan('Maximize the app window first',[Action('click',x=found[0],y=found[1])],[])
