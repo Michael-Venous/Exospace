@@ -1,5 +1,6 @@
 """Triage and the race executor: routing, zoom refinement, irreversible approval."""
 
+import re
 import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -309,6 +310,11 @@ if __name__ == "__main__":
 class JevOnlyTests(unittest.TestCase):
     def setUp(self):
         self.planner = JevOnlyPlanner(Mock(min_presence=.85))
+
+    def test_it_has_every_method_the_race_calls_on_its_planner(self):
+        race = open(Path(__file__).parent.parent / "brain/agent/race.py").read()
+        for name in set(re.findall(r"self\.planner\.(\w+)\(", race)):
+            self.assertTrue(callable(getattr(self.planner, name, None)), name)
 
     def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", zoom_present=.9,

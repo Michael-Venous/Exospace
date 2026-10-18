@@ -90,6 +90,9 @@ class JevOnlyPlanner:
     def acknowledge(self, executed: bool) -> None:
         pass  # no plan cursor: every step is chosen afresh from the screen and the history
 
+    def forget_plan(self) -> None:
+        pass  # nothing speculative to drop (RaceExecutor calls this after a launch)
+
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
         texts = spans(ctx.goal, MAX_SPANS)
         options = {str(i): json.dumps(text, ensure_ascii=False) for i, text in enumerate(texts)}
