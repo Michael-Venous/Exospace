@@ -71,7 +71,7 @@ or blank screen: it waits up to 180 s for video, re-detects the device and conti
 | `events.py`, `display/` | Live event stream and the touch display server |
 | `arbiter.py` | Commit gate for pipelined voice segments (PLAN.md §11; not wired yet) |
 | `telemetry.py`, `errors.py`, `doctor.py` | Benchmark CSV (§5.7); readable errors with a private log; hardware check |
-| `agent/race.py`, `agent/triage.py` | Default executor; the triage call, zoom, gesture, irreversible and approval checks |
+| `agent/race.py`, `agent/triage.py` | Default executor; the triage call, zoom, gesture, irreversible and approval checks; corrections and planner stages ask too |
 | `agent/jev_flash.py`, `agent/jev.py` | Flash stages + Jev grounding and completion; Jev HTTP client and gates |
 | `agent/executor.py`, `agent/prompts.py`, `agent/model.py` | `direct` executor, its prompts, Gemini and z.ai clients |
 | `agent/orchestrator.py`, `agent/factory.py` | `legacy-dual`; builds the executor named by `EXECUTOR` |
