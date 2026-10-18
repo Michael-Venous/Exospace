@@ -54,9 +54,9 @@ class AgentLinkTests(unittest.TestCase):
         self.stop.assert_called_once_with("barge-in")
 
     def test_follow_tracks_busy_state_and_narrates_only_new_events(self):
-        lines: queue.Queue[str] = queue.Queue()
+        updates: queue.Queue[dict] = queue.Queue()
         self.bus.publish("result", status="fail", message="before the layer connected")
-        threading.Thread(target=self.agent.follow, args=(lines,), daemon=True).start()
+        threading.Thread(target=self.agent.follow, args=(updates,), daemon=True).start()
         time.sleep(0.2)
         self.bus.publish("run", goal="delete the downloads folder")
         deadline = time.monotonic() + 2
@@ -64,14 +64,17 @@ class AgentLinkTests(unittest.TestCase):
             time.sleep(0.02)
         self.assertTrue(self.agent.busy)
         self.bus.publish("result", status="ask_user", message="This can't be undone. Should I go ahead?")
-        self.assertEqual(lines.get(timeout=2), "This can't be undone. Should I go ahead?")
+        self.assertEqual([updates.get(timeout=2) for _ in range(4)],
+                         [{"busy": False}, {"busy": True}, {"busy": False},
+                          {"say": "This can't be undone. Should I go ahead?"}])
         self.assertFalse(self.agent.busy)
 
 
 class PageServerTests(unittest.TestCase):
     def setUp(self):
-        self.agent = Mock()
-        self.server = page_server(self.agent, 0, 8781, queue.Queue())
+        self.agent = Mock(base="http://127.0.0.1:8770", busy=True)
+        self.updates: queue.Queue[dict] = queue.Queue()
+        self.server = page_server(self.agent, 0, 8781, self.updates)
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
@@ -87,9 +90,20 @@ class PageServerTests(unittest.TestCase):
         except urllib.error.HTTPError as exc:
             return exc.code
 
-    def test_page_names_the_relay_port(self):
+    def test_page_names_the_relay_port_and_embeds_the_decision_log(self):
         with urllib.request.urlopen(self.base + "/", timeout=2) as response:
-            self.assertIn(b"ws://${location.hostname}:8781", response.read())
+            page = response.read()
+        self.assertIn(b"ws://${location.hostname}:8781", page)
+        self.assertIn(b'data-src="http://127.0.0.1:8770/#log"', page)
+
+    def test_every_open_page_gets_the_busy_state_and_each_update(self):
+        # A stale stream left by a reload must not swallow the update the live page needs.
+        with urllib.request.urlopen(self.base + "/narration", timeout=2) as stale, \
+                urllib.request.urlopen(self.base + "/narration", timeout=2) as live:
+            self.updates.put({"busy": False})
+            for stream in (stale, live):
+                lines = [stream.readline() for _ in range(4)]
+                self.assertEqual(lines, [b'data: {"busy": true}\n', b"\n", b'data: {"busy": false}\n', b"\n"])
 
     def test_segment_is_forwarded(self):
         self.assertEqual(self.post("/segment", {"text": "actually go back"}), 200)

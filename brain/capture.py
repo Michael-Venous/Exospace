@@ -7,9 +7,11 @@ latest frame in memory, so callers always see a fresh screen.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 import threading
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 
 import cv2
 import numpy as np
@@ -82,13 +84,23 @@ class V4L2Capture:
 
 
 class ScreenCapture:
-    """Development stand-in: captures this machine's whole desktop."""
+    """Development stand-in: captures this machine's desktop, or one of its monitors (mss numbering: 0 is
+    all of them, 1 the first). Windows whose title starts with what `hide` returns are greyed out of each frame."""
 
-    def __init__(self) -> None:
+    def __init__(self, monitor: int = 0, hide: Callable[[], str] | None = None) -> None:
         import mss  # optional dependency, only needed for the local backend
 
+        if hide and not shutil.which("wmctrl"):
+            raise CaptureError("hiding a window needs wmctrl (sudo apt install wmctrl)")
         self._mss = mss
         self._local = threading.local()
+        self.monitor, self.hide = monitor, hide
+
+    def area(self) -> dict[str, int]:
+        """The captured area in desktop pixels: the space LocalHID's clicks map onto."""
+        # shortcut: read once at startup; restart the agent after rearranging monitors.
+        with self._mss.mss() as sct:
+            return dict(sct.monitors[self.monitor])
 
     def grab(self) -> Frame | None:
         # mss handles are per-thread.
@@ -96,19 +108,36 @@ class ScreenCapture:
         if sct is None:
             sct = self._local.sct = self._mss.mss()
         try:
-            shot = sct.grab(sct.monitors[0])  # every monitor, the same space LocalHID's clicks map onto
+            shot = sct.grab(sct.monitors[self.monitor])
         except self._mss.exception.ScreenShotError:
             # The handle caches the monitor layout; a screen added or removed makes that area invalid.
             sct.close()
             sct = self._local.sct = self._mss.mss()
-            shot = sct.grab(sct.monitors[0])
-        return np.ascontiguousarray(np.asarray(shot)[:, :, :3])
+            shot = sct.grab(sct.monitors[self.monitor])
+        frame = np.ascontiguousarray(np.asarray(shot)[:, :, :3])
+        title = self.hide() if self.hide else ""
+        if title:
+            _grey_out(frame, title, sct.monitors[self.monitor])
+        return frame
 
     def signal_present(self) -> bool:
         return True
 
     def close(self) -> None:
         pass
+
+
+def _grey_out(frame: Frame, title: str, area: dict[str, int]) -> None:
+    """Grey out each window whose title starts with `title`, from `wmctrl -lG` (desktop pixels)."""
+    # shortcut: greys the whole window even under other windows, minimized or on another workspace; read
+    # `_NET_CLIENT_LIST_STACKING` and `wmctrl -d` if that hides a target.
+    out = subprocess.run(["wmctrl", "-lG"], capture_output=True, text=True, timeout=1).stdout
+    for line in out.splitlines():
+        parts = line.split(None, 7)  # id, workspace, x, y, width, height, host, title
+        if len(parts) == 8 and parts[7].startswith(title):
+            x, y, w, h = (int(v) for v in parts[2:6])
+            x, y = x - area["left"], y - area["top"]
+            frame[max(y, 0):max(y + h, 0), max(x, 0):max(x + w, 0)] = 128
 
 
 def is_blank(frame: Frame) -> bool:

@@ -5,21 +5,28 @@ irreversible-action gate. A request that needs a plan runs here one step per scr
 one batched Jev call judges completion, picks the next action and its target, and picks
 the text to type from runs of the goal's own words (Jev selects; it never writes text).
 A step Jev can't take, or one with no visible effect, fails and names EXECUTOR=race.
+
+Each request first finds its app the way a person would: the app in front if Jev sees it can do
+the request, else a visible window, tab or icon of one, else the OS launcher's list. Nothing
+names an app or a site; Jev picks from what the screen shows.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import cast
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import COMPLETION_QUESTION, JevVision, probability
 from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.prompts import OS_PROMPT
-from brain.agent.triage import GATE, box_center
+from brain.agent.triage import GATE, box_center, box_contains, refine
 from brain.cancel import CancelToken
 from brain.config import Config
+from brain.skills import OPEN_APP_KEYS
 from brain.types import Action, OSName
 
 OS_CRITERIA = {
@@ -52,21 +59,42 @@ TEXT_QUESTION = ("Which text does the next step type? It must be copied word for
                  "translated or written rather than copied.")
 REPLACE_QUESTION = ("Is the input the next step types into a single-line box, such as a search, address or form "
                     "field, that already holds text?")
+FITS_QUESTION = ("Can the `goal` be carried out in the app or web page in front in `screen`, without switching to "
+                 "or opening another app?")
+APP_PRESENT = ("Is a window, tab or app icon of an app suited to the `goal` visible in `screen`, such as in a "
+               "taskbar, dock, desktop or open app launcher?")
+APP_TARGET = "The visible window, tab or app icon in `screen` of the app best suited to the `goal`."
+APP_NAME = ("Which words of the `goal` name the app, or the kind of app, to open? They are typed into the app "
+            "launcher's search.")
+LAUNCHER_OPEN = "Is an app launcher or start menu open in `screen`, with a search field for typing an app's name?"
+STEP_CONTROL = "the one control that the next step of the `goal` acts on, after the `executed_steps`"
+WAIT = Action("skill", name="wait")
+NEAR_PRESENCE = 0.75  # a target this sure is clicked only where both zoomed looks confirm it
 MAX_SPANS = 250  # Jev's choice budget (bench/interpreter_screen.py)
-DEADLINE_S = 5.0  # user decision: a request Jev alone can't finish in 5 s isn't reliable enough
+DEADLINE_S = 20.0  # user decision (raised from 5 s): a request Jev alone can't finish in 20 s isn't reliable enough
 
 
 class JevOnlyPlanner:
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
         self.jev = JevVision(cfg.typesafe_api_key, cancel, cfg.model_log, cfg.jev_model,
                              cfg.jev_timeout_s, cfg.jev_min_presence, cfg.jev_min_confidence)
+        self.routed: str | None = None  # the run whose app Jev has seen can do its goal
 
     def acknowledge(self, executed: bool) -> None:
         pass  # no plan cursor: every step is chosen afresh from the screen and the history
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
         texts = spans(ctx.goal)
-        answers, size, padded = self.jev.evaluate(image, {
+        options = {str(i): json.dumps(text, ensure_ascii=False) for i, text in enumerate(texts)}
+        # Until Jev sees the app in front can do the goal, each step also picks the app to use.
+        routing = ctx.profile.os in OPEN_APP_KEYS and self.routed != ctx.run_id  # firmware has no apps
+        route = {"fits": {"type": "noul", "instructions": FITS_QUESTION},
+                 "app_present": {"type": "noul", "instructions": APP_PRESENT},
+                 "app": {"type": "box", "instructions": APP_TARGET},
+                 "app_name": {"type": "choice", "instructions": APP_NAME,
+                              "criteria": {"none": "The goal names no app or kind of app."} | options},
+                 "launcher": {"type": "noul", "instructions": LAUNCHER_OPEN}} if routing else {}
+        answers, size, padded = self.jev.evaluate(image, route | {
             "complete": {"type": "noul", "instructions": COMPLETION_QUESTION},
             "next": {"type": "choice", "instructions": NEXT_QUESTION, "criteria": NEXT_CRITERIA},
             "present": {"type": "noul", "instructions":
@@ -74,21 +102,44 @@ class JevOnlyPlanner:
                         "with no ambiguity?"},
             "target": {"type": "box", "instructions":
                        "The single visible control in `screen` that the next step of the `goal` acts on."},
-            "text": {"type": "choice", "instructions": TEXT_QUESTION, "criteria": {"none": "No text to type."} |
-                     {str(i): json.dumps(text, ensure_ascii=False) for i, text in enumerate(texts)}},
+            "text": {"type": "choice", "instructions": TEXT_QUESTION,
+                     "criteria": {"none": "No text to type."} | options},
             "replace": {"type": "noul", "instructions": REPLACE_QUESTION},
-        }, run_id=ctx.run_id, step=ctx.step, state={"goal": ctx.goal, "executed_steps": ctx.history})
+        }, run_id=ctx.run_id, step=ctx.step, state={"goal": ctx.goal, "executed_steps": ctx.history}, label="step",
+           gates={"complete": COMPLETION_GATE, "present": self.jev.min_presence, "replace": GATE, "fits": GATE,
+                  "app_present": self.jev.min_presence, "launcher": self.jev.min_presence})
         if probability(answers["complete"].get("noul")) >= COMPLETION_GATE:
             return Plan("Jev verified the completed goal", [Action("done", summary="Done.")], [])
         if "unchanged" in ctx.note:
             return _fail("the last step had no visible effect")  # Jev would choose it again
+        if routing:
+            # Before the fits check: Jev can judge the open launcher itself as fitting and type the whole goal.
+            search = self._search(answers, ctx, texts)
+            if search:
+                return search
+            if probability(answers["fits"].get("noul")) < GATE:
+                return self._route(answers, size, padded, ctx)
+            self.routed = ctx.run_id
         step = answers["next"].get("choice")
         actions: list[Action] = []
         if step in ("click", "double_click", "right_click", "fill"):
             point = box_center(answers["target"], size, padded)
-            # shortcut: no zoom refinement (triage's +0.2 s); add it if small targets get missed.
-            if point is None or probability(answers["present"].get("noul")) < self.jev.min_presence:
+            sure = probability(answers["present"].get("noul"))
+            if point is None or sure < NEAR_PRESENCE:
                 return _fail("its target isn't clearly visible")
+            # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
+            # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
+            # shortcuts). Keeping the zoom nearer the first box is a majority of the three looks.
+            state = {"goal": ctx.goal, "executed_steps": ctx.history}
+            with ThreadPoolExecutor(2) as pool:
+                looks = [p for p in pool.map(lambda _: refine(self.jev, image, state, point, control=STEP_CONTROL,
+                                                               run_id=ctx.run_id, step=ctx.step), range(2)) if p]
+            # Jev's doubt about which step comes next also lowers its sureness that the target is visible (a
+            # small YouTube search box: 0.77-0.84 on 5 tries, each box on it), so agreeing looks stand in for it.
+            if not looks or sure < self.jev.min_presence and not (
+                    len(looks) == 2 and all(box_contains(answers["target"], size, padded, p) for p in looks)):
+                return _fail("its target isn't clearly visible")
+            point = min(looks, key=lambda p: math.dist(p, point))
             actions.append(Action("click" if step == "fill" else step, x=point[0], y=point[1]))
         if step in ("type", "fill"):
             choice = answers["text"].get("choice")
@@ -105,6 +156,34 @@ class JevOnlyPlanner:
         if not actions:
             return _fail("it needs reasoning or content Jev can't supply")
         return Plan(f"Jev next step: {step}", actions, [])
+
+    def _search(self, answers: dict, ctx: StepContext, texts: list[str]) -> Plan | None:
+        """Search the launcher this run opened for the app the goal names, once. Before any launcher icon is
+        clicked: an icon has no name to check (a camera icon was the screenshot tool)."""
+        launcher = Action("hotkey", keys=tuple(OPEN_APP_KEYS[ctx.profile.os])).brief()
+        if launcher not in ctx.history or any(a.startswith("type_text")
+                                              for a in ctx.history[ctx.history.index(launcher):]):
+            return None
+        name = answers["app_name"].get("choice")
+        # Typed only into a launcher Jev sees, so one still opening can't take the text.
+        if name in {str(i) for i in range(len(texts))} and probability(
+                answers["launcher"].get("noul")) >= self.jev.min_presence:
+            return Plan("Search the launcher", [Action("type_text", text=texts[int(name)])], [])
+        return None
+
+    def _route(self, answers: dict, size, padded, ctx: StepContext) -> Plan:
+        """Switch to the visible app best suited to the goal, else open the OS launcher to show more."""
+        launcher = Action("hotkey", keys=tuple(OPEN_APP_KEYS[ctx.profile.os]))
+        point = box_center(answers["app"], size, padded)
+        if point is not None and probability(answers["app_present"].get("noul")) >= self.jev.min_presence:
+            # shortcut: one click opens taskbar, dock and launcher entries but not desktop icons; double-click
+            # when the app box is a desktop icon if those get missed.
+            return Plan("Switch to the app for the request", [Action("click", x=point[0], y=point[1])], [])
+        if launcher.brief() not in ctx.history:
+            return Plan("Open the app launcher", [launcher], [])
+        if ctx.history[-1] != WAIT.brief():  # the launcher, its results or the chosen app still appearing
+            return Plan("Waiting for the app", [WAIT], [])
+        return _fail("no app suited to the request is visible")
 
     def classify_os(self, image: bytes) -> OSName:
         answers, _, _ = self.jev.evaluate(image, {"os": {"type": "choice", "instructions": OS_PROMPT,

@@ -1,8 +1,10 @@
-"""Voice layer (PLAN.md §14): ears and mouth on top of the agent, never its hands.
+"""Voice layer (PLAN.md §11): ears and mouth on top of the agent, never its hands.
 
 Run the agent with a display server, then this:
     .venv/bin/python -m brain --display 8770
     .venv/bin/python -m brain.voice.layer --agent http://127.0.0.1:8770
+or both in one process (the extra arguments go to the agent):
+    .venv/bin/python -m brain.voice.layer --display 8770
 
 Hold the button (or Space) and speak. Each finished utterance goes to the agent's
 POST /goal; starting to speak while the agent is busy sends POST /stop first, so the
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import json
 import os
 import queue
@@ -76,8 +79,8 @@ class Agent:
         if self.busy:
             self.post("/stop", {})
 
-    def follow(self, lines: queue.Queue[str]) -> None:
-        """Track busy state and queue narration from the agent's server-sent events, forever."""
+    def follow(self, updates: queue.Queue[dict[str, Any]]) -> None:
+        """Track busy state and queue it and narration for the page from the agent's server-sent events, forever."""
         while True:
             try:
                 with urllib.request.urlopen(self.base + "/events", timeout=KEEPALIVE_S * 2) as stream:
@@ -88,21 +91,29 @@ class Agent:
                         if not raw.startswith(b"data: "):
                             continue
                         event = json.loads(raw[6:])
-                        if event.get("ev") == "run":
-                            self.busy = True
-                        elif event.get("ev") == "result":
-                            self.busy = False
+                        if event.get("ev") in ("run", "result"):
+                            self.busy = event["ev"] == "run"
+                            updates.put({"busy": self.busy})
                         line = narrate(event)
                         if line and event.get("t", since) >= since:
-                            lines.put(line)
+                            updates.put({"say": line})
             except OSError:
                 threading.Event().wait(1.0)  # agent restarting; reconnect
 
 
-def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) -> ThreadingHTTPServer:
-    """The voice page, narration stream and agent forwarding (no audio). Port 0 picks a free port."""
-    page = resources.files("brain.voice").joinpath("layer.html").read_text().replace("__WS_PORT__", str(ws_port))
+def page_server(agent: Agent, port: int, ws_port: int, updates: queue.Queue[dict[str, Any]]) -> ThreadingHTTPServer:
+    """The voice page, narration and busy stream, and agent forwarding (no audio). Port 0 picks a free port."""
+    page = resources.files("brain.voice").joinpath("layer.html").read_text().replace("__WS_PORT__", str(ws_port)) \
+        .replace("__AGENT__", html.escape(agent.base))
     hosts: set[str] = set()
+    pages: set[queue.Queue[dict[str, Any]]] = set()  # one per open narration stream
+
+    def fan_out() -> None:
+        """Copy each update to every open page, so a stale stream from a reload can't swallow one."""
+        while True:
+            update = updates.get()
+            for page_updates in list(pages):
+                page_updates.put(update)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:
@@ -142,20 +153,25 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
             self._reply(200, b'{"ok":true}')
 
         def _narration(self) -> None:
+            mine: queue.Queue[dict[str, Any]] = queue.Queue()
+            pages.add(mine)  # before reading busy, so no change falls between the two
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
+            update: dict[str, Any] = {"busy": agent.busy}  # a reload mid-task still shows the work
             try:
                 while True:
-                    try:
-                        line = lines.get(timeout=KEEPALIVE_S)
-                        self.wfile.write(b"data: " + json.dumps({"say": line}).encode() + b"\n\n")
-                    except queue.Empty:
-                        self.wfile.write(b": keepalive\n\n")
+                    self.wfile.write(b"data: " + json.dumps(update).encode() + b"\n\n")
                     self.wfile.flush()
+                    try:
+                        update = mine.get(timeout=KEEPALIVE_S)
+                    except queue.Empty:
+                        update = {}  # keepalive; the page ignores an empty update
             except (BrokenPipeError, ConnectionResetError):
                 pass
+            finally:
+                pages.discard(mine)
 
         def _reply(self, code: int, body: bytes, ctype: str = "application/json") -> None:
             self.send_response(code)
@@ -169,13 +185,14 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
     bound = server.server_address[1]
     hosts.update({f"127.0.0.1:{bound}", f"localhost:{bound}"})
     threading.Thread(target=server.serve_forever, name="voice-page", daemon=True).start()
+    threading.Thread(target=fan_out, name="voice-fan-out", daemon=True).start()
     return server
 
 
 def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
-    lines: queue.Queue[str] = queue.Queue()
-    threading.Thread(target=agent.follow, args=(lines,), name="agent-events", daemon=True).start()
-    page_server(agent, port, ws_port, lines)
+    updates: queue.Queue[dict[str, Any]] = queue.Queue()
+    threading.Thread(target=agent.follow, args=(updates,), name="agent-events", daemon=True).start()
+    page_server(agent, port, ws_port, updates)
     print(f"Voice layer on http://127.0.0.1:{port} -> agent {agent.base}", flush=True)
     asyncio.run(_relay_forever(port, ws_port, deepgram_key))
 
@@ -215,14 +232,22 @@ def main() -> int:
     parser.add_argument("--agent", default="http://127.0.0.1:8770", help="the agent's --display server")
     parser.add_argument("--port", type=int, default=8780)
     parser.add_argument("--ws-port", type=int, default=8781)
-    args = parser.parse_args()
+    # Any other arguments are `python -m brain` ones: the agent then runs in this process too
+    # (give it --display on the --agent port), so one process serves the whole UI.
+    args, brain_args = parser.parse_known_args()
     load_dotenv()
     key = os.environ.get("DEEPGRAM_API_KEY", "")
     if not key:
         print("Set DEEPGRAM_API_KEY in the project .env (see .env.example).", flush=True)
         return 1
-    serve(Agent(args.agent), args.port, args.ws_port, key)
-    return 0
+    if not brain_args:
+        serve(Agent(args.agent), args.port, args.ws_port, key)
+        return 0
+    from brain.app import main as agent_main
+
+    threading.Thread(target=serve, args=(Agent(args.agent), args.port, args.ws_port, key), name="voice-layer",
+                     daemon=True).start()
+    return agent_main(brain_args)  # the main thread: the local capture backends aren't thread-safe
 
 
 if __name__ == "__main__":

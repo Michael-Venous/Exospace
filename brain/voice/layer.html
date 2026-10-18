@@ -3,27 +3,33 @@
 <style>
 body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:100px;padding:16px;box-sizing:border-box;
   background:#fff;color:#1d1d1f;font:500 22px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;text-align:center}
-#talk{width:150px;height:150px;border:0;border-radius:50%;cursor:pointer;
-  background:radial-gradient(circle at 34% 28%,#fff 0,#cfe0ff 18%,#7d93ff 52%,#b77bff 80%,#ff9ad5 100%);
-  box-shadow:0 18px 50px rgb(125 147 255/.35),0 0 0 calc(var(--lvl,0)*36px) rgb(125 147 255/.12);
+#talk{width:150px;height:150px;padding:0;border:0;border-radius:50%;cursor:pointer;background:none;--glow:125 147 255;
+  box-shadow:0 18px 50px rgb(var(--glow)/.35),0 0 0 calc(var(--lvl,0)*36px) rgb(var(--glow)/.12);
   transform:scale(calc(1 + var(--lvl,0)*.55));transition:transform 90ms ease-out,box-shadow 90ms ease-out;animation:breathe 4s ease-in-out infinite}
 #talk:focus-visible{outline:2px solid #7d93ff;outline-offset:8px}
-.on #talk{animation:breathe 4s ease-in-out infinite,drift 6s linear infinite}
+#talk canvas{display:block;width:100%;height:100%}
 #heard{max-width:min(640px,90vw);min-height:2.8em;margin:0}
 #live,#says{color:#86868b}
 #said:empty~#live:empty::before{content:"Hold to talk";color:#a1a1a6}
 #says{font-size:18px;min-height:1.2em;max-width:min(640px,90vw)}
 .err{color:#d70015}
-#mics{position:fixed;bottom:16px;left:50%;translate:-50%;max-width:calc(100vw - 32px);
-  font:inherit;font-size:15px;color:#86868b;background:none;border:0;cursor:pointer}
+#mics,#log{position:fixed;font:inherit;font-size:15px;color:#86868b;background:none;border:0;cursor:pointer}
+#mics{bottom:16px;left:50%;translate:-50%;max-width:calc(100vw - 32px)}
+#log{top:16px;right:16px}
+#log[aria-expanded=true]{color:#1d1d1f}
+/* Log open: it takes the room left under the transcript, clear of the mic switcher. */
+.log{height:100vh;align-content:stretch;grid-template-rows:auto auto auto minmax(320px,1fr);gap:32px;padding-bottom:48px}
+#trace{display:none;width:min(900px,calc(100vw - 32px));height:100%;border:1px solid #e5e5ea;border-radius:14px}
+.log #trace{display:block}
 @keyframes breathe{50%{scale:1.04}}
-@keyframes drift{to{filter:hue-rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
-<button id=talk aria-label="Hold to talk" aria-pressed=false></button>
+<button id=talk aria-label="Hold to talk" aria-pressed=false><canvas></canvas></button>
 <p id=heard aria-live=polite><span id=said></span> <span id=live></span></p>
 <div id=says aria-live=polite></div>
+<iframe id=trace title="Decision log" data-src="__AGENT__/#log"></iframe>
 <select id=mics aria-label=Microphone></select>
+<button id=log aria-expanded=false>Decision log</button>
 <script>
 let stopListening = null;
 const post = (path, body = {}) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
@@ -43,13 +49,66 @@ mics.onchange = () => { try { localStorage.mic = mics.value; } catch {} if (stop
 navigator.mediaDevices.ondevicechange = listMics;
 listMics();
 
+// Decision log: the agent's display shows its history and step decisions under the transcript.
+log.onclick = () => {
+  trace.src ||= trace.dataset.src;  // connect to the agent only once opened
+  log.setAttribute("aria-expanded", document.body.classList.toggle("log"));
+};
+
+// The orb: a lit sphere drawn per pixel, so it can turn. It drifts slowly, turns red while it
+// listens and spins fast in purple while the agent works; its glow follows its colour. Each pixel's point on the sphere and its light are
+// worked out once; a frame only turns the points and colours them.
+const orb = talk.firstElementChild.getContext("2d"), size = Math.round(talk.offsetWidth * devicePixelRatio);
+orb.canvas.width = orb.canvas.height = size;
+const pixels = orb.createImageData(size, size), points = [];  // per pixel: offset, x, y, z, light, shine, alpha
+const CALM = [[125, 147, 255], [183, 123, 255], [255, 154, 213]], LISTEN = [[215, 0, 21], [255, 59, 48], [255, 138, 122]],
+  WORK = [[76, 29, 222], [140, 52, 255], [217, 70, 239]];
+const tilt = 0.35;  // the axis leans toward the viewer, so the turn reads as 3D
+for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
+  const x = (2 * i + 1) / size - 1, y = (2 * j + 1) / size - 1, r = Math.hypot(x, y);
+  if (r >= 1) continue;
+  const z = Math.sqrt(1 - r * r);
+  const diffuse = Math.max(0, -0.54 * x - 0.74 * y + 0.41 * z);  // lit from the upper left
+  const shine = 0.9 * Math.max(0, -0.32 * x - 0.44 * y + 0.84 * z) ** 12 + 0.25 * (1 - z) ** 2;  // highlight, glassy rim
+  points.push(4 * (j * size + i), x, y * Math.cos(tilt) - z * Math.sin(tilt), y * Math.sin(tilt) + z * Math.cos(tilt),
+    0.82 + 0.28 * diffuse, Math.min(1, shine), Math.min(1, (1 - r) * size / 2) * 255);
+}
+let angle = 0, speed = 0, colors = CALM, last = performance.now();
+const still = matchMedia("(prefers-reduced-motion: reduce)");
+(function turn(now) {
+  const dt = Math.min(0.1, (now - last) / 1000), state = document.body.classList;
+  last = now;
+  const goal = state.contains("busy") ? (still.matches ? 1 : 12) : (still.matches ? 0 : 0.3);  // radians per second
+  speed += (goal - speed) * (1 - Math.exp(-3 * dt));  // spin up and wind down, never jump
+  const palette = state.contains("on") ? LISTEN : state.contains("busy") ? WORK : CALM, fade = 1 - Math.exp(-5 * dt);
+  colors = colors.map((c, k) => c.map((v, ch) => v + (palette[k][ch] - v) * fade));  // blend over about half a second
+  talk.style.setProperty("--glow", colors[0].map(Math.round).join(" "));
+  angle += speed * dt;
+  const cos = Math.cos(angle), sin = Math.sin(angle), out = pixels.data;
+  const [low, mid, high] = colors;
+  for (let k = 0; k < points.length; k += 7) {
+    const x = points[k + 1] * cos + points[k + 3] * sin, z = points[k + 3] * cos - points[k + 1] * sin;
+    const band = Math.sin(3 * x + 2 * Math.sin(3 * points[k + 2] + 2 * z));  // soft swirls across the surface
+    const edge = band < 0 ? low : high, f = Math.abs(band);
+    for (let ch = 0; ch < 3; ch++) {
+      const c = (mid[ch] + (edge[ch] - mid[ch]) * f) * points[k + 4];
+      out[points[k] + ch] = c + (255 - c) * points[k + 5];
+    }
+    out[points[k] + 3] = points[k + 6];
+  }
+  orb.putImageData(pixels, 0, 0);
+  requestAnimationFrame(turn);
+})(last);
+
 // Narration: speak the agent's questions and results, but never over the user. Lines that
 // arrive while the mic is open are held and spoken when the user stops, so a confirmation
-// question is never lost.
+// question is never lost. The same stream says when the agent is busy, which spins the orb.
 let unspoken = [];
 const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 new EventSource("/narration").onmessage = e => {
-  const {say} = JSON.parse(e.data);
+  const {say, busy} = JSON.parse(e.data);
+  if (busy !== undefined) document.body.classList.toggle("busy", busy);
+  if (!say) return;
   says.textContent = say;
   if (stopListening) unspoken.push(say); else speak(say);
 };

@@ -254,8 +254,11 @@ Offline tests send no real input and make no model requests:
 ```
 
 - **Main view:** live screen with the click marker, history (actions, Flash/Jev reasoning, model time), STOP
-  (same cancel path as barge-in), saved-task buttons and a typed-goal box. **Details:** the last Jev check's
-  present / unique / clear / box scores against the `.env` pass marks.
+  (same cancel path as barge-in), saved-task buttons and a typed-goal box. **Details:** a decision log per step.
+  Tap a ⚙ row to see the screen that step was decided on, with Jev's boxes (dashed = under its pass mark) and the
+  click points, then every decision in order: triage, route (act / plan / none), Flash's plan and why it replanned,
+  and each Jev check's answers against the pass marks the code used. Each `plan` event carries this as `trace`, and
+  its screen is kept at `GET /frame/N.jpg` for the last 60 steps.
 - **Taps:** "Tap = click" clicks that spot on the target through the normal controller. "Tap = this" marks a point,
   and the next goal is sent to Flash with it ("delete this").
 - **For voice:** post a finished transcript to `POST /goal {"text": "..."}`; `POST /stop` is the barge-in.

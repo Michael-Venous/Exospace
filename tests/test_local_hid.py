@@ -24,6 +24,14 @@ class LocalHIDTests(unittest.TestCase):
         gui.click.assert_called_once()
         gui.mouseUp.assert_called_once()  # release_all still lets go of the local mouse
 
+    def test_clicks_land_on_the_captured_monitor(self, _title):
+        gui = Mock()
+        with patch.dict(sys.modules, {"pyautogui": gui}):
+            hid = LocalHID(area={"left": 0, "top": 1800, "width": 2880, "height": 1800})
+        hid.send({"op": "click", "x": 0, "y": 0})
+        hid.send({"op": "click", "x": 32767, "y": 32767})
+        self.assertEqual([c.args for c in gui.click.call_args_list], [(0, 1800), (2879, 3599)])
+
     def test_keys_meant_for_the_target_never_reach_the_voice_window(self, title):
         title.return_value = VOICE_WINDOW
         with patch.dict(sys.modules, {"pyautogui": Mock(**{"size.return_value": (100, 100)})}):

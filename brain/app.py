@@ -24,7 +24,7 @@ from brain.device import detect_profile
 from brain.errors import describe
 from brain.display.server import Command, DisplayServer
 from brain.events import EventBus
-from brain.hid import HID, HIDError, LocalHID, PicoHID
+from brain.hid import HID, VOICE_WINDOW, HIDError, LocalHID, PicoHID
 from brain.imaging import prepare
 from brain.monitor import ConnectionMonitor
 from brain.telemetry import Telemetry
@@ -77,9 +77,12 @@ def main(argv: list[str] | None = None) -> int:
                 from brain.android import AndroidTarget
                 capture = hid = AndroidTarget()
             else:
-                capture = ScreenCapture()
+                # The voice page shows the request being run: Jev reads it as already handled ("Noted."). Not
+                # while the desktop menu is open: it can open over the voice page.
+                capture = ScreenCapture(cfg.local_monitor, hide=lambda: "" if hid.menu_open else VOICE_WINDOW)
                 cleanup.callback(capture.close)
-                hid = LocalHID(PicoHID(cfg.local_keyboard, cfg.pico_baud) if cfg.local_keyboard else None)
+                hid = LocalHID(PicoHID(cfg.local_keyboard, cfg.pico_baud) if cfg.local_keyboard else None,
+                               capture.area())
             cleanup.callback(hid.close)
             controller = Controller(hid, capture, token)
             cleanup.callback(controller.release_all)
@@ -91,7 +94,6 @@ def main(argv: list[str] | None = None) -> int:
                 server = DisplayServer(bus, commands, token.cancel, args.display_host, args.display)
                 server.start()
                 cleanup.callback(server.close)
-                bus.publish("config", min_presence=cfg.jev_min_presence, min_confidence=cfg.jev_min_confidence)
                 if args.backend == "pi":
                     _pump_live_frames(capture, bus)
                 else:

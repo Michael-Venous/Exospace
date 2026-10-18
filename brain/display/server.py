@@ -3,6 +3,7 @@
 GET  /            the display page
 GET  /events      server-sent events from the EventBus
 GET  /screen.jpg  latest screen image (active rect, so tap coordinates map 1:1)
+GET  /frame/N.jpg  the screen a step was decided on (N from its plan event; the last KEPT_FRAMES steps)
 POST /goal        {"text": "..."}                 a typed or transcribed request
 POST /tap         {"x": 0-1, "y": 0-1, "mode": "click"|"point"}
 POST /stop        cancel whatever is running (same path as barge-in) and drop queued requests
@@ -22,6 +23,7 @@ from __future__ import annotations
 
 import json
 import queue
+import re
 import threading
 from contextlib import suppress
 from dataclasses import dataclass
@@ -97,6 +99,8 @@ class _Handler(BaseHTTPRequestHandler):
                 self._reply(204, "text/plain", b"")
         elif path == "/events":
             self._stream_events()
+        elif (kept := re.fullmatch(r"/frame/([0-9]{1,9})\.jpg", path)) and (jpeg := self.bus.kept_frame(int(kept[1]))):
+            self._reply(200, "image/jpeg", jpeg, cache=False)  # ids restart with the brain
         else:
             self._reply(404, "text/plain", b"not found")
 

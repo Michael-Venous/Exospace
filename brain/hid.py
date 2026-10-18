@@ -133,15 +133,17 @@ class PicoHID:
 class LocalHID:
     """Development stand-in using pyautogui. Move the mouse to a screen corner
     to trigger pyautogui's emergency stop. With `keyboard`, key commands go to that
-    device instead: some desktops (Cinnamon) ignore a faked Super, not a real one."""
+    device instead: some desktops (Cinnamon) ignore a faked Super, not a real one. Clicks map onto
+    `area` (mss's left/top/width/height, the captured monitor), or the whole desktop without it."""
 
-    def __init__(self, keyboard: HID | None = None) -> None:
+    def __init__(self, keyboard: HID | None = None, area: dict[str, int] | None = None) -> None:
         import pyautogui  # optional dependency, only needed for the local backend
 
         pyautogui.PAUSE = 0  # we do our own settling
         self._gui = pyautogui
         self._keyboard = keyboard
-        self._menu_open = False  # Super opened the desktop menu, which X never reports as focused
+        self._area = area
+        self.menu_open = False  # Super opened the desktop menu, which X never reports as focused
         gui_key = "command" if platform.system() == "Darwin" else "win"
         self._keymap = {
             "CTRL": "ctrl", "SHIFT": "shift", "ALT": "alt", "GUI": gui_key,
@@ -159,7 +161,7 @@ class LocalHID:
         if op in ("key", "type"):
             self._check_focus(cmd)
         else:
-            self._menu_open = False
+            self.menu_open = False
         if self._keyboard and op in ("key", "type", "release_all"):
             self._keyboard.send(cmd)
             if op != "release_all":
@@ -200,9 +202,9 @@ class LocalHID:
         the model cannot see, and a typed space there barges in on the run. A click moves focus."""
         keys = set(cmd.get("keys", ()))
         if "GUI" in keys:
-            self._menu_open = True
-        elif self._menu_open:
-            self._menu_open = not keys & {"ENTER", "ESC"}
+            self.menu_open = True
+        elif self.menu_open:
+            self.menu_open = not keys & {"ENTER", "ESC"}
         elif _focused_title() == VOICE_WINDOW:
             raise ActionError(f"keyboard focus is on the {VOICE_WINDOW} window; click the field to type into first")
 
@@ -210,8 +212,9 @@ class LocalHID:
         return self._keymap.get(name) or name.lower()
 
     def _px(self, x: int, y: int) -> tuple[int, int]:
-        width, height = self._gui.size()
-        return round(x / HID_MAX * (width - 1)), round(y / HID_MAX * (height - 1))
+        area = self._area or dict(zip(("left", "top", "width", "height"), (0, 0, *self._gui.size())))
+        return (area["left"] + round(x / HID_MAX * (area["width"] - 1)),
+                area["top"] + round(y / HID_MAX * (area["height"] - 1)))
 
 
 def _focused_title() -> str:

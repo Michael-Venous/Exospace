@@ -13,7 +13,7 @@ from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_only import JevOnlyPlanner, spans
 from brain.agent.memory import Memory
 from brain.agent.race import RaceExecutor
-from brain.agent.triage import Triage, triage
+from brain.agent.triage import Triage, refine, triage
 from brain.cancel import CancelToken
 from brain.types import Action, DeviceProfile, Rect
 
@@ -48,6 +48,15 @@ class TriageTests(unittest.TestCase):
         self.assertEqual(self.jev.evaluate.call_count, 2)
         x, y = result.point
         self.assertTrue(0 <= x <= 1 and 0 <= y <= 1)
+
+    def test_zoom_moves_the_click_only_when_its_box_misses_the_first_look(self):
+        def zoom(box):
+            self.jev.evaluate.return_value = ({"present": {"noul": .9}, "target": {"box": box}}, *self.size)
+            return refine(self.jev, jpeg(), {}, (.5, .5))
+        # The whole control boxed around the first point: its center (lower down) may be a gap, so keep the point.
+        self.assertEqual(zoom({"left": .1, "right": .9, "top": .4, "bottom": .9}), (.5, .5))
+        x, y = zoom({"left": .1, "right": .3, "top": .1, "bottom": .3})  # the first look was off the control
+        self.assertTrue(x < .5 and y < .5)
 
     def test_ambiguous_target_goes_to_the_planner(self):
         self.jev.evaluate.return_value = self.answer("act_now", unique=.3)
@@ -188,13 +197,23 @@ class JevOnlyTests(unittest.TestCase):
     def setUp(self):
         self.planner = object.__new__(JevOnlyPlanner)
         self.planner.jev = Mock(min_presence=.85)
+        self.planner.routed = None
 
-    def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note=""):
-        self.planner.jev.evaluate.return_value = ({
-            "complete": {"noul": complete}, "next": {"choice": next}, "present": {"noul": present},
-            "target": BOX, "text": {"choice": text}, "replace": {"noul": replace}}, (400, 300), (400, 300))
-        profile = DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1)
-        return self.planner.next_actions(b"img", StepContext(goal, profile, Mock(), [], 2, 10, note=note)).actions
+    def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
+             fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", zoom_present=.9,
+             zooms=None):
+        step = {"complete": {"noul": complete}, "next": {"choice": next}, "present": {"noul": present},
+                "target": BOX, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
+                "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
+                "app": {"box": {"left": .1, "right": .5, "top": .6, "bottom": .7}}}
+        # The zoomed second look boxes the middle of its crop: the click stays where the first box was.
+        zoom = {"present": {"noul": zoom_present}, "target": {"box": {"left": .4, "right": .6, "top": .4, "bottom": .6}}}
+        zooms = iter(zooms or [zoom, zoom]).__next__  # `next` is the step choice here
+        self.planner.jev.evaluate.side_effect = lambda image, questions, **kw: (
+            step if "next" in questions else zooms(), (400, 300), (400, 300))
+        profile = DeviceProfile(os, Rect(0, 0, 400, 300), "mouse", 1)
+        ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id="r")
+        return self.planner.next_actions(jpeg(), ctx).actions
 
     def step(self, goal, **answers):
         return self.plan(goal, **answers)[0]
@@ -208,6 +227,22 @@ class JevOnlyTests(unittest.TestCase):
 
     def test_unclear_target_fails_instead_of_guessing(self):
         self.assertEqual(self.step("click the other one", present=.4).type, "fail")
+        self.assertEqual(self.step("click the other one", zoom_present=.2).type, "fail")  # lost on the second look
+
+    def test_a_zoom_that_strays_is_outvoted(self):
+        centered = {"present": {"noul": .9}, "target": {"box": {"left": .4, "right": .6, "top": .4, "bottom": .6}}}
+        stray = {"present": {"noul": .9}, "target": {"box": {"left": .4, "right": .6, "top": .9, "bottom": 1}}}
+        for zooms in ([centered, stray], [stray, centered]):
+            action = self.step("open calculator, then click 7", zooms=zooms)
+            self.assertEqual((round(action.x, 2), round(action.y, 2)), (.3, .3))
+
+    def test_a_nearly_sure_target_is_clicked_only_where_both_zooms_confirm_it(self):
+        centered = {"present": {"noul": .9}, "target": {"box": {"left": .4, "right": .6, "top": .4, "bottom": .6}}}
+        stray = {"present": {"noul": .9}, "target": {"box": {"left": .4, "right": .6, "top": .9, "bottom": 1}}}
+        self.assertEqual(self.step("search for horse videos", present=.8).type, "click")
+        for zooms in ([centered, stray], [stray, centered], [centered, {"present": {"noul": .2}, "target": {}}]):
+            self.assertEqual(self.step("search for horse videos", present=.8, zooms=zooms).type, "fail")
+        self.assertEqual(self.step("search for horse videos", present=.7).type, "fail")
 
     def test_typed_text_is_a_run_of_the_goals_words(self):
         goal = 'type "hello world", then press enter'
@@ -236,6 +271,40 @@ class JevOnlyTests(unittest.TestCase):
 
     def test_reasoning_needs_the_language_model(self):
         self.assertIn("EXECUTOR=race", self.step("summarize this page", next="stuck").reason)
+
+    def test_app_in_front_that_fits_takes_the_step_and_ends_routing(self):
+        self.assertEqual(self.step("find a video about horses").type, "click")
+        self.assertEqual(self.step("find a video about horses", fits=.1).type, "click")  # routed once per run
+
+    def test_visible_suited_app_is_switched_to(self):
+        action = self.step("find a video about horses", fits=.1, app_present=.95)
+        self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .65))
+
+    def test_no_suited_app_opens_the_launcher_waits_once_for_the_app_then_fails(self):
+        goal = "find a video about horses"
+        self.assertEqual(self.step(goal, fits=.1).brief(), "hotkey(GUI)")
+        self.assertEqual(self.step(goal, fits=.1, os="macos").brief(), "hotkey(GUI+SPACE)")
+        self.assertEqual(self.step(goal, fits=.1, history=["hotkey(GUI)"]).brief(), "skill(wait {})")  # menu opening
+        self.assertEqual(self.step(goal, fits=.1, history=["hotkey(GUI)", "skill(wait {})"]).type, "fail")
+        opening = ["hotkey(GUI)", "click(120,260)"]
+        self.assertEqual(self.step(goal, fits=.1, history=opening).brief(), "skill(wait {})")
+        self.assertEqual(self.step(goal, fits=.1, history=opening + ["skill(wait {})"]).type, "fail")
+
+    def test_launcher_is_searched_for_the_app_the_goal_names_before_an_icon_is_clicked(self):
+        goal = "open up camera and take a picture"
+        search = dict(fits=.1, app_name=str(spans(goal).index("camera")), launcher=.9, app_present=.95,
+                      history=["hotkey(GUI)"])
+        self.assertEqual(self.step(goal, **search).brief(), "type_text('camera')")  # not the camera-shaped icon
+        self.assertEqual(self.step(goal, **search | {"fits": .9}).brief(), "type_text('camera')")  # nor the goal
+        self.assertEqual(self.step(goal, **search | {"app_present": .1, "launcher": .4}).brief(),
+                         "skill(wait {})")  # no launcher seen yet
+        typed = ["hotkey(GUI)", "type_text('camera')"]
+        self.assertEqual(self.step(goal, **search | {"history": typed}).type, "click")  # then the result
+        self.assertEqual(self.step(goal, **search | {"history": typed, "app_present": .1}).brief(), "skill(wait {})")
+        self.assertEqual(self.step(goal, **search | {"history": []}).type, "click")  # a visible app needs no launcher
+
+    def test_firmware_skips_routing(self):
+        self.assertEqual(self.step("open boot order", fits=.1, os="bios").type, "click")
 
     def test_os_comes_from_a_jev_choice(self):
         self.planner.jev.evaluate.return_value = ({"os": {"choice": "android"}}, None, None)

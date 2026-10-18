@@ -22,6 +22,7 @@ Gesture = Literal["click", "double_click", "right_click"]
 GATE = 0.5  # presence/uniqueness, zoom presence, irreversible, approval: 0 unsafe acts at this gate
 ZOOM_WINDOW = 0.30  # crop side as a fraction of the longer screen side
 ZOOM_SCALE = 2.5
+UTTERANCE_CONTROL = "the control the `utterance` asks to click, tap or open"
 
 INTENT_CRITERIA = {
     "act_now": "The utterance asks to click, tap, open or select ONE specific control that is visible on "
@@ -69,7 +70,8 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
                    "The single visible control in `screen` that the `utterance` asks to click, tap or open "
                    "right now. For an item in a list or grid, locate the whole item."},
     }
-    answers, size, padded = jev.evaluate(jpeg, questions, run_id=run_id, step=step, state={"utterance": utterance})
+    answers, size, padded = jev.evaluate(jpeg, questions, run_id=run_id, step=step, state={"utterance": utterance},
+                                         label="triage", gates={"present": GATE, "unique": GATE, "irreversible": GATE})
     irreversible = probability(answers["irreversible"].get("noul")) >= GATE
     choice = answers["intent"].get("choice")
     if choice == "no_action":
@@ -79,28 +81,32 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
     if choice != "act_now" or present < GATE or point is None:
         return Triage("plan", None, irreversible)
     cancel.check()
-    refined = refine(jev, jpeg, utterance, point, run_id=run_id, step=step)
+    refined = refine(jev, jpeg, {"utterance": utterance}, point, run_id=run_id, step=step)
     gesture = answers["gesture"].get("choice")
     gesture = gesture if gesture in GESTURE_CRITERIA else "click"
     return Triage("act", refined, irreversible, gesture) if refined else Triage("plan", None, irreversible)
 
 
-def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], *,
+def refine(jev: JevVision, jpeg: bytes, state: dict, point: tuple[float, float], *, control: str = UTTERANCE_CONTROL,
            run_id: str = "", step: int = 0) -> tuple[float, float] | None:
-    """Re-locate `target` in an enlarged crop around `point`; None if Jev no longer sees it."""
+    """Re-locate `control` (described in terms of `state`) in an enlarged crop around `point`; None if Jev
+    no longer sees it."""
     crop, (x0, y0, x1, y1) = _crop_around(jpeg, point)
     questions = {
         "present": {"type": "noul", "instructions":
-                    "This is a zoomed-in part of a screen. Is the control the `utterance` asks to click, "
-                    "tap or open visible here?"},
+                    f"This is a zoomed-in part of a screen. Is {control} visible here?"},
         "target": {"type": "box", "instructions":
-                   "This is a zoomed-in part of a screen. Locate exactly the control the `utterance` asks "
-                   "to click, tap or open."},
+                   f"This is a zoomed-in part of a screen. Locate exactly {control}."},
     }
-    answers, size, padded = jev.evaluate(crop, questions, run_id=run_id, step=step, state={"utterance": target})
+    answers, size, padded = jev.evaluate(crop, questions, run_id=run_id, step=step, state=state,
+                                         label="zoom", gates={"present": GATE}, region=(x0, y0, x1, y1))
     local = box_center(answers["target"], size, padded)
     if local is None or probability(answers["present"].get("noul")) < GATE:
         return None
+    # A zoomed box around the first point only confirms it: its center can be a gap inside a larger control
+    # (a whole search result boxed, clicked between thumbnail and title). The zoom moves a first look that missed.
+    if box_contains(answers["target"], size, padded, ((point[0] - x0) / (x1 - x0), (point[1] - y0) / (y1 - y0))):
+        return point
     return x0 + local[0] * (x1 - x0), y0 + local[1] * (y1 - y0)
 
 
@@ -117,7 +123,7 @@ def answer_to_pending(jev: JevVision, jpeg: bytes, pending: str, reply: str, *,
                     "Does the user's `reply` clearly approve carrying out the `pending_request`?"},
         "decline": {"type": "noul", "instructions":
                     "Does the user's `reply` refuse, cancel or say no to the `pending_request`?"},
-    }, run_id=run_id, step=step, state=state)
+    }, run_id=run_id, step=step, state=state, label="approval", gates={"approve": GATE, "decline": GATE})
     if probability(answers["approve"].get("noul")) >= GATE:
         return "approve"
     if probability(answers["decline"].get("noul")) >= GATE:
@@ -136,6 +142,14 @@ def box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> 
     (w, h), (pw, ph) = size, padded
     x, y = (left + right) / 2 * pw / w, (top + bottom) / 2 * ph / h
     return (x, y) if 0 <= x <= 1 and 0 <= y <= 1 else None  # padding must never become a click
+
+
+def box_contains(answer: dict, size: tuple[int, int], padded: tuple[int, int], point: tuple[float, float]) -> bool:
+    """Whether a point (box_center's coordinates) falls in Jev's box answer."""
+    box = answer.get("box") or {}
+    (w, h), (pw, ph) = size, padded
+    return (box.get("left", 1) * pw / w <= point[0] <= box.get("right", 0) * pw / w
+            and box.get("top", 1) * ph / h <= point[1] <= box.get("bottom", 0) * ph / h)
 
 
 def _crop_around(jpeg: bytes, point: tuple[float, float]) -> tuple[bytes, tuple[float, float, float, float]]:

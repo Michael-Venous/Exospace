@@ -25,8 +25,8 @@ Before whole-span binding, separate first/last word choices typed the expression
 over-long URL span; `two_clicks` passed 2 of 3 runs at the 0.85 gate (second click 0.84).
 Not run: native apps, physical HID, phones, BIOS, voice, repeated trials.
 
-A run still going after 5 s is cancelled (user decision; `DEADLINE_S`, the §5.6 cancel path, so
-in-flight Jev calls and typing stop too). Same tasks with it (config `jev-5s`): **6/12**. The
+A run still going after 20 s is cancelled (user decision, raised from 5 s; `DEADLINE_S`, the §5.6 cancel path, so
+in-flight Jev calls and typing stop too). Same tasks with the earlier 5 s limit (config `jev-5s`): **6/12**. The
 three-field form and its paraphrase are cancelled at 5.0 s partway through the form (they had
 passed in 6.2-6.7 s); cancelling releases keys but doesn't undo what was typed.
 

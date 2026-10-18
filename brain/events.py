@@ -14,8 +14,9 @@ from typing import Any
 
 Event = dict[str, Any]
 
-HISTORY = 60  # replayed to a client that connects mid-task
+HISTORY = 200  # replayed to a client that connects mid-task, so a reload keeps the decision log
 CLIENT_BUFFER = 256
+KEPT_FRAMES = 60  # step screens kept for the decision log (~100 kB each)
 
 
 class EventBus:
@@ -25,6 +26,7 @@ class EventBus:
         self._history: deque[Event] = deque(maxlen=HISTORY)
         self._frame = b""
         self._frame_id = 0
+        self._kept: dict[int, bytes] = {}
 
     def publish(self, ev: str, **fields: Any) -> None:
         event = {"ev": ev, "t": time.time(), **fields}
@@ -33,19 +35,29 @@ class EventBus:
             clients = list(self._clients)
         _fan_out(clients, event)
 
-    def set_frame(self, jpeg: bytes) -> None:
-        """Latest screen image. Clients get a short notice, not the bytes, and
-        frames stay out of the history so a reconnect isn't flooded."""
+    def set_frame(self, jpeg: bytes, keep: bool = False) -> int:
+        """Latest screen image; gives its id. Clients get a short notice, not the bytes, and
+        frames stay out of the history so a reconnect isn't flooded. `keep` holds it for kept_frame."""
         with self._lock:
             self._frame = jpeg
             self._frame_id += 1
+            if keep:
+                self._kept[self._frame_id] = jpeg
+                if len(self._kept) > KEPT_FRAMES:
+                    del self._kept[next(iter(self._kept))]
             clients = list(self._clients)
             notice = {"ev": "frame", "id": self._frame_id}
         _fan_out(clients, notice)
+        return notice["id"]
 
     def frame(self) -> tuple[int, bytes]:
         with self._lock:
             return self._frame_id, self._frame
+
+    def kept_frame(self, frame_id: int) -> bytes:
+        """A kept step screen, or b"" once it has been dropped."""
+        with self._lock:
+            return self._kept.get(frame_id, b"")
 
     def subscribe(self) -> queue.Queue[Event]:
         client: queue.Queue[Event] = queue.Queue(maxsize=CLIENT_BUFFER)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, replace
 from typing import Callable
 
@@ -54,7 +55,6 @@ class Agent:
         self.executor, self.controller, self.memory = executor, controller, memory
         self.telemetry, self.max_steps, self.on_status = telemetry, max_steps, on_status
         self.events = events
-        self._shown_scores: object = None
         self.reconnect, self.redetect, self.deadline_s = reconnect, redetect, deadline_s
         # (connected_at, thumbnail) of the screen the OS was classified on, kept between goals
         self._classified: tuple[float, np.ndarray | None] = (0.0, None)
@@ -108,7 +108,7 @@ class Agent:
                     stamp = time.monotonic()
                     jpeg = prepare(frame, profile.rect, grid=getattr(self.executor, "image_grid", True))
                     times["t_upload"] = time.monotonic() - stamp
-                    self._show(frame, profile, jpeg)
+                    frame_id = self._show(frame, profile, jpeg)
                     ctx = StepContext(goal, profile, self.memory, history, step,
                                       self.max_steps, note=note, run_id=run_id)
                     stamp = time.monotonic()
@@ -121,7 +121,8 @@ class Agent:
                     self._emit("plan", step=step, reasoning=plan.reasoning,
                                actions=[a.brief() for a in plan.actions],
                                points=[[a.x, a.y] for a in plan.actions if a.type in POINTER_ACTIONS],
-                               scores=self._jev_scores(), t_model=round(times["t_model"], 3))
+                               rejected=list(plan.rejected), frame=frame_id, trace=self._trace(),
+                               t_model=round(times["t_model"], 3))
                     if plan.refresh_screen:
                         note = "Planner updated. Recheck the current screen before acting."
                         continue
@@ -261,7 +262,7 @@ class Agent:
         self.memory.set_task(goal, status)
         self.memory.add_turn("assistant", message)
         self._emit("result", status=status, message=message, steps=step,
-                   total_s=round(time.monotonic() - started, 3))
+                   total_s=round(time.monotonic() - started, 3), trace=self._trace())
         return TaskResult(status, message, step, run_id)
 
     # -- display events (no-ops without a display) -------------------------
@@ -274,18 +275,18 @@ class Agent:
         point = [action.x, action.y] if action.type in POINTER_ACTIONS else None
         self._emit("action", step=step, action=action.brief(), point=point, ok=ok)
 
-    def _show(self, frame: Frame, profile: DeviceProfile, model_jpeg: bytes) -> None:
-        """Share the step's screen. The model copy is reused unless it has an aiming grid."""
+    def _show(self, frame: Frame, profile: DeviceProfile, model_jpeg: bytes) -> int:
+        """Share and keep the step's screen; gives its frame id (0 without a display).
+        The model copy is reused unless it has an aiming grid."""
         if self.events is None:
-            return
+            return 0
         grid = getattr(self.executor, "image_grid", True)
-        self.events.set_frame(prepare(frame, profile.rect, grid=False) if grid else model_jpeg)
+        return self.events.set_frame(prepare(frame, profile.rect, grid=False) if grid else model_jpeg, keep=True)
 
-    def _jev_scores(self) -> dict[str, object] | None:
-        """Scores from Jev's latest check, or None if this step made no new check
-        (Jev replaces `last_scores` with a new dict on every call)."""
-        scores = getattr(getattr(self.executor, "jev", None), "last_scores", None)
-        if not isinstance(scores, dict) or scores is self._shown_scores:
-            return None
-        self._shown_scores = scores
-        return dict(scores)
+    def _trace(self) -> list[object]:
+        """The executor's decisions since the last event (Jev calls with their boxes, plans, routing)."""
+        trace = getattr(getattr(self.executor, "jev", None), "trace", None)
+        taken = []
+        while isinstance(trace, deque) and trace:  # the race's planner thread may still append
+            taken.append(trace.popleft())
+        return taken

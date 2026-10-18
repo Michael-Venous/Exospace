@@ -41,6 +41,7 @@ class Config:
     zai_base_url: str = "https://api.z.ai/api/paas/v4"
     target_os: str = ""
     local_keyboard: str = ""
+    local_monitor: int = 0
 
     @property
     def uses_zai(self) -> bool:
@@ -90,4 +91,5 @@ class Config:
             zai_base_url=env("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
             target_os=env("TARGET_OS", ""),
             local_keyboard=env("LOCAL_KEYBOARD", ""),
+            local_monitor=int(env("LOCAL_MONITOR", "0")),
         )

@@ -103,6 +103,8 @@ class RaceExecutor:
         # (the fast path) never waits for an old plan to finish.
         self._plan = self._pool.submit(self.planner.next_actions, image, self._planner_ctx(ctx))
         result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, run_id=ctx.run_id))
+        self.jev.trace.append({"label": "route", "mode": result.mode, "gesture": result.gesture,
+                               "irreversible": result.irreversible, "approved": confirmed})
         if result.irreversible and not confirmed:
             self.mode = "none"
             self._pending = _Pending(utterance, ctx.goal, ctx.profile.connected_at)
