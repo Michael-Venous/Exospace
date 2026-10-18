@@ -201,7 +201,7 @@ class JevFirstTests(unittest.TestCase):
     def test_a_recovery_note_hands_the_run_to_flash(self):
         ctx = StepContext("open calculadora", DeviceProfile("linux", Rect(0, 0, 4, 3), "mouse", 1), Mock(), [], 2,
                           10, note="the launch landed elsewhere", run_id="a")
-        self.assertEqual(self.planner.next_actions(b"img", ctx).reasoning, "Stage 1/1: planned")
+        self.assertTrue(self.planner.next_actions(b"img", ctx).reasoning.startswith("Stage 1/1: planned [Jev handed off"))
         self.planner.steps.next_actions.assert_not_called()
 
     def test_jev_steps_need_no_flash_call(self):
@@ -211,7 +211,7 @@ class JevFirstTests(unittest.TestCase):
 
     def test_a_step_jev_cant_take_hands_the_run_to_flash(self):
         self.planner.steps.next_actions.return_value = Plan(FAILED, [Action("fail", reason="stuck")], [])
-        self.assertEqual(self.planner.next_actions(b"img", self.ctx("a")).reasoning, "Stage 1/1: planned")
+        self.assertIn("[Jev handed off: stuck]", self.planner.next_actions(b"img", self.ctx("a")).reasoning)
         self.planner.next_actions(b"img", self.ctx("a"))
         self.assertEqual(self.planner.steps.next_actions.call_count, 1)  # the rest of that run stays on Flash
         self.planner.next_actions(b"img", self.ctx("b"))

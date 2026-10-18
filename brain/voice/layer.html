@@ -128,6 +128,7 @@ let unspoken = [], doneTimer;
 const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 new EventSource("/narration").onmessage = e => {
   const m = JSON.parse(e.data);
+  if (m.button) return m.button === "down" ? press() : release();  // the Pi's push-to-talk button
   if (m.pcm) return stopListening || play(m.pcm, m.rate);  // never over the user
   const line = m.say || m.show;
   waiting(false);

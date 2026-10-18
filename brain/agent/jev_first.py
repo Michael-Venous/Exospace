@@ -9,6 +9,7 @@ planner for the rest of its run, so Flash is called only when Jev is stuck.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_flash import JevFlashExecutor
@@ -29,14 +30,17 @@ class JevFirstPlanner:
         self._flash_run: str | None = None  # the run Jev handed to Flash
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
-        if ctx.note:  # a recovery note (no visible effect, a launch that landed elsewhere): Jev doesn't read it
-            self._flash_run = ctx.run_id
+        why = ""
+        if ctx.note and self._flash_run != ctx.run_id:  # a recovery note (no visible effect): Jev doesn't read it
+            self._flash_run, why = ctx.run_id, f"recovery note: {ctx.note[:80]}"
         if self._flash_run != ctx.run_id:
             plan = self.steps.next_actions(image, ctx)
             if plan.reasoning != FAILED:
                 return plan
-            self._flash_run = ctx.run_id
-        return self.flash.next_actions(image, ctx)
+            self._flash_run, why = ctx.run_id, plan.actions[0].reason if plan.actions else "failed"
+        plan = self.flash.next_actions(image, ctx)
+        # The hand-off reason goes in the step's log line: why a request left Jev's ~1 s steps for Flash.
+        return replace(plan, reasoning=f"{plan.reasoning} [Jev handed off: {why}]") if why else plan
 
     def acknowledge(self, executed: bool) -> None:
         self.flash.acknowledge(executed)

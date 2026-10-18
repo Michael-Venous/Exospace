@@ -176,7 +176,7 @@ class Agent:
                             finally:
                                 times["t_execute"] += time.monotonic() - stamp
                             history.append(action.brief())  # before settling: a restart lands there
-                            settled_s = ctl.wait_settled()
+                            settled_s = ctl.wait_settled(loading=_may_load(action))
                             times["t_settle"] += settled_s
                     if pending_done is not None:
                         # Check the claim on the new screen now: replanning on a screen that looks unchanged
@@ -291,3 +291,10 @@ class Agent:
             return None
         self._shown_scores = scores
         return dict(scores)
+
+
+def _may_load(action: Action) -> bool:
+    """A click or Enter can start a page load, which needs a longer stillness to count as settled."""
+    if action.type in ("click", "tap", "double_click"):
+        return True
+    return action.type == "hotkey" and [k.upper() for k in action.keys] in (["ENTER"], ["RETURN"])

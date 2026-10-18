@@ -38,6 +38,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from brain.voice import button
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
 # A 200 ms pause ends a segment: the short break after "open chrome" in "open chrome and search cats" is
@@ -259,6 +260,9 @@ def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
     lines: queue.Queue[dict[str, Any]] = queue.Queue()
     threading.Thread(target=agent.follow, args=(lines,), name="agent-events", daemon=True).start()
     threading.Thread(target=agent.pace, args=(lines,), name="agent-pace", daemon=True).start()
+    if button.available():  # the Pi's push-to-talk button: the page holds and lets go of its orb
+        threading.Thread(target=button.watch, args=(lambda down: lines.put({"button": "down" if down else "up"}),),
+                         name="ptt-button", daemon=True).start()
     page_server(agent, port, ws_port, lines)
     print(f"Voice layer on http://127.0.0.1:{port} -> agent {agent.base}", flush=True)
     asyncio.run(_relay_forever(port, ws_port, deepgram_key))
