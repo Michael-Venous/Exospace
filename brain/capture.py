@@ -19,6 +19,7 @@ from typing import Callable, Protocol
 import cv2
 import numpy as np
 
+from brain.hid import window_rects
 from brain.types import Frame, Rect
 
 STALE_S = 0.5  # a frame older than this counts as no signal
@@ -138,16 +139,12 @@ class ScreenCapture:
 
 
 def _grey_out(frame: Frame, title: str, area: dict[str, int]) -> None:
-    """Grey out each window whose title starts with `title`, from `wmctrl -lG` (desktop pixels)."""
+    """Grey out each window whose title starts with `title`, its frame (title bar) too."""
     # shortcut: greys the whole window even under other windows, minimized or on another workspace; read
     # `_NET_CLIENT_LIST_STACKING` and `wmctrl -d` if that hides a target.
-    out = subprocess.run(["wmctrl", "-lG"], capture_output=True, text=True, timeout=1).stdout
-    for line in out.splitlines():
-        parts = line.split(None, 7)  # id, workspace, x, y, width, height, host, title
-        if len(parts) == 8 and parts[7].startswith(title):
-            x, y, w, h = (int(v) for v in parts[2:6])
-            x, y = x - area["left"], y - area["top"]
-            frame[max(y, 0):max(y + h, 0), max(x, 0):max(x + w, 0)] = 128
+    for x, y, w, h in window_rects(title):
+        x, y = x - area["left"], y - area["top"]
+        frame[max(y, 0):max(y + h, 0), max(x, 0):max(x + w, 0)] = 128
 
 
 class CommandCapture:

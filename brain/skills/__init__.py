@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 import math
+import os
+import re
 
 from brain.capture import thumbnail
 from brain.types import ActionError, DeviceProfile
@@ -21,6 +24,34 @@ APP_START_S = 4.0  # longest wait for a launched app's window to appear
 OPEN_APP_KEYS: dict[str, list[str]] = {
     "macos": ["GUI", "SPACE"], "windows": ["GUI"], "linux": ["GUI"], "chromeos": ["GUI"],
 }
+
+
+def installed_apps(category: str | None = None) -> frozenset[str]:
+    """This machine's app names, lowercased: the desktop entries a Linux launcher searches (none elsewhere),
+    or only those in one freedesktop category ("WebBrowser")."""
+    return frozenset(name for name, _, categories in desktop_entries() if category is None or category in categories)
+
+
+def desktop_entries() -> list[tuple[str, set[str], set[str]]]:
+    """The desktop entries a Linux launcher shows, as (name lowercased, the ids its windows carry lowercased:
+    file name and StartupWMClass, its freedesktop Categories)."""
+    # shortcut: Linux only; read the Start menu or /Applications when the local backend runs on Windows or macOS.
+    dirs = [os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
+            *(os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":")]
+    entries = []
+    for entry in (e for d in dirs if (Path(d) / "applications").is_dir() for e in (Path(d) / "applications").rglob("*.desktop")):
+        try:
+            main = entry.read_text(errors="ignore").split("\n[Desktop Action")[0]
+        except OSError:
+            continue
+        if (name := _field(main, "Name")) and "true" not in (_field(main, "NoDisplay"), _field(main, "Hidden")):
+            entries.append((name.lower(), {entry.stem.lower(), _field(main, "StartupWMClass").lower()} - {""},
+                            set(filter(None, _field(main, "Categories").split(";")))))
+    return entries
+
+
+def _field(entry: str, key: str) -> str:
+    return match[1].strip() if (match := re.search(rf"^{key}=(.*)$", entry, re.M)) else ""
 
 
 def run_skill(

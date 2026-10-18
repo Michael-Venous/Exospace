@@ -1,7 +1,7 @@
 """Model-free start: a goal made of unambiguous commands ("press ctrl c", 'type "hi"'),
 or one that starts by opening an app or scrolling ("open calculator, then ...", "scroll
 down and ..."), acts at once, with no model call. "open a new tab" is Ctrl+T on a computer;
-"go to <address>" and a last "search <words>" run blind only after a launch or a new tab. The wrapped
+"go to <address>" and a last "search <words>" run blind only after a browser's launch or a new tab. The wrapped
 executor then checks the result and does the rest from the next step. `spoken_commands`
 finds the commands at the start of speech still coming in, so they can act before it ends."""
 
@@ -26,6 +26,11 @@ _SEARCH = re.compile(r"search\s+(?:up\s+|for\s+)?([^,;!?]+?)" + _END, re.I)
 _WHERE = frozenset("on in at with using inside within youtube amazon wikipedia".split())
 _TAB_KEYS = {("CTRL", "T"), ("GUI", "T")}  # a new tab: the browser is in front, so its address bar takes text
 _ADDRESS = re.compile(r"(?:go\s+to|visit)\s+([a-z0-9-]+(?:\.[a-z0-9-]+)+(?:/[^\s,;!?]*)?)" + _END, re.I)
+_GO = re.compile(r"(?:go|switch)\s+(?:back\s+)?to\s+(?:the\s+)?([a-z0-9][a-z0-9 ]*?)" + _END, re.I)
+# Names of the apps on the target, lowercased (skills.installed_apps), when the target is this machine; else "go to X"
+# can't tell an app from a site or a place in an app, and goes to the model.
+INSTALLED: frozenset[str] = frozenset()
+BROWSERS: frozenset[str] = frozenset()  # those that are web browsers (skills.installed_apps("WebBrowser"))
 # Browser address-bar and tab keys; phones have none without a keyboard.
 _BROWSER_OS = frozenset({"windows", "macos", "linux", "chromeos"})
 _SEPARATOR = re.compile(r"\s*(?:[,;.!?]\s*)?(?:(?:and|then)\b\s*)*", re.I)
@@ -40,19 +45,20 @@ _NOT_APP = frozenset(
 _APP_KINDS = frozenset({"spreadsheet", "text editor", "word processor", "calculator", "camera", "browser",
                         "web browser", "terminal", "file manager"})
 JUST_DID = "Just did: "  # brain/app.py's note on a request that follows on from the last one
+CORRECTION = "User correction: "  # and on words that correct or answer the last one
 
 
 def quick_actions(goal: str, os: OSName, launched: bool = False) -> list[Action]:
     """Actions for a goal whose every clause is an unambiguous command, else [], except
     that leading scrolls still act. An app launch acts even when the rest needs the model;
-    `launched` allows the browser commands, which need the launched app in front."""
+    `launched` allows the browser commands, which need a browser in front."""
     actions: list[Action] = []
     rest = goal.strip()
     if "\n" in rest:  # a correction ("...\nUser correction: ...") can change the first command
         note, _, rest = rest.rpartition("\n")
         if not note.startswith(JUST_DID) or "\n" in note:
             return []
-        # Its last request already ran: an app it launched is in front ("open chrome" ... "and go to x.com").
+        # Its last request already ran: a browser it launched is in front ("open chrome" ... "and go to x.com").
         launched = _fresh(quick_actions(note[len(JUST_DID):], os), launched)
     while rest:
         clause, end = _clause(rest, os, launched)
@@ -61,8 +67,9 @@ def quick_actions(goal: str, os: OSName, launched: bool = False) -> list[Action]
             return actions if all(a.type == "scroll" for a in actions) else []
         actions += clause
         rest = _SEPARATOR.sub("", rest[end:], count=1)
-        if clause[0].type == "skill":
-            return actions + quick_actions(rest, os, launched=True)
+        # A launch, a new tab or a page load (several actions) acts even when the rest needs the model.
+        if clause[0].type == "skill" or clause[0].keys in _TAB_KEYS or len(clause) > 1:
+            return actions + quick_actions(rest, os, launched=_fresh(clause, launched))
         launched = _fresh(clause, launched)
         if rest and clause[0].type == "hotkey" and set(clause[0].keys) <= MODIFIERS:
             return []  # half a combination: "press shift and press enter"
@@ -70,11 +77,20 @@ def quick_actions(goal: str, os: OSName, launched: bool = False) -> list[Action]
 
 
 def _fresh(actions: list[Action], launched: bool) -> bool:
-    """Whether a launched app or a new tab is still in front after these actions: Enter loads a page,
-    whose own search box then means "search"."""
+    """Whether a browser just launched, or a new tab, is still in front after these actions: another app's
+    launch puts that app in front ("open discord, go to x" typed x into Discord's message box and sent it);
+    Enter loads a page, whose own search box then means "search"."""
     for a in actions:
-        launched = (launched or a.type == "skill" or a.keys in _TAB_KEYS) and a.keys != ("ENTER",)
+        if a.type == "skill":
+            launched = _named(a.args["name"], BROWSERS)
+        else:
+            launched = (launched or a.keys in _TAB_KEYS) and a.keys != ("ENTER",)
     return launched
+
+
+def _named(name: str, apps: frozenset[str]) -> bool:
+    """Whether `name` is whole words of one of `apps`: "chrome" is "Google Chrome", "firefox" "Firefox Web Browser"."""
+    return any(f" {name.lower()} " in f" {app} " for app in apps)
 
 
 def _clause(text: str, os: OSName, launched: bool) -> tuple[list[Action], int]:
@@ -86,6 +102,13 @@ def _clause(text: str, os: OSName, launched: bool) -> tuple[list[Action], int]:
     if launched and os in _BROWSER_OS and (match := _ADDRESS.match(text)):
         return [Action("hotkey", keys=(modifier, "L")), Action("type_text", text=match[1]),
                 Action("hotkey", keys=("DELETE",)), Action("hotkey", keys=("ENTER",))], match.end()
+    if (match := _GO.match(text)) and len(match[1].split()) <= 3 and not _NOT_APP & set(match[1].lower().split()):
+        if os in OPEN_APP_KEYS and _named(match[1], INSTALLED):
+            return [Action("skill", name="open_app", args={"name": match[1]})], match.end()
+        if launched and os in _BROWSER_OS and match[0][:2].lower() == "go":
+            # No Delete: the browser's own completion ("youtube" -> youtube.com) picks a site it knows; else it searches.
+            return [Action("hotkey", keys=(modifier, "L")), Action("type_text", text=match[1]),
+                    Action("hotkey", keys=("ENTER",))], match.end()
     # Only as the last words: "search youtube and search cats" means searching inside YouTube.
     if launched and os in _BROWSER_OS and (match := _SEARCH.match(text)) and not text[match.end():].strip(" .!?") \
             and not _WHERE & {w.lower() for w in match[1].split()}:

@@ -1,11 +1,16 @@
 """Model-free quick commands: what fires instantly and what must reach the model."""
 
+import os
+import tempfile
 import unittest
-from unittest.mock import Mock
+from pathlib import Path
+from unittest.mock import Mock, patch
 
+from brain.agent import quick
 from brain.agent.executor import Plan, StepContext
 from brain.agent.memory import Memory
 from brain.agent.quick import QuickStart, quick_actions, spoken_commands
+from brain.skills import desktop_entries, installed_apps
 from brain.types import Action, DeviceProfile, Rect
 
 
@@ -14,6 +19,13 @@ def briefs(goal, os="windows"):
 
 
 class QuickActionTests(unittest.TestCase):
+    def setUp(self):
+        for name, apps in (("INSTALLED", {"google chrome", "firefox web browser", "settings", "discord"}),
+                           ("BROWSERS", {"google chrome", "firefox web browser", "safari"})):
+            installed = patch.object(quick, name, frozenset(apps))
+            installed.start()
+            self.addCleanup(installed.stop)
+
     def test_unambiguous_leading_commands_fire(self):
         cases = {
             "open calculator": ["skill(open_app {'name': 'calculator'})"],
@@ -29,7 +41,9 @@ class QuickActionTests(unittest.TestCase):
                 "type_text('example.org')", "hotkey(DELETE)", "hotkey(ENTER)"],
             "Open up Chrome and go to youtube.com.": ["skill(open_app {'name': 'Chrome'})", "hotkey(CTRL+L)",
                                                       "type_text('youtube.com')", "hotkey(DELETE)", "hotkey(ENTER)"],
-            "open chrome, go to youtube.com and search for horses": ["skill(open_app {'name': 'chrome'})"],
+            "open chrome, go to youtube.com and search for horses": [
+                "skill(open_app {'name': 'chrome'})", "hotkey(CTRL+L)", "type_text('youtube.com')",
+                "hotkey(DELETE)", "hotkey(ENTER)"],
             "Open a spreadsheet, enter 12 in A1": ["skill(open_app {'name': 'spreadsheet'})"],
             "open a text editor and type hi": ["skill(open_app {'name': 'text editor'})"],
             "press ctrl c": ["hotkey(CTRL+C)"],
@@ -43,6 +57,14 @@ class QuickActionTests(unittest.TestCase):
             "scroll up and click the first result": ["scroll(-5)"],  # a scroll is easily undone
             "scroll down, please": ["scroll(5)"],
             "open a new tab": ["hotkey(CTRL+T)"],
+            # a site said without ".com" is left to the browser's own completion; Enter loads it, so its own search
+            # box takes the search
+            "Open up a new tab and go to YouTube and search for horses.": [
+                "hotkey(CTRL+T)", "hotkey(CTRL+L)", "type_text('YouTube')", "hotkey(ENTER)"],
+            "Go to Google Chrome, open up a new tab, and go to YouTube.": [
+                "skill(open_app {'name': 'Google Chrome'})", "hotkey(CTRL+T)", "hotkey(CTRL+L)",
+                "type_text('YouTube')", "hotkey(ENTER)"],
+            "switch to firefox and click the second link": ["skill(open_app {'name': 'firefox'})"],
             # follows on from a request that already ran; after a launch its window is in front
             "Just did: open a new tab\npress ctrl l": ["hotkey(CTRL+L)"],
             "Just did: open chrome\ngo to wikipedia.org": ["hotkey(CTRL+L)", "type_text('wikipedia.org')",
@@ -90,12 +112,45 @@ class QuickActionTests(unittest.TestCase):
         self.assertEqual(briefs("press F10", "unknown"), ["hotkey(F10)"])
         self.assertEqual(briefs("press home", "android"), ["hotkey(GUI+H)"])
 
+    def test_go_to_an_app_opens_it_only_when_it_is_installed(self):
+        self.assertEqual(briefs("go to firefox"), ["skill(open_app {'name': 'firefox'})"])  # "Firefox Web Browser"
+        self.assertEqual(briefs("go back to the settings"), ["skill(open_app {'name': 'settings'})"])
+        self.assertEqual(briefs("go to the chrome settings"), [])
+        self.assertEqual(briefs("go to fire"), [])  # whole words only
+        with patch.object(quick, "INSTALLED", frozenset()):  # a target that isn't this machine
+            self.assertEqual(briefs("go to firefox"), [])
+
+    def test_installed_apps_are_the_launcher_entries_shown(self):
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as system:
+            for root, name, body in ((home, "a.desktop", "Name=Firefox Web Browser\nCategories=Network;WebBrowser;\n"
+                                                         "[Desktop Action new]\nName=New Window"),
+                                     (system, "sub/b.desktop", "Name=Discord\nStartupWMClass=discord\nCategories=Network;"),
+                                     (system, "c.desktop", "Name=Helper\nNoDisplay=true")):
+                path = Path(root, "applications", name)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("[Desktop Entry]\n" + body + "\n")
+            with patch.dict(os.environ, {"XDG_DATA_HOME": home, "XDG_DATA_DIRS": system}):
+                self.assertEqual(installed_apps(), {"firefox web browser", "discord"})
+                self.assertEqual(installed_apps("WebBrowser"), {"firefox web browser"})
+                self.assertIn(("discord", {"b", "discord"}, {"Network"}), desktop_entries())  # the ids its windows carry
+
     def test_browser_keys_only_follow_a_launch_on_a_computer(self):
         self.assertEqual(quick_actions("go to youtube.com", "windows"), [])  # whatever is in front gets them
+        self.assertEqual(quick_actions("go to youtube", "windows"), [])
+        self.assertEqual(briefs("open chrome and go to youtubers", "windows")[1:], [
+            "hotkey(CTRL+L)", "type_text('youtubers')", "hotkey(ENTER)"])  # the browser searches what isn't a site
+        self.assertEqual(briefs("open chrome and switch to youtubers", "windows")[1:], [])
+        self.assertEqual(quick_actions("go to the chrome settings", "windows"), [])
         self.assertEqual(briefs("open safari and go to apple.com", "macos")[1:], [
             "hotkey(GUI+L)", "type_text('apple.com')", "hotkey(DELETE)", "hotkey(ENTER)"])
         self.assertEqual(quick_actions("open chrome and go to youtube.com", "android"), [])
         self.assertEqual(quick_actions("open a new tab", "android"), [])
+        # Another app's launch puts it in front: the address would be typed into its message box and sent.
+        self.assertEqual(briefs("open discord and go to swampax", "linux"), ["skill(open_app {'name': 'discord'})"])
+        self.assertEqual(briefs("open chrome, open discord and go to x.com", "linux")[1:], ["skill(open_app {'name': 'discord'})"])
+        self.assertEqual(quick_actions("Just did: open discord\ngo to swampax", "linux"), [])
+        with patch.object(quick, "BROWSERS", frozenset()):  # a target that isn't this machine: the model checks
+            self.assertEqual(briefs("open chrome and go to youtube.com", "linux"), ["skill(open_app {'name': 'chrome'})"])
 
 
 class SpokenCommandTests(unittest.TestCase):
