@@ -175,4 +175,15 @@ class SemanticTests(unittest.TestCase):
         self.assertEqual((plan.actions[0].x,plan.actions[0].y),(.3,.7))
         self.assertEqual(self.refine.call_args.args[3],(.4,.4))
 
+    def test_typing_without_focus_clicks_the_field_first(self):
+        self.plan['steps']=[{'ready':'search page','expected':'results','actions':[{'type':'type_text','text':'flexbox'}]}]
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: (
+            {'ready':.99,'focused':.1},{'field':(.4,.5)})
+        plan=self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual([a.type for a in plan.actions],['click','type_text'])
+        self.assertEqual((plan.actions[0].x,plan.actions[0].y),(.4,.5))
+        self.executor._key=None
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,**kw: ({'ready':.99,'focused':.95},{})
+        self.assertEqual([a.type for a in self.executor.next_actions(b'other',self.ctx).actions],['type_text'])
+
 if __name__=='__main__':unittest.main()

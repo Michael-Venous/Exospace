@@ -136,6 +136,11 @@ def validate_steps(data, allow_visual_fallback=False):
     return steps
 
 
+FOCUS_CHECK=('A text cursor or focused input is visible exactly where the next text should go, so typing '
+             'now would land there.')
+FIELD_TARGET='The editable text field, search box or document area that the text "{text}" should be typed into.'
+
+
 class PlanError(ValueError):
     """Flash's plan stayed invalid after one correction."""
 
@@ -294,6 +299,11 @@ class JevFlashExecutor:
             if first['type'] in POINTER:
                 targets['target']=first['target']
                 if first['type']=='drag':targets['destination']=first['destination']
+            elif first['type']=='type_text':
+                # Typing into nothing cost a full replan (MDN search, a fresh KWrite window): check
+                # focus in the same call and click the field first when it has none.
+                checks['focused']=FOCUS_CHECK
+                targets['field']=FIELD_TARGET.format(text=str(first.get('text',''))[:40])
             elif not self.pending and image==self._plan_image and all(
                     a.get('type')=='skill' and a.get('name') in ('open_app','wait') for a in stage['actions']):
                 # Nothing to ground or verify yet, on the very screen Flash planned from: a Jev
@@ -303,7 +313,18 @@ class JevFlashExecutor:
             values,points=self.jev.assess(image,checks,targets,run_id=ctx.run_id,step=ctx.step,
                                           request=ctx.goal,proposal=stage['actions'])
             self.cancel.check()
+            focus_click=None
+            if 'focused' in values:
+                focused=values.pop('focused')>=ZOOM_GATE
+                if focused:
+                    targets.pop('field'); points.pop('field',None)
             points=self._zoom(image,targets,points,ctx)
+            if 'field' in targets:
+                field=points.pop('field',None); targets.pop('field')
+                if field is None:
+                    values['focused']=0.0  # nowhere to type: replan
+                else:
+                    focus_click=Action('click',x=field[0],y=field[1])
             if image==self._plan_image:  # Flash planned from this very screen: its route vote is redundant
                 values.pop('route_execute',None)  # (it vetoed 3 fresh plans in a row and cancelled a run)
             mismatch=[name for name,value in values.items() if value<self.jev.min_presence]
@@ -311,6 +332,8 @@ class JevFlashExecutor:
                 self.pending=False
                 self.cursor=next_cursor
                 actions=self._ground(stage,points)
+                if actions is not None and focus_click is not None:
+                    actions=[focus_click,*actions]
                 if actions is not None:
                     return Plan(f'Stage {self.cursor+1}/{len(self.stages)}: '+stage['expected'],actions,[])
             reason='Visual checks: '+repr(values)+'; unresolved targets: '+repr(
