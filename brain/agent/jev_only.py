@@ -53,6 +53,8 @@ APP_NAME = ("Which words of the `goal` name the app, or the kind of app, to open
 LAUNCHER_OPEN = "Is an app launcher or start menu open in `screen`, with a search field for typing an app's name?"
 QUESTION = ("Does the `goal` ask for information, an answer or an explanation, rather than for something to be "
             "done on the device?")
+COMPOSED = ("Does what remains of the `goal`, after the `executed_steps`, need text, numbers or an expression "
+            "that the `goal` doesn't contain word for word, to be computed, translated or composed?")
 STEP_CONTROL = "the one control that the next step of the `goal` acts on, after the `executed_steps`"
 WAIT = Action("skill", name="wait")
 # Race's COMPLETION_GATE (0.3) let two unfinished goals through here, at 0.57 and 0.63 (2026-10-18: Google
@@ -89,6 +91,7 @@ class JevOnlyPlanner:
         answers, size, padded = self.jev.evaluate(image, route | {
             "complete": {"type": "noul", "instructions": COMPLETION_QUESTION},
             "question": {"type": "noul", "instructions": QUESTION},
+            "composed": {"type": "noul", "instructions": COMPOSED},
             "next": {"type": "choice", "instructions": NEXT_QUESTION, "criteria": NEXT_CRITERIA},
             "present": {"type": "noul", "instructions":
                         "Is the one control that the next step of the `goal` acts on visible in `screen`, "
@@ -105,6 +108,10 @@ class JevOnlyPlanner:
         if probability(answers["question"].get("noul")) >= GATE:
             # Jev called "what is this page about?" complete and said "Done." with no answer.
             return _fail("the request asks for an answer, not an action")
+        if probability(answers["composed"].get("noul")) >= GATE:
+            # "work out 12 times 9": Jev pressed keypad keys one per step and missed one (41.7 s; Flash typed
+            # "12*9=" in one step, 12.2 s).
+            return _fail("the rest needs text the request doesn't give word for word")
         if probability(answers["complete"].get("noul")) >= COMPLETION_GATE and not unsent:
             return Plan("Jev verified the completed goal", [Action("done", summary="Done.")], [])
         if "unchanged" in ctx.note:

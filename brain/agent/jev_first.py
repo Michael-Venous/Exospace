@@ -26,6 +26,8 @@ class JevFirstPlanner:
         self._flash_run: str | None = None  # the run Jev handed to Flash
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
+        if ctx.note:  # a recovery note (no visible effect, a launch that landed elsewhere): Jev doesn't read it
+            self._flash_run = ctx.run_id
         if self._flash_run != ctx.run_id:
             plan = self.steps.next_actions(image, ctx)
             if plan.reasoning != FAILED:

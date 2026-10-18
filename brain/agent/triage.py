@@ -27,6 +27,11 @@ ZOOM_SCALE = 2.5
 FINE_WINDOW = 0.12  # the second, tighter look: Jev's boxes come in 0.005 steps of whatever it is shown
 SCROLL = 5  # wheel notches for "scroll down a bit": about a screenful
 MAX_SPANS = 40  # word runs of the utterance offered as the app's name
+# Box width (fraction of the screen) below which a click is hover-checked first. Jev's boxes come in 0.01
+# steps: KCalc's close X was boxed 0.97-0.99, minimize included.
+SMALL_TARGET = 0.03
+POINTED = ("This is a zoomed-in part of a screen. The mouse pointer rests on a control, which may be highlighted "
+           "or show a tooltip naming it. Is that control the one that does what the `utterance` asks?")
 
 INTENT_CRITERIA = {
     "act_now": "The utterance asks to click, tap, open or select ONE specific control that is visible on "
@@ -63,6 +68,7 @@ class Triage:
     gesture: Gesture = "click"
     scroll: int = 0  # wheel notches for mode "scroll", positive = down
     app: str = ""  # for mode "launch": the utterance's own words naming the app
+    small: bool = False  # for mode "act": a small target, worth a hover check before the click
 
 
 def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
@@ -83,7 +89,8 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
         "gesture": {"type": "choice", "criteria": GESTURE_CRITERIA, "instructions":
                     "Which pointer gesture carries out the `utterance` on the control it names in `screen`?"},
         "app": {"type": "choice", "instructions": "Which words of the `utterance` name the app, or the kind of "
-                "app, to open? They are typed into the app launcher's search.",
+                "app, to open? Only the name, without \"the\", \"a\" or other words around it: it is typed into "
+                "the app launcher's search.",
                 "criteria": {"none": "The utterance names no app or kind of app."} | {str(i): json.dumps(text)
                                                                                     for i, text in enumerate(names)}},
         "target": {"type": "box", "instructions":
@@ -110,7 +117,19 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
     refined = refine(jev, jpeg, utterance, point, run_id=run_id, step=step)
     gesture = answers["gesture"].get("choice")
     gesture = gesture if gesture in GESTURE_CRITERIA else "click"
-    return Triage("act", refined, irreversible, gesture) if refined else Triage("plan", None, irreversible)
+    small = box_width(answers["target"], size, padded) < SMALL_TARGET
+    return Triage("act", refined, irreversible, gesture, small=small) if refined else Triage("plan", None, irreversible)
+
+
+def pointed(jev: JevVision, jpeg: bytes, utterance: str, point: tuple[float, float], *,
+            run_id: str = "", step: int = 0) -> bool:
+    """With the pointer resting on `point`, is it on the control the utterance asks for? Its hover highlight
+    and tooltip tell neighbours apart that look alike: KCalc's close X scored 0.97, the minimize chevron next
+    to it (which Jev aimed at 3/3 for "close the calculator") 0.01-0.21."""
+    crop, _ = _crop_around(jpeg, point, ZOOM_WINDOW)
+    answers, _, _ = jev.evaluate(crop, {"on": {"type": "noul", "instructions": POINTED}}, run_id=run_id, step=step,
+                                 state={"utterance": utterance})
+    return probability(answers["on"].get("noul")) >= GATE
 
 
 def spans(utterance: str, limit: int = MAX_SPANS) -> list[str]:
@@ -184,6 +203,15 @@ def box_contains(answer: dict, size: tuple[int, int], padded: tuple[int, int], p
         return False
     (w, h), (pw, ph) = size, padded
     return left * pw / w <= point[0] <= right * pw / w and top * ph / h <= point[1] <= bottom * ph / h
+
+
+def box_width(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> float:
+    box = answer.get("box") or {}
+    try:
+        left, right = probability(box.get("left")), probability(box.get("right"))
+    except ValueError:
+        return 1.0
+    return max(0.0, right - left) * padded[0] / size[0]
 
 
 def box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float] | None:

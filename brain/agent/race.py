@@ -15,13 +15,18 @@ from dataclasses import dataclass, replace
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import probability
 from brain.agent.jev_first import JevFirstPlanner
-from brain.agent.jev_flash import COMPLETION_GATE, JevFlashExecutor
-from brain.agent.triage import GATE, answer_to_pending, triage
+from brain.agent.jev_flash import JevFlashExecutor
+from brain.agent.triage import GATE, answer_to_pending, pointed, triage
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
 
 
+DIRECT_GATE = 0.55  # completion after a direct click, scroll or launch
+# Where to hover next when the pointer rests on the wrong control: Jev re-aimed onto the same wrong one, but
+# its check of the hovered control is sure (close 0.97, neighbours <= 0.21), so the neighbours are tried.
+# 0.01 of the width is about one window button on a 2880 px screen.
+NEIGHBOURS = ((.01, 0), (-.01, 0), (0, .015), (0, -.015), (.02, 0), (-.02, 0))
 LAUNCHED = ("Is the app the `utterance` asks to open now open in front as its own app window: not a web search "
             "page about it, and not a different app with a similar name?")
 
@@ -53,6 +58,8 @@ class RaceExecutor:
         self._gesture = "click"
         self._scroll = 0
         self._launched = ""
+        self._tries = 0
+        self._aim: tuple[float, float] = (0.0, 0.0)  # Jev's point for a small target; hovers try around it
         self._clicked = False
         self._utterance = ""
         self._triage_step = 0
@@ -79,12 +86,18 @@ class RaceExecutor:
             if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):
                 return Plan("Scrolled", [Action("done", summary="Scrolled.")], [])
             self.mode = "plan"  # nothing to scroll here (or not focused): the planner recovers
+        if self.mode == "hover":
+            return self._after_hover(image, ctx)
         if self.mode == "launch":
-            if "unchanged" not in (ctx.note or "") and self._launched_app(image, ctx) and self._goal_met(image, ctx):
+            launched = "unchanged" not in (ctx.note or "") and self._launched_app(image, ctx)
+            if launched and self._goal_met(image, ctx):
                 return Plan("Jev launch done", [Action("done", summary="Done.")], [])
             self.mode = "plan"  # more to do in the app ("... and work out 12 times 9"): plan on its screen
             self._settle_speculation()
             self.planner.forget_plan()  # the speculative plan was made before the launch
+            if not launched:
+                ctx = replace(ctx, note=ctx.note or f'Opening "{self._launched}" from the launcher did not open '
+                                                    "that app; find it another way.")
             return self.planner.next_actions(image, self._planner_ctx(ctx))
         if self.mode == "act":
             if not self._clicked and ctx.step != self._triage_step:
@@ -131,6 +144,9 @@ class RaceExecutor:
             note = f"note_{len(ctx.memory.facts) + 1}"
             return Plan("Context noted", [Action("remember", key=note, value=utterance),
                                           Action("done", summary="Noted.")], [])
+        if self.mode == "act" and result.small and ctx.profile.input == "mouse":
+            self._aim = result.point
+            return self._hover(0)
         if self.mode == "act":
             return self._direct()
         if self.mode == "scroll":  # no target and no plan needed (it took 10.8 s through the planner)
@@ -158,7 +174,31 @@ class RaceExecutor:
                     if self.mode == "launch" else [f"{self._gesture} on the control for: {self._utterance}"])
         score = self.cancel.run(lambda: self.jev.completion(image, ctx.goal, executed, run_id=ctx.run_id,
                                                             step=ctx.step))
-        return score >= COMPLETION_GATE
+        # Direct-click scores vs the real outcome: true 0.56-0.93 (two at 0.50 and 0.53), false 0.54 ("close the
+        # calculator" clicked the screen's corner). Borderline goes to the planner rather than ending the run.
+        return score >= DIRECT_GATE
+
+    def _hover(self, tries: int) -> Plan:
+        """Rest the pointer on a small target first: its highlight and tooltip confirm it next step."""
+        self.mode, self._tries = "hover", tries
+        x, y = self._aim
+        if tries:
+            dx, dy = NEIGHBOURS[tries - 1]
+            x, y = min(max(x + dx, 0.0), 1.0), min(max(y + dy, 0.0), 1.0)
+        self._point = (x, y)
+        return Plan("Jev hover check", [Action("skill", name="hover", args={"x": x, "y": y})], [])
+
+    def _after_hover(self, image: bytes, ctx: StepContext) -> Plan:
+        if self.cancel.run(lambda: pointed(self.jev, image, self._utterance, self._point, run_id=ctx.run_id,
+                                           step=ctx.step)):
+            self.mode, self._clicked, self._triage_step = "act", False, ctx.step
+            return self._direct()
+        if self._tries < len(NEIGHBOURS):
+            return self._hover(self._tries + 1)
+        self.mode = "plan"  # never click a small control Jev could not confirm
+        self._settle_speculation()
+        note = f"No control near where Jev aimed does what was asked ({self._utterance}); find it another way."
+        return self.planner.next_actions(image, self._planner_ctx(replace(ctx, note=ctx.note or note)))
 
     def _launched_app(self, image: bytes, ctx: StepContext) -> bool:
         """The launcher can land elsewhere: "abre la calculadora" on an English desktop became a web

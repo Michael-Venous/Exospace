@@ -84,7 +84,7 @@ class RaceTests(unittest.TestCase):
         race._pool = ThreadPoolExecutor(max_workers=1)
         race._plan, race._key, race.mode, race._point, race._clicked, race._pending = None, None, "", None, False, None
         race._gesture, race._utterance, race._triage_step, race._approved_goal = "click", "", 0, None
-        race._scroll, race._launched = 0, ""
+        race._scroll, race._launched, race._tries, race._aim = 0, "", 0, (0.0, 0.0)
         self.addCleanup(race._pool.shutdown)
         race.planner.next_actions.return_value = Plan("planned", [Action("hotkey", keys=("ENTER",))], [])
         self.race = race
@@ -201,6 +201,49 @@ class RaceTests(unittest.TestCase):
         self.assertEqual(result.actions[0].type, "double_click")
 
 
+    def test_a_borderline_completion_after_a_click_is_left_to_the_planner(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.98, .01), False)):
+            self.race.next_actions(b"img", self.ctx("close the calculator"))
+        self.race.acknowledge(True)
+        self.race.jev.completion.return_value = .54  # measured: a corner click scored this, calculator still open
+        self.assertEqual(self.race.next_actions(b"img", self.ctx("close the calculator")).reasoning, "planned")
+
+    def test_a_small_target_is_hovered_and_confirmed_before_the_click(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.98, .01), False, small=True)):
+            first = self.race.next_actions(b"img", self.ctx("close the calculator", step=1))
+        self.assertEqual((first.actions[0].name, first.actions[0].args), ("hover", {"x": .98, "y": .01}))
+        self.race.acknowledge(True)
+        with patch("brain.agent.race.pointed", return_value=True):
+            click = self.race.next_actions(b"img", self.ctx("close the calculator", step=2))
+        self.assertEqual((click.actions[0].type, click.actions[0].x), ("click", .98))
+
+    def test_a_hover_on_the_wrong_neighbour_tries_the_neighbours(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.98, .01), False, small=True)):
+            self.race.next_actions(b"img", self.ctx("close the calculator", step=1))
+        with patch("brain.agent.race.pointed", side_effect=[False, True]):
+            again = self.race.next_actions(b"img", self.ctx("close the calculator", step=2))
+            self.assertAlmostEqual(again.actions[0].args["x"], .99)  # the next button over
+            click = self.race.next_actions(b"img", self.ctx("close the calculator", step=3))
+        self.assertEqual((click.actions[0].type, round(click.actions[0].x, 2)), ("click", .99))
+
+    def test_a_small_target_no_hover_confirms_is_left_to_the_planner_with_a_note(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.5, .5), False, small=True)):
+            self.race.next_actions(b"img", self.ctx("close the calculator", step=1))
+        with patch("brain.agent.race.pointed", return_value=False):
+            for step in range(2, 8):
+                self.assertEqual(self.race.next_actions(b"img", self.ctx("close the calculator", step=step)).reasoning,
+                                 "Jev hover check")
+            last = self.race.next_actions(b"img", self.ctx("close the calculator", step=8))
+        self.assertEqual(last.reasoning, "planned")  # never a click Jev couldn't confirm
+        self.assertIn("another way", self.race.planner.next_actions.call_args.args[1].note)
+
+    def test_touch_targets_are_tapped_without_a_hover(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.98, .01), False, small=True)):
+            ctx = self.ctx("close it")
+            ctx = StepContext(ctx.goal, DeviceProfile("android", Rect(0, 0, 400, 300), "touch", 1), self.memory,
+                              [], 1, 10, run_id="a")
+            self.assertEqual(self.race.next_actions(b"img", ctx).actions[0].type, "click")
+
     def test_scroll_needs_no_plan_and_ends_when_the_view_moves(self):
         with patch("brain.agent.race.triage", return_value=Triage("scroll", None, False, scroll=-5)):
             first = self.race.next_actions(b"img", self.ctx("scroll up"))
@@ -227,6 +270,7 @@ class RaceTests(unittest.TestCase):
         self.race.jev.evaluate.return_value = ({"launched": {"noul": .1}}, None, None)  # a web search instead
         self.race.jev.completion.return_value = .9
         self.assertEqual(self.race.next_actions(b"img", self.ctx("abre la calculadora")).reasoning, "planned")
+        self.assertIn("did not open", self.race.planner.next_actions.call_args.args[1].note)
 
     def test_a_scroll_with_no_effect_goes_to_the_planner(self):
         with patch("brain.agent.race.triage", return_value=Triage("scroll", None, False, scroll=5)):

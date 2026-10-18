@@ -19,8 +19,8 @@ class JevOnlyTests(unittest.TestCase):
 
     def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
-             question=.05):
-        step = {"complete": {"noul": complete}, "question": {"noul": question}, "next": {"choice": next}, "present": {"noul": present},
+             question=.05, composed=.05):
+        step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": BOX, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
                 "app": {"box": {"left": .1, "right": .5, "top": .6, "bottom": .7}}}
@@ -89,6 +89,9 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("what is this page about?", complete=.9, question=.9).type, "fail")
         self.assertEqual(self.step("asdkjh qwe zxcv", fits=.1, next="stuck").type, "fail")  # no launcher
 
+    def test_text_the_request_does_not_give_word_for_word_is_left_to_flash(self):
+        self.assertEqual(self.step("work out 12 times 9", composed=.9).type, "fail")
+
     def test_reasoning_fails_over(self):
         self.assertEqual(self.step("summarize this page", next="stuck").type, "fail")
 
@@ -127,6 +130,12 @@ class JevFirstTests(unittest.TestCase):
     def ctx(self, run):
         return StepContext("summarize this page", DeviceProfile("linux", Rect(0, 0, 4, 3), "mouse", 1), Mock(), [], 1,
                            10, run_id=run)
+
+    def test_a_recovery_note_hands_the_run_to_flash(self):
+        ctx = StepContext("open calculadora", DeviceProfile("linux", Rect(0, 0, 4, 3), "mouse", 1), Mock(), [], 2,
+                          10, note="the launch landed elsewhere", run_id="a")
+        self.assertEqual(self.planner.next_actions(b"img", ctx).reasoning, "Stage 1/1: planned")
+        self.planner.steps.next_actions.assert_not_called()
 
     def test_jev_steps_need_no_flash_call(self):
         self.planner.steps.next_actions.return_value = Plan("Jev next step: click", [Action("click", x=.1, y=.1)], [])

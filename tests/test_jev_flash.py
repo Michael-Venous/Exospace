@@ -163,6 +163,9 @@ class SemanticTests(unittest.TestCase):
         self.assertEqual(self.executor.jev.assess.call_count,1)
         self.assertNotIn('fallback_x',validate_steps(fallback)[0]['actions'][0])  # unauthorized: ignored, Jev grounds
         validate_steps(fallback,True)
+        unnamed={'reasoning':'r','completion':'c','steps':[{'ready':'r','expected':'e',
+                 'actions':[{'type':'skill','name':'open_app','text':' '}]}]}
+        with self.assertRaises(ValueError):validate_steps(unnamed)
 
 
     def test_zoom_reaims_targets_and_rescues_near_misses(self):

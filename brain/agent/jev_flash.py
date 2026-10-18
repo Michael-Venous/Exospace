@@ -134,6 +134,8 @@ def validate_steps(data, allow_visual_fallback=False):
                 if kind=='drag' and not item.get('destination'): raise ValueError('Drag needs a destination')
             elif kind in {'done','swipe'}:
                 raise ValueError('Use completion criterion or semantic drag')
+            elif kind=='skill' and item.get('name')=='open_app' and not str(item.get('text','')).strip():
+                raise ValueError('open_app needs the app name as text')  # an empty one relaunched a visible app
             elif kind=='type_text' and '\t' in str(item.get('text','')):
                 raise ValueError('Use TAB hotkey actions, not tabs in text')
             elif kind=='hotkey':
