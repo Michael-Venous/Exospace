@@ -9,7 +9,8 @@ POST /goal, so work starts while the user keeps talking; starting to speak while
 agent is busy sends POST /stop first. Later segments of the same hold continue that
 request ("go to youtube" ... "and search lofi", "actually go back"). Narration comes from the
 agent's event stream: questions (including irreversible-action confirmations) are
-always spoken, plan stages briefly, then the result. The page can also show the
+always spoken, plan stages briefly, then the result; a request that runs silently gets
+"On it." and then a progress line every few seconds, so a hard task never leaves dead air. The page can also show the
 target's live screen, relayed from the agent's GET /screen.jpg. This process never
 writes HID.
 
@@ -36,11 +37,15 @@ from dotenv import load_dotenv
 DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=300&smart_format=true"
 KEEPALIVE_S = 15.0
 MAX_BODY = 4096
+ACK_S = 2.5  # a request still running this long with nothing said gets "On it."
+PROGRESS_S = 10.0  # then each this long of silence gets a progress line: a hard task never leaves dead air
 
 
 def narrate(event: dict[str, Any]) -> str | None:
     """What to say for one agent event; None stays silent (fast actions need no commentary)."""
     kind = event.get("ev")
+    if kind == "status":
+        return str(event.get("message", "")).strip() or None
     if kind == "plan":
         reasoning = str(event.get("reasoning", ""))
         if reasoning.startswith("Stage "):  # "Stage 1/3: <expected visible result>"
@@ -59,12 +64,22 @@ def narrate(event: dict[str, Any]) -> str | None:
     return "Sorry, I couldn't do that."
 
 
+def filler(quiet_s: float, spoken: bool) -> str | None:
+    """What to say while a request runs silently: an acknowledgement, then progress."""
+    if not spoken:
+        return "On it." if quiet_s >= ACK_S else None
+    return "Still working on it." if quiet_s >= PROGRESS_S else None
+
+
 class Agent:
     """The agent's display server, reached as a local program (no Origin header)."""
 
     def __init__(self, base_url: str) -> None:
         self.base = base_url.rstrip("/")
         self.busy = False
+        self._said_at = 0.0  # monotonic time of the last line for the running request
+        self._spoken = False  # anything said for it yet
+        self._last = ""  # its last line: a result that repeats the final stage is said once
 
     def post(self, path: str, body: dict[str, Any]) -> None:
         request = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST",
@@ -99,15 +114,32 @@ class Agent:
                         if not raw.startswith(b"data: "):
                             continue
                         event = json.loads(raw[6:])
+                        fresh = event.get("t", since) >= since
                         if event.get("ev") == "run":
                             self.busy = True
+                            self._said_at, self._spoken, self._last = time.monotonic(), False, ""
                         elif event.get("ev") == "result":
                             self.busy = False
                         line = narrate(event)
-                        if line and event.get("t", since) >= since:
-                            lines.put(line)
+                        if line and fresh:
+                            self._say(lines, line)
             except OSError:
                 threading.Event().wait(1.0)  # agent restarting; reconnect
+
+
+    def pace(self, lines: queue.Queue[str]) -> None:
+        """Fill silence while a request runs, forever."""
+        while True:
+            time.sleep(0.5)
+            line = filler(time.monotonic() - self._said_at, self._spoken) if self.busy else None
+            if line:
+                self._say(lines, line)
+
+    def _say(self, lines: queue.Queue[str], line: str) -> None:
+        self._said_at, self._spoken = time.monotonic(), True
+        if line != self._last:
+            self._last = line
+            lines.put(line)
 
 
 def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) -> ThreadingHTTPServer:
@@ -193,6 +225,7 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
 def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
     lines: queue.Queue[str] = queue.Queue()
     threading.Thread(target=agent.follow, args=(lines,), name="agent-events", daemon=True).start()
+    threading.Thread(target=agent.pace, args=(lines,), name="agent-pace", daemon=True).start()
     page_server(agent, port, ws_port, lines)
     print(f"Voice layer on http://127.0.0.1:{port} -> agent {agent.base}", flush=True)
     asyncio.run(_relay_forever(port, ws_port, deepgram_key))

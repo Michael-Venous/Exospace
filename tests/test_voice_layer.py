@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 from brain.display.server import Command, DisplayServer
 from brain.events import EventBus
-from brain.voice.layer import Agent, narrate, page_server
+from brain.voice.layer import Agent, filler, narrate, page_server
 
 
 class NarrationTests(unittest.TestCase):
@@ -26,6 +26,22 @@ class NarrationTests(unittest.TestCase):
         self.assertEqual(narrate({"ev": "result", "status": "cancelled", "message": "barge-in"}), "Stopped.")
         self.assertEqual(narrate({"ev": "result", "status": "fail", "message": "TimeoutError"}),
                          "Sorry, I couldn't do that.")
+
+    def test_executor_news_is_spoken(self):
+        self.assertEqual(narrate({"ev": "status", "message": "This one's harder. I'm thinking it through."}),
+                         "This one's harder. I'm thinking it through.")
+
+    def test_a_silent_request_is_acknowledged_then_given_progress(self):
+        self.assertIsNone(filler(1.0, spoken=False))  # a fast request finishes before anything is said
+        self.assertEqual(filler(3.0, spoken=False), "On it.")
+        self.assertIsNone(filler(5.0, spoken=True))
+        self.assertEqual(filler(11.0, spoken=True), "Still working on it.")
+
+    def test_a_line_repeating_the_last_one_is_said_once(self):
+        agent, lines = Agent("http://127.0.0.1:1"), queue.Queue()
+        agent._say(lines, "The calculator is open")
+        agent._say(lines, "The calculator is open")
+        self.assertEqual(lines.qsize(), 1)
 
     def test_stages_are_brief_and_fast_actions_are_silent(self):
         self.assertEqual(narrate({"ev": "plan", "reasoning": "Stage 1/2: The reply window is open"}),

@@ -55,7 +55,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         with ExitStack() as cleanup:
-            executor = build_executor(cfg, token, cleanup, status)
+            bus = EventBus() if args.display else None
+
+            def notify(message: str) -> None:  # executor news ("switching to deep mode") is spoken too
+                status(message)
+                if bus is not None:
+                    bus.publish("status", message=message)
+
+            executor = build_executor(cfg, token, cleanup, notify)
             if args.backend == "pi":
                 capture = V4L2Capture(cfg.capture_device, cfg.capture_width, cfg.capture_height)
                 cleanup.callback(capture.close)
@@ -77,7 +84,6 @@ def main(argv: list[str] | None = None) -> int:
             cleanup.callback(controller.release_all)
             monitor = ConnectionMonitor(capture, hid, token.cancel)
             cleanup.callback(monitor.close)
-            bus = EventBus() if args.display else None
             commands: queue.Queue[Command] = queue.Queue()
             if bus is not None:
                 server = DisplayServer(bus, commands, token.cancel, args.display_host, args.display)

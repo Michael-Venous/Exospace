@@ -68,7 +68,7 @@ class DeepFallback:
             if sum(self._recent) < self.after or any(a.type in ("done", "ask_user") for a in plan.actions):
                 return plan
             self.active = True
-            self.on_status("This one needs more thought; switching to deep mode…")
+            self.on_status("This one's harder. I'm thinking it through.")
         try:
             plan = self.deep.next_actions(grid_copy(image_jpeg), replace(ctx, note=ctx.note or "Deep mode: the fast "
                                                                          "planner was stuck; take any route that works."))
