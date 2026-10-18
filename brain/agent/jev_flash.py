@@ -67,6 +67,8 @@ positive down, about 5 per screenful; never pixels),
 skill(name=open_app,text=app), skill(name=wait) as its own stage while a page, install
 or restart is still loading, remember(key,text), ask_user(message), fail(message).
 No done action is needed: completion is checked after the last stage.
+Never close, quit or minimize a window, tab or app, or switch to an unrelated
+app, unless the goal asks for it; recover inside the app the goal is about.
 Typing is literal. NEVER put tabs in text. Each hotkey is ONE simultaneous
 combination, not a sequence. Batch TAB and typing only when focus/tab order are
 clear. Separate field fills into stages with expected values to detect mistakes.
@@ -291,15 +293,18 @@ class JevFlashExecutor:
             if first['type'] in POINTER:
                 targets['target']=first['target']
                 if first['type']=='drag':targets['destination']=first['destination']
-            elif not self.pending and image==self._plan_image:
+            elif not self.pending and image==self._plan_image and all(
+                    a.get('type')=='skill' and a.get('name') in ('open_app','wait') for a in stage['actions']):
                 # Nothing to ground or verify yet, on the very screen Flash planned from: a Jev
                 # re-check of "ready" here only adds a flaky veto (0.55 vs 0.97 on one desktop).
                 self.cursor=next_cursor
                 return Plan(f'Stage {self.cursor+1}/{len(self.stages)}: '+stage['expected'],self._ground(stage,{}),[])
             values,points=self.jev.assess(image,checks,targets,run_id=ctx.run_id,step=ctx.step,
-                                          proposal=stage['actions'])
+                                          request=ctx.goal,proposal=stage['actions'])
             self.cancel.check()
             points=self._zoom(image,targets,points,ctx)
+            if image==self._plan_image:  # Flash planned from this very screen: its route vote is redundant
+                values.pop('route_execute',None)  # (it vetoed 3 fresh plans in a row and cancelled a run)
             mismatch=[name for name,value in values.items() if value<self.jev.min_presence]
             if not mismatch and all(p is not None for p in points.values()):
                 self.pending=False

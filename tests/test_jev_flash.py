@@ -131,11 +131,14 @@ class SemanticTests(unittest.TestCase):
         self.executor.jev.assess.assert_not_called()
 
 
-    def test_ask_flash_choice_replans_even_with_valid_coordinates(self):
+    def test_ask_flash_choice_replans_on_a_changed_screen_only(self):
         self.executor.jev.assess.side_effect=[
-            ({'ready':.99,'route_execute':0},{'target':(.5,.5)}),
+            ({'ready':.99,'route_execute':0},{'target':(.5,.5)}),  # the planned screen: the vote is ignored
+            ({'ready':.99,'previous':.99,'route_execute':0},{'target':(.4,.4)}),  # a new screen: replan
             ({'ready':.99,'route_execute':1},{'target':(.2,.3)})]
-        result=self.executor.next_actions(b'image',self.ctx)
+        self.assertEqual(self.executor.next_actions(b'image',self.ctx).actions[0].x,.5)
+        self.executor.acknowledge(True)
+        result=self.executor.next_actions(b'image2',self.ctx)
         self.assertEqual(self.executor.model.generate.call_count,2)
         self.assertEqual(result.actions[0].x,.2)
 

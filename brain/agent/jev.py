@@ -60,6 +60,12 @@ COMPLETION_HINTED = COMPLETION_QUESTION + (
     'to know what to look for, but judge the goal itself against the steps and the screen, not the claim.')
 
 
+# Recovery once pressed Alt+Tab, landed on another app and closed it with Alt+F4 (laptop suite).
+SIDE_EFFECTS = (
+    'Would carrying out the proposed `actions` on this `screen` close, quit, minimize or discard any window, '
+    'tab, app, file or unsaved work that the user\'s `request` does not ask to close or discard?')
+
+
 class JevVision:
     def __init__(self, key: str, cancel: CancelToken, log_path: Path,
                  model: str = 'jev-1.14.0', timeout_s: float = 20,
@@ -165,6 +171,8 @@ class JevVision:
         questions = {f'check_{key}': {'type':'noul', 'instructions':
             f'Based only on the visible `screen`, is this condition true? {condition}'}
             for key, condition in checks.items()}
+        if proposal:
+            questions['side_effects'] = {'type':'noul', 'instructions': SIDE_EFFECTS}
         questions['route'] = {'type':'choice', 'instructions': {
             'question':'Judge ONLY the supplied next actions or verification checks, not the complexity of a larger task. Choose execute when this bounded next step is clear and feasible on this screen. Choose ask_flash for uncertainty, unclear intent, missing actions, or an unexpected screen needing a new plan. A verification-only step with checks and no actions is valid. Do not invent steps.',
             'request':request, 'actions':proposal, 'checks':checks, 'targets':targets},
@@ -178,13 +186,16 @@ class JevVision:
                 f'{key}_clear': {'type':'noul','instructions':f'Does this instruction clearly identify the intended interactive target in `screen` without guessing missing user intent or resolving conflicting directions? Answer no if the description is vague or unclear. Instruction: {target}'},
                 f'{key}_box': {'type':'box','instructions':f'The exact described target in `screen`. For an input field, locate the editable box itself, excluding its label. Target: {target}'},
             })
-        answers, (w,h), (pw,ph) = self.evaluate(jpeg,questions,run_id=run_id,step=step)
+        state={'request':request,'actions':json.dumps(proposal)} if proposal else None
+        answers, (w,h), (pw,ph) = self.evaluate(jpeg,questions,run_id=run_id,step=step,state=state)
         values={key:probability(answers[f'check_{key}'].get('noul')) for key in checks}
         route=answers['route']
         # Choice confidence and Box confidence have different semantics. Honor
         # the explicit routing choice; the independent evidence gates still apply.
         probability(route.get('confidence'))
         values['route_execute']=float(route.get('choice')=='execute')
+        if proposal:  # a stage that closes or discards something nobody asked for never runs
+            values['safe']=float(probability(answers['side_effects'].get('noul'))<0.5)
         self.last_scores={'route':route.get('choice'),'route_confidence':route.get('confidence')}
         points={}
         self.last_points={}  # every target's box center, before the presence/confidence gates
@@ -205,9 +216,8 @@ class JevVision:
                 left,right,top,bottom=[probability(box.get(k)) for k in ('left','right','top','bottom')]
                 ordered=left<right and top<bottom
             except ValueError:
-                if not gated: raise
                 ordered=False
-            if not ordered and not gated: raise ValueError('Invalid Jev box ordering')
+            # A malformed box means "not located": it ended a whole run when it raised (laptop suite).
             x,y=((left+right)/2*pw/w,(top+bottom)/2*ph/h) if ordered else (-1,-1)
             center=(x,y) if 0<=x<=1 and 0<=y<=1 else None
             self.last_points[key]=center
