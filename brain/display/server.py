@@ -3,7 +3,8 @@
 GET  /            the display page
 GET  /events      server-sent events from the EventBus
 GET  /screen.jpg  latest screen image (active rect, so tap coordinates map 1:1)
-POST /goal        {"text": "..."}                 a typed or transcribed request
+POST /goal        {"text": "...", "continues": bool} a typed or transcribed request; continues: it
+                                                  extends the last request (more of the same utterance)
 POST /tap         {"x": 0-1, "y": 0-1, "mode": "click"|"point"}
 POST /stop        cancel whatever is running (same path as barge-in) and drop queued requests
 
@@ -40,6 +41,7 @@ SHUTDOWN_POLL_S = 0.05
 class Command:
     kind: Literal["goal", "click", "point"]
     text: str = ""
+    continues: bool = False  # more of the same spoken request
     x: float = 0.0
     y: float = 0.0
 
@@ -116,7 +118,7 @@ class _Handler(BaseHTTPRequestHandler):
                 text = str(body.get("text", "")).strip()
                 if not text:
                     raise ValueError("text is required")
-                self.commands.put(Command("goal", text=text))
+                self.commands.put(Command("goal", text=text, continues=body.get("continues") is True))
             elif self.path == "/tap":
                 mode = body.get("mode", "click")
                 if mode not in ("click", "point"):

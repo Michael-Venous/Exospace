@@ -132,8 +132,9 @@ new EventSource("/narration").onmessage = e => {
 };
 function speakHeld() { if (unspoken.length) { speak(unspoken.at(-1)); unspoken = []; } }
 
-async function send(text) {
-  const r = await post("/segment", {text});
+// Later segments of one hold continue its request ("go to youtube" ... "and search lofi").
+async function send(text, continues) {
+  const r = await post("/segment", {text, continues});
   if (r.error) showError(r.error);
 }
 
@@ -181,7 +182,7 @@ async function start() {
     if (words) { said.className = ""; said.textContent = done; live.textContent = m.is_final ? "" : words; }
     heard.classList.toggle("long", (said.textContent + live.textContent).length > 80);
     // Each pause ends a segment: send it now so execution starts while the user keeps talking.
-    if (m.speech_final && done) { send(done); done = ""; sent = true; }
+    if (m.speech_final && done) { send(done, sent); done = ""; sent = true; }
   };
   sock.onclose = e => {
     stopListening = null;
@@ -192,7 +193,7 @@ async function start() {
     document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Hold to talk";
     live.textContent = "";
     speakHeld();
-    if (done) send(done);
+    if (done) send(done, sent);
     waiting(sent || !!done);
     if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
   };

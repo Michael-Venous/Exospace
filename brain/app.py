@@ -164,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
                     pointed = None
                 if line.startswith("/new "):
                     goal = line[5:].strip()
-                elif correction:
+                elif correction or (command.continues and previous_goal):
                     goal = previous_goal + "\nUser correction: " + line
                 else:
                     goal = line

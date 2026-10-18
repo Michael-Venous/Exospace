@@ -4,9 +4,10 @@ Run the agent with a display server, then this:
     .venv/bin/python -m brain --display 8770
     .venv/bin/python -m brain.voice.layer --agent http://127.0.0.1:8770
 
-Hold the button (or Space) and speak. Each finished utterance goes to the agent's
-POST /goal; starting to speak while the agent is busy sends POST /stop first, so the
-next utterance becomes a correction ("actually go back"). Narration comes from the
+Hold the button (or Space) and speak. Each pause sends what was said to the agent's
+POST /goal, so work starts while the user keeps talking; starting to speak while the
+agent is busy sends POST /stop first. Later segments of the same hold continue that
+request ("go to youtube" ... "and search lofi", "actually go back"). Narration comes from the
 agent's event stream: questions (including irreversible-action confirmations) are
 always spoken, plan stages briefly, then the result. The page can also show the
 target's live screen, relayed from the agent's GET /screen.jpg. This process never
@@ -71,8 +72,8 @@ class Agent:
         with urllib.request.urlopen(request, timeout=5) as response:
             response.read()
 
-    def submit(self, text: str) -> None:
-        self.post("/goal", {"text": text})
+    def submit(self, text: str, continues: bool = False) -> None:
+        self.post("/goal", {"text": text, "continues": continues})
 
     def screen(self) -> bytes | None:
         """The latest capture-card frame as JPEG, or None when the agent has none or is down."""
@@ -150,7 +151,7 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
                     if not 0 < len(text) <= 500:
                         return self._reply(400, b'{"error":"text must be 1-500 characters"}')
                     agent.interrupt()  # speaking while it works ("stop", a correction) barges in
-                    agent.submit(text)
+                    agent.submit(text, body.get("continues") is True)
                 else:
                     return self._reply(404, b'{"error":"not found"}')
             except OSError as exc:

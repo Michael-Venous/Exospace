@@ -45,6 +45,8 @@ class AgentLinkTests(unittest.TestCase):
     def test_segments_become_agent_goals(self):
         self.agent.submit("open chrome")
         self.assertEqual(self.commands.get(timeout=2), Command("goal", text="open chrome"))
+        self.agent.submit("and search lofi", continues=True)
+        self.assertEqual(self.commands.get(timeout=2), Command("goal", text="and search lofi", continues=True))
 
     def test_talking_interrupts_only_running_work(self):
         self.agent.interrupt()
@@ -99,7 +101,11 @@ class PageServerTests(unittest.TestCase):
 
     def test_segment_is_forwarded(self):
         self.assertEqual(self.post("/segment", {"text": "actually go back"}), 200)
-        self.agent.submit.assert_called_once_with("actually go back")
+        self.agent.submit.assert_called_once_with("actually go back", False)
+
+    def test_a_later_segment_is_forwarded_as_a_continuation(self):
+        self.assertEqual(self.post("/segment", {"text": "and search lofi", "continues": True}), 200)
+        self.agent.submit.assert_called_once_with("and search lofi", True)
 
     def test_talk_barges_in(self):
         self.assertEqual(self.post("/talk", {}), 200)
