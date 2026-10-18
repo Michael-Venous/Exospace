@@ -69,6 +69,12 @@ SIDE_EFFECTS = (
     'tab, app, file or unsaved work that the user\'s `request` does not ask to close or discard? Confirming, '
     'saving or closing a dialog, menu or popup as part of doing the request, or dismissing a splash screen, '
     'welcome screen or notification, is not such a side effect.')
+IRREVERSIBLE_KINDS = ('do something irreversible or high-impact: '
+                      'sending or posting a message, deleting or emptying data, purchasing or paying, submitting a '
+                      'form, formatting, changing and saving firmware/BIOS settings, or a public action on the user\'s '
+                      'account (starring, liking, following, subscribing, voting, sharing)? Opening, navigating, '
+                      'selecting, typing a draft, adding to or removing from a cart, and creating something new are not.')
+STEP_IRREVERSIBLE = 'Would carrying out the proposed `actions` on this `screen` ' + IRREVERSIBLE_KINDS
 
 
 class JevVision:
@@ -178,13 +184,16 @@ class JevVision:
         self.client.close()
 
     def assess(self, jpeg: bytes, checks: dict[str, str], targets: dict[str, str],
-               *, run_id: str = '', step: int = 0, request: str = '', proposal=None):
-        """Batch independent state checks and named targets against ONE fresh frame."""
+               *, run_id: str = '', step: int = 0, request: str = '', proposal=None, irreversible: bool = False):
+        """Batch independent state checks and named targets against ONE fresh frame. With `irreversible`,
+        values['irreversible'] scores whether the proposal would send, delete, pay or submit."""
         questions = {f'check_{key}': {'type':'noul', 'instructions':
             f'Based only on the visible `screen`, is this condition true? {condition}'}
             for key, condition in checks.items()}
         if proposal:
             questions['side_effects'] = {'type':'noul', 'instructions': SIDE_EFFECTS}
+        if proposal and irreversible:
+            questions['irreversible'] = {'type':'noul', 'instructions': STEP_IRREVERSIBLE}
         questions['route'] = {'type':'choice', 'instructions': {
             'question':'Judge ONLY the supplied next actions or verification checks, not the complexity of a larger task. Choose execute when this bounded next step is clear and feasible on this screen. Choose ask_flash for uncertainty, unclear intent, missing actions, or an unexpected screen needing a new plan. A verification-only step with checks and no actions is valid. Do not invent steps.',
             'request':request, 'actions':proposal, 'checks':checks, 'targets':targets},
@@ -209,6 +218,8 @@ class JevVision:
         if proposal:  # a stage that closes or discards something nobody asked for never runs
             # Only a clear yes blocks: borderline verdicts vetoed dismissing a splash screen (0.5-0.7).
             values['safe']=float(probability(answers['side_effects'].get('noul'))<SIDE_EFFECT_GATE)
+        if 'irreversible' in questions:
+            values['irreversible']=probability(answers['irreversible'].get('noul'))
         self.last_scores={'route':route.get('choice'),'route_confidence':route.get('confidence')}
         points={}
         self.last_points={}  # every target's box center, before the presence/confidence gates

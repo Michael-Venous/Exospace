@@ -37,6 +37,7 @@ class Plan:
     needs_planner: bool = False
     message: str = ""
     refresh_screen: bool = False
+    held: str = ""  # a planner stage held for the user's approval; race asks about it instead
 
 
 class Executor(Protocol):

@@ -1,6 +1,7 @@
 """Cached semantic plans: Flash reasons, Jev gates/grounds, controller executes."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import replace
 import json
@@ -10,7 +11,7 @@ from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, p
 from brain.agent.jev import JevVision
 from brain.agent.model import language_model
 from brain.agent.prompts import PLAN_SCHEMA
-from brain.agent.triage import GATE as ZOOM_GATE, refine
+from brain.agent.triage import GATE, refine
 from brain.imaging import shrink
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
@@ -165,9 +166,12 @@ class JevFlashExecutor:
     check_window=True  # Jev maximizes a small app window once per request
     image_side=FULL_SIDE
     verifies_stages=True
+    # Race's approval policy: with it, a stage Jev scores irreversible runs only in a run the user approved.
+    approved:Callable[[],bool]|None=None
 
-    def __init__(self,cfg:Config,cancel:CancelToken):
+    def __init__(self,cfg:Config,cancel:CancelToken,approved:Callable[[],bool]|None=None):
         self.cancel=cancel
+        self.approved=approved
         self.model=language_model(cfg,cancel)
         # A plan Jev rejected is replanned with more thinking on the same model: the fast first
         # plan stays fast, and only the hard cases pay for deeper reasoning.
@@ -317,6 +321,12 @@ class JevFlashExecutor:
             if first['type'] in {'ask_user','fail'}:
                 return parse_plan({'reasoning':self.last_reason,'actions':[first]})
             if 'fallback_x' in first:
+                if self._unapproved():
+                    values,_=self.jev.assess(image,{},{},run_id=ctx.run_id,step=ctx.step,request=ctx.goal,
+                                             proposal=stage['actions'],irreversible=True)
+                    self.cancel.check()
+                    if values['irreversible']>=GATE:
+                        return _held(stage)
                 self.pending=False
                 self.cursor=next_cursor
                 return Plan('Flash visual fallback: '+stage['expected'],self._ground(stage,{}),[])
@@ -342,11 +352,12 @@ class JevFlashExecutor:
                 checks['small_window']=SMALL_WINDOW
                 targets['maximize']=MAXIMIZE
             values,points=self.jev.assess(image,checks,targets,run_id=ctx.run_id,step=ctx.step,
-                                          request=ctx.goal,proposal=stage['actions'])
+                                          request=ctx.goal,proposal=stage['actions'],irreversible=self._unapproved())
             self.cancel.check()
+            risk=values.pop('irreversible',0.0)
             if check_window:
                 # Small windows scored 0.83-0.87 (the presence gate missed half), maximized ones 0.02-0.04.
-                small=values.pop('small_window',0.0)>=ZOOM_GATE
+                small=values.pop('small_window',0.0)>=GATE
                 button={'maximize':targets.pop('maximize')}
                 point={'maximize':points.pop('maximize',None)}
                 # Window buttons sit ~13 px apart; the two-step zoom hit maximize 4/4. (A title-bar
@@ -357,7 +368,7 @@ class JevFlashExecutor:
                     return Plan('Maximize the app window first',[Action('click',x=found[0],y=found[1])],[])
             focus_click=None
             if 'focused' in values:
-                focused=values.pop('focused')>=ZOOM_GATE
+                focused=values.pop('focused')>=GATE
                 if focused:
                     targets.pop('field'); points.pop('field',None)
             points=self._zoom(image,targets,points,ctx)
@@ -369,6 +380,8 @@ class JevFlashExecutor:
                 values.pop('route_execute',None)  # (it vetoed 3 fresh plans in a row and cancelled a run)
             mismatch=[name for name,value in values.items() if value<self.jev.min_presence]
             if not mismatch and all(p is not None for p in points.values()):
+                if risk>=GATE:
+                    return _held(stage)
                 self.pending=False
                 self.cursor=next_cursor
                 actions=self._ground(stage,points)
@@ -386,6 +399,9 @@ class JevFlashExecutor:
                 return Plan('Plan could not be grounded',[],[reason])
         raise AssertionError('unreachable')
 
+    def _unapproved(self)->bool:
+        return self.approved is not None and not self.approved()
+
     def _generate(self,image,prompt,ctx,replan):
         """Replans think more (medium: 4.1 s median vs 2.9 s; high took 15-37 s and hit the server's
         deadline). A failed replan falls back to the fast planner instead of ending the request."""
@@ -401,7 +417,7 @@ class JevFlashExecutor:
     def _zoom(self,image,targets,points,ctx):
         """Re-aim each target in a zoomed crop, as the direct path does (planner clicks landed
         inside the target 8/15 times without it, 12/15 with it). A target the full screen scored
-        between ZOOM_GATE and the presence gate gets that one zoomed look before any replan."""
+        between GATE and the presence gate gets that one zoomed look before any replan."""
         scores=getattr(self.jev,'last_scores',None)
         raw=getattr(self.jev,'last_points',None)
         scores=scores if isinstance(scores,dict) else {}
@@ -410,7 +426,7 @@ class JevFlashExecutor:
         for key,target in targets.items():
             point=points.get(key)
             seen=scores.get(key) or {}
-            likely=min(float(seen.get('presence') or 0),float(seen.get('unique') or 0))>=ZOOM_GATE
+            likely=min(float(seen.get('presence') or 0),float(seen.get('unique') or 0))>=GATE
             start=point or (raw.get(key) if likely else None)
             if start is None:
                 out[key]=None
@@ -428,6 +444,11 @@ class JevFlashExecutor:
         self.model.close()
         if self.replanner is not self.model:
             self.replanner.close()
+
+
+def _held(stage)->Plan:
+    """An irreversible stage the user has not approved: race asks about it instead of running it."""
+    return Plan('Irreversible step needs approval',[],[],held='; '.join(_describe(a) for a in stage['actions']))
 
 
 def _describe(action:dict)->str:
