@@ -10,7 +10,7 @@ body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:c
 #talk canvas{display:block;width:100%;height:100%}
 #heard{max-width:min(640px,90vw);min-height:2.8em;margin:0}
 #live,#says{color:#86868b}
-#said:empty~#live:empty::before{content:"Hold to talk";color:#a1a1a6}
+#said:empty~#live:empty::before{content:"Tap to talk";color:#a1a1a6}
 #says{font-size:18px;min-height:1.2em;max-width:min(640px,90vw)}
 .err{color:#d70015}
 /* The agent's steps under what was said: each ticks off as the next begins, then "Done" and the list fades. */
@@ -42,7 +42,7 @@ body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:c
 @keyframes breathe{50%{scale:1.04}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
-<button id=talk aria-label="Hold to talk" aria-pressed=false><canvas></canvas></button>
+<button id=talk aria-label="Tap to talk" aria-pressed=false><canvas></canvas></button>
 <div><p id=heard aria-live=polite><span id=said></span> <span id=live></span></p>
   <ol id=steps aria-label="Steps" aria-live=polite></ol></div>
 <div id=says aria-live=polite></div>
@@ -211,7 +211,7 @@ async function start() {
     if (rec.state !== "inactive") rec.stop();
     mic.getTracks().forEach(t => t.stop());
     ctx.close();
-    document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Hold to talk";
+    document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Tap to talk";
     live.textContent = "";
     speakHeld();
     if (done) send(done, sent);
@@ -222,8 +222,8 @@ async function start() {
 let held = false;  // or how: "pointer" or "key"
 function press(how) { if (!held && !stopListening) { held = how; start(); } }
 function release() { if (held) { held = false; if (stopListening) stopListening(); } }
-talk.onpointerdown = e => { talk.setPointerCapture(e.pointerId); press("pointer"); };
-talk.onpointerup = talk.onpointercancel = release;
+// shortcut: the orb toggles (tap to start, tap to stop) while live steps are tried; Space is still held.
+talk.onpointerdown = () => held ? release() : press("pointer");
 addEventListener("keydown", e => { if (e.code === "Space" && e.target !== mics) { e.preventDefault(); if (!e.repeat) press("key"); } });
 addEventListener("keyup", e => { if (e.code === "Space" && e.target !== mics) release(); });
 // The keyup goes to another window. A held pointer stays captured: the agent may focus the target mid-hold.

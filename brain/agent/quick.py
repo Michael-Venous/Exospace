@@ -34,6 +34,13 @@ BROWSERS: frozenset[str] = frozenset()  # those that are web browsers (skills.in
 # Browser address-bar and tab keys; phones have none without a keyboard.
 _BROWSER_OS = frozenset({"windows", "macos", "linux", "chromeos"})
 _SEPARATOR = re.compile(r"\s*(?:[,;.!?]\s*)?(?:(?:and|then)\b\s*)*", re.I)
+# A step ends where the next one starts: a separator, then one of these words ("salt and pepper" stays one).
+# shortcut: a word list misses other ways to start a step ("and the third one too"); those wait for the pause.
+_BOUNDARY = re.compile(r"(?:\s*[,;.!?]\s*(?:(?:and|then)\b\s*)*|\s+(?:and|then)\b[\s,]*(?:(?:and|then)\b\s*)*)(\w+)", re.I)
+_STEP_VERBS = frozenset(
+    "open launch close quit go visit switch search find look click tap double right press hit type write enter "
+    "select copy paste delete send reply text message email call play pause stop watch read save download "
+    "upload scroll zoom refresh reload start sign log add make create move drag choose pick show turn".split())
 # "open X" names something inside an app, or is vague, when X contains any of these.
 # shortcut: a word list misses other on-screen things ("open the invoice"); ask the model first if misfires show up.
 _NOT_APP = frozenset(
@@ -133,16 +140,21 @@ def _clause(text: str, os: OSName, launched: bool) -> tuple[list[Action], int]:
 
 
 def spoken_commands(text: str) -> list[tuple[str, str]]:
-    """The commands at the start of speech still coming in that later words can no longer
-    change, each as (its words, the speech after it): a keyboard-only quick command with
-    more speech after it. Model work waits for the pause, which can change its meaning."""
+    """The steps at the start of speech still coming in that later words can no longer change, each as (its
+    words, the speech after it), so each acts while the user is still talking: a keyboard-only quick command
+    with more speech after it, or any other step once the next one has started ("search cats and click")."""
     found, rest = [], text.strip()
     while True:
         # Any computer: which commands count only decides what runs at once; the agent knows the real OS.
         clause, end = _clause(rest, "linux", launched=False)
-        if not clause or not rest[end:].strip() or clause[0].type == "scroll" or \
-                (clause[0].type == "hotkey" and set(clause[0].keys) <= MODIFIERS):
+        if clause and (clause[0].type == "scroll" or (clause[0].type == "hotkey" and set(clause[0].keys) <= MODIFIERS)):
             return found  # a scroll lands under the pointer, which is still on the talk button
+        if not clause:
+            if rest[:7].lower().startswith("scroll"):
+                return found
+            end = next((b.start() for b in _BOUNDARY.finditer(rest) if b[1].lower() in _STEP_VERBS), 0)
+        if not end or not rest[end:].strip():
+            return found
         after = _SEPARATOR.sub("", rest[end:], count=1)
         found.append((rest[:end], after))
         rest = after

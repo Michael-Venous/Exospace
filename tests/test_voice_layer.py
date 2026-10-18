@@ -106,10 +106,12 @@ class AgentLinkTests(unittest.TestCase):
         self.stop.assert_called_once_with("barge-in")
         self.assertEqual(self.commands.get(timeout=2), Command("goal", text="no, go back", continues=True))
 
-    def test_model_work_waits_for_the_pause(self):
+    def test_model_work_acts_once_the_next_step_starts(self):
         for heard in ("click the red", "click the red button and", "scroll down and", "press control and"):
             self.agent.hearing(heard, False)
         self.assertTrue(self.commands.empty())
+        self.agent.hearing("click the red button and press", False)
+        self.assertEqual(self.commands.get(timeout=2), Command("goal", text="click the red button"))
 
     def test_talking_interrupts_only_running_work(self):
         self.agent.interrupt()

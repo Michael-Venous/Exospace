@@ -44,6 +44,16 @@ class ScreenCaptureTests(unittest.TestCase):
             frame = ScreenCapture(0, hide=lambda: "Exospace Voice").grab()
         self.assertEqual(int(frame.sum()), 2 * 2 * 3 * 128)  # only the voice window's 2x2 px, rows 1-2 of the area
 
+    def test_a_window_over_the_voice_window_stays_visible(self):
+        sct = Mock(monitors=[{"left": 0, "top": 10, "width": 4, "height": 4}])
+        sct.grab.return_value = np.ones((4, 4, 4), np.uint8)
+        with patch.object(mss, "mss", return_value=sct), patch("shutil.which", return_value="/usr/bin/wmctrl"), \
+                patch("brain.capture.window_rects", return_value=[(0, 10, 4, 4)]), \
+                patch("brain.capture.rects_above", return_value=[(2, 12, 2, 2)]):  # a calculator over its corner
+            frame = ScreenCapture(0, hide=lambda: "Exospace Voice").grab()
+        self.assertEqual(frame[2:, 2:].tolist(), np.ones((2, 2, 3)).tolist())
+        self.assertEqual(int((frame == 128).sum()), 12 * 3)
+
 
 class BlankTests(unittest.TestCase):
     def test_a_black_desktop_with_a_cursor_is_live_video(self):

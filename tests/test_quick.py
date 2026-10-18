@@ -164,9 +164,15 @@ class SpokenCommandTests(unittest.TestCase):
             "open chrome and go to wikipedia.org and": [("open chrome", "go to wikipedia.org and")],
             "press ctrl c then press escape.": [("press ctrl c", "press escape."), ("press escape", "")],
             "open calculator and type 2+2": [("open calculator", "type 2+2")],
-            # model work, pointer work and half a combination wait for the pause
-            "click the red button and": [], "open the second result and": [], "scroll down and": [],
-            "press control and c": [],
+            # any other step is finished once the next one starts
+            "open up chrome and go to youtube, search for embedded systems videos and click the third reel": [
+                ("open up chrome", "go to youtube, search for embedded systems videos and click the third reel"),
+                ("go to youtube", "search for embedded systems videos and click the third reel"),
+                ("search for embedded systems videos", "click the third reel")],
+            "click the red button and press enter": [("click the red button", "press enter")],
+            # until then it, a scroll and half a combination wait; "and" inside a step doesn't end it
+            "click the red button and": [], "open the second result and": [], "scroll down and click it": [],
+            "press control and c": [], "search for salt and pepper and": [],
         }
         for text, expected in cases.items():
             with self.subTest(text=text):

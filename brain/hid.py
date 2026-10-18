@@ -300,6 +300,17 @@ def window_rects(title: str) -> list[tuple[int, int, int, int]]:
     return [rect for window, (_, name) in _listed().items() if name.startswith(title) and (rect := window_rect(hex(window)))]
 
 
+def rects_above(title: str) -> list[tuple[int, int, int, int]]:
+    """Where the shown windows stacked above the topmost one titled `title` are: they cover it."""
+    rects = []
+    for window, name in _stack():
+        if name.startswith(title):
+            return rects
+        if "IsViewable" in _run("xwininfo", "-id", window) and (rect := window_rect(window)):
+            rects.append(rect)
+    return []
+
+
 def window_rect(window: str) -> tuple[int, int, int, int] | None:
     """`window`'s left, top, width and height in desktop pixels, frame included (`wmctrl -lG` misplaces
     framed windows); None once it's closed."""

@@ -19,7 +19,7 @@ from typing import Callable, Protocol
 import cv2
 import numpy as np
 
-from brain.hid import window_rects
+from brain.hid import rects_above, window_rects
 from brain.types import Frame, Rect
 
 STALE_S = 0.5  # a frame older than this counts as no signal
@@ -139,12 +139,18 @@ class ScreenCapture:
 
 
 def _grey_out(frame: Frame, title: str, area: dict[str, int]) -> None:
-    """Grey out each window whose title starts with `title`, its frame (title bar) too."""
-    # shortcut: greys the whole window even under other windows, minimized or on another workspace; read
-    # `_NET_CLIENT_LIST_STACKING` and `wmctrl -d` if that hides a target.
-    for x, y, w, h in window_rects(title):
+    """Grey out each window whose title starts with `title`, its frame (title bar) too, but not the windows
+    stacked over it: a calculator that opened over the voice page was greyed out with it (2026-10-18)."""
+    # shortcut: still greys a minimized or other-workspace match; read `wmctrl -d` if that hides a target.
+    def region(x: int, y: int, w: int, h: int) -> tuple[slice, slice]:
         x, y = x - area["left"], y - area["top"]
-        frame[max(y, 0):max(y + h, 0), max(x, 0):max(x + w, 0)] = 128
+        return slice(max(y, 0), max(y + h, 0)), slice(max(x, 0), max(x + w, 0))
+
+    covering = [(cut, frame[cut].copy()) for cut in (region(*rect) for rect in rects_above(title))]
+    for rect in window_rects(title):
+        frame[region(*rect)] = 128
+    for cut, pixels in covering:
+        frame[cut] = pixels
 
 
 class CommandCapture:
