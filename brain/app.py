@@ -110,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
                     if current == generation:
                         return None
                     try:
-                        found = detect_profile(capture, executor, args.os, cancel=token, pointer=controller.hover)
+                        found = detect_profile(capture, executor, args.os, cancel=token, pointer=controller.hover,
+                                               press=controller.hotkey)
                     except Cancelled as exc:
                         if exc.reason not in RESUMABLE:
                             raise
@@ -134,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
             if monitor.connected:  # detect now, not on the first request: it took ~8 s on the Pi (OS check, calibration)
                 try:
                     profile, generation = _connected_profile(
-                        monitor, capture, executor, args.os, token, profile, generation, status, controller.hover)
+                        monitor, capture, executor, args.os, token, profile, generation, status, controller.hover, controller.hotkey)
                 except (Cancelled, RuntimeError, HIDError):
                     pass  # detected again on the first request
             while True:
@@ -152,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
                 if command.kind == "click":
                     try:
                         profile, generation = _connected_profile(
-                            monitor, capture, executor, args.os, token, profile, generation, status, controller.hover)
+                            monitor, capture, executor, args.os, token, profile, generation, status, controller.hover, controller.hotkey)
                         controller.execute(Action("click", x=command.x, y=command.y), profile)
                         controller.wait_settled()
                         if bus is not None:
@@ -184,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 try:
                     profile, generation = _connected_profile(
-                        monitor, capture, executor, args.os, token, profile, generation, status, controller.hover)
+                        monitor, capture, executor, args.os, token, profile, generation, status, controller.hover, controller.hotkey)
                     # Goals from the page, the voice layer or a pipe need no window switch first.
                     if args.backend == "local" and bus is None and sys.stdin.isatty():
                         status("Focus the target window; starting in 2 seconds.")
@@ -262,7 +263,8 @@ def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: E
                        os_override: OSName | None, token: CancelToken,
                        profile: DeviceProfile | None,
                        generation: int, status: Callable[[str], None],
-                       pointer: Callable[[float, float], None] | None = None) -> tuple[DeviceProfile, int]:
+                       pointer: Callable[[float, float], None] | None = None,
+                       press: Callable[[list[str]], None] | None = None) -> tuple[DeviceProfile, int]:
     """Wait for a target and re-detect it if it changed. A disconnect during
     detection retries instead of dropping the user's pending goal."""
     while True:
@@ -273,7 +275,8 @@ def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: E
         if profile is not None and current == generation:
             return profile, generation
         try:
-            detected = detect_profile(capture, executor, os_override, cancel=token, pointer=pointer)
+            detected = detect_profile(capture, executor, os_override, cancel=token, pointer=pointer,
+                                      press=None if pointer is None else press)
         except Cancelled:
             if monitor.connected:
                 raise  # a real interruption, not an unplug

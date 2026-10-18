@@ -13,9 +13,13 @@ from brain.imaging import prepare
 from brain.types import DeviceProfile, OSName
 
 
+PROBE_S = 1.2  # for the launcher or Start menu to open after the OS key
+
+
 def detect_profile(capture: Capture, executor: Executor, override_os: OSName | None = None,
                    *, cancel: CancelToken | None = None, timeout_s: float = 5.0,
-                   pointer: Callable[[float, float], None] | None = None) -> DeviceProfile:
+                   pointer: Callable[[float, float], None] | None = None,
+                   press: Callable[[list[str]], None] | None = None) -> DeviceProfile:
     """`pointer(x, y)` moves the target's absolute mouse; with it, a mouse target's screen is found
     from where its cursor appears (brain/calibrate.py), not from black bars."""
     token = cancel or CancelToken()
@@ -27,6 +31,8 @@ def detect_profile(capture: Capture, executor: Executor, override_os: OSName | N
             rect = active_rect(frame)
             os = override_os or _classify(executor, prepare(frame, rect, grid=False))
             token.check()
+            if os == "unknown" and press is not None:
+                os = _probe(capture, executor, rect, press, token)
             mode = "touch" if os == "android" else "mouse"
             if pointer is not None and mode == "mouse":
                 rect = pointer_rect(capture, pointer) or rect
@@ -34,6 +40,19 @@ def detect_profile(capture: Capture, executor: Executor, override_os: OSName | N
             return DeviceProfile(os, rect, mode, time.time())
         token.sleep(0.05)
     raise RuntimeError("No usable video frame; check the capture card and target display")
+
+
+def _probe(capture: Capture, executor: Executor, rect, press: Callable[[list[str]], None],
+           token: CancelToken) -> OSName:
+    """A screen that shows nothing to tell the OS by (a black, empty desktop) gets the OS key once: a
+    Start menu or desktop launcher is unmistakable, and Escape closes it again. Without an OS the app
+    launcher is off and every request fell to the planner guessing at a black screen."""
+    press(["GUI"])
+    token.sleep(PROBE_S)
+    frame = capture.grab()
+    os = _classify(executor, prepare(frame, rect, grid=False)) if frame is not None and not is_blank(frame) else "unknown"
+    press(["ESCAPE"])
+    return os
 
 
 def _classify(executor: Executor, jpeg: bytes) -> OSName:
