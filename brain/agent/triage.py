@@ -16,18 +16,21 @@ import numpy as np
 from brain.agent.jev import JevVision, probability
 from brain.cancel import CancelToken
 
-Mode = Literal["act", "plan", "none"]
+Mode = Literal["act", "plan", "none", "scroll"]
 Gesture = Literal["click", "double_click", "right_click"]
 
 GATE = 0.5  # presence/uniqueness, zoom presence, irreversible, approval: 0 unsafe acts at this gate
 ZOOM_WINDOW = 0.30  # crop side as a fraction of the longer screen side
 ZOOM_SCALE = 2.5
+SCROLL = 5  # wheel notches for "scroll down a bit": about a screenful
 
 INTENT_CRITERIA = {
     "act_now": "The utterance asks to click, tap, open or select ONE specific control that is visible on "
                "this screen right now, and that single pointer action fully satisfies the request.",
     "plan": "The utterance needs typing, keyboard keys, several steps, writing content, answering a question, "
             "an irreversible or destructive action, or its intended target is ambiguous or not visible.",
+    "scroll": "The utterance only asks to scroll or page the current view up or down, not to find or open "
+              "anything in particular.",
     "no_action": "The utterance is a remark, background context, a feeling or an acknowledgement; "
                  "it does not ask for any action.",
 }
@@ -51,6 +54,7 @@ class Triage:
     point: tuple[float, float] | None  # normalized, zoom-refined; only for mode "act"
     irreversible: bool
     gesture: Gesture = "click"
+    scroll: int = 0  # wheel notches for mode "scroll", positive = down
 
 
 def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
@@ -64,6 +68,9 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
         "unique": {"type": "noul", "instructions":
                    "Does the `utterance` identify exactly one visible control in `screen`, with no ambiguity?"},
         "irreversible": {"type": "noul", "instructions": IRREVERSIBLE},
+        "direction": {"type": "choice", "criteria": {"down": "Down, further along, the next page.",
+                                                     "up": "Up, back towards the top, the previous page."},
+                      "instructions": "Which way does the `utterance` ask to scroll, if it asks to scroll?"},
         "gesture": {"type": "choice", "criteria": GESTURE_CRITERIA, "instructions":
                     "Which pointer gesture carries out the `utterance` on the control it names in `screen`?"},
         "target": {"type": "box", "instructions":
@@ -75,6 +82,8 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
     choice = answers["intent"].get("choice")
     if choice == "no_action":
         return Triage("none", None, irreversible)
+    if choice == "scroll":
+        return Triage("scroll", None, irreversible, scroll=-SCROLL if answers["direction"].get("choice") == "up" else SCROLL)
     present = min(probability(answers["present"].get("noul")), probability(answers["unique"].get("noul")))
     point = _box_center(answers["target"], size, padded)
     if choice != "act_now" or present < GATE or point is None:

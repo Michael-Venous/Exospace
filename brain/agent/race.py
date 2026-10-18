@@ -45,6 +45,7 @@ class RaceExecutor:
         self.mode = ""
         self._point: tuple[float, float] | None = None
         self._gesture = "click"
+        self._scroll = 0
         self._clicked = False
         self._utterance = ""
         self._triage_step = 0
@@ -66,6 +67,11 @@ class RaceExecutor:
         if key != self._key:
             self._key, self._clicked, self._approved_goal = key, False, None
             return self._start(image, ctx)
+        if self.mode == "scroll":
+            # "scroll down to the comments" also triages as a scroll: done only if the goal is met.
+            if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):
+                return Plan("Scrolled", [Action("done", summary="Scrolled.")], [])
+            self.mode = "plan"  # nothing to scroll here (or not focused): the planner recovers
         if self.mode == "act":
             if not self._clicked and ctx.step != self._triage_step:
                 # The loop discarded the click (the screen moved): aim again on this screen.
@@ -107,7 +113,7 @@ class RaceExecutor:
             self._pending = _Pending(utterance, ctx.goal, ctx.profile.connected_at)
             return Plan("Irreversible request needs approval",
                         [Action("ask_user", question=f'This can\'t be undone: "{utterance}". Should I go ahead?')], [])
-        self.mode, self._point, self._gesture = result.mode, result.point, result.gesture
+        self.mode, self._point, self._gesture, self._scroll = result.mode, result.point, result.gesture, result.scroll
         if self.mode == "none" and declined:
             return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
         if self.mode == "none":
@@ -116,12 +122,15 @@ class RaceExecutor:
                                           Action("done", summary="Noted.")], [])
         if self.mode == "act":
             return self._direct()
+        if self.mode == "scroll":  # no target and no plan needed (it took 10.8 s through the planner)
+            return Plan("Jev scroll", [Action("scroll", dy=result.scroll)], [])
         return self.cancel.run(self._plan.result)
 
     def _goal_met(self, image: bytes, ctx: StepContext) -> bool:
         """One Jev completion call on the new screen: a changed screen alone is no proof
         (measured: "close the calculator" minimized it and reported done)."""
-        executed = [f"{self._gesture} on the control for: {self._utterance}"]
+        executed = ([f"scroll {'down' if self._scroll > 0 else 'up'} {abs(self._scroll)} notches"]
+                    if self.mode == "scroll" else [f"{self._gesture} on the control for: {self._utterance}"])
         score = self.cancel.run(lambda: self.jev.completion(image, ctx.goal, executed, run_id=ctx.run_id,
                                                             step=ctx.step))
         return score >= COMPLETION_GATE

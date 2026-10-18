@@ -72,6 +72,7 @@ class RaceTests(unittest.TestCase):
         race._pool = ThreadPoolExecutor(max_workers=1)
         race._plan, race._key, race.mode, race._point, race._clicked, race._pending = None, None, "", None, False, None
         race._gesture, race._utterance, race._triage_step, race._approved_goal = "click", "", 0, None
+        race._scroll = 0
         self.addCleanup(race._pool.shutdown)
         race.planner.next_actions.return_value = Plan("planned", [Action("hotkey", keys=("ENTER",))], [])
         self.race = race
@@ -187,6 +188,21 @@ class RaceTests(unittest.TestCase):
             result = self.race.next_actions(b"img", self.ctx("open up chrome"))
         self.assertEqual(result.actions[0].type, "double_click")
 
+
+    def test_scroll_needs_no_plan_and_ends_when_the_view_moves(self):
+        with patch("brain.agent.race.triage", return_value=Triage("scroll", None, False, scroll=-5)):
+            first = self.race.next_actions(b"img", self.ctx("scroll up"))
+        self.assertEqual((first.actions[0].type, first.actions[0].dy), ("scroll", -5))
+        self.race.acknowledge(True)
+        self.race.jev.completion.return_value = .9
+        self.assertEqual(self.race.next_actions(b"img", self.ctx("scroll up")).actions[0].type, "done")
+
+    def test_a_scroll_with_no_effect_goes_to_the_planner(self):
+        with patch("brain.agent.race.triage", return_value=Triage("scroll", None, False, scroll=5)):
+            self.race.next_actions(b"img", self.ctx("scroll down"))
+        self.race.acknowledge(True)
+        result = self.race.next_actions(b"img", self.ctx("scroll down", note="Screen unchanged; try something different."))
+        self.assertEqual(result.reasoning, "planned")
 
 if __name__ == "__main__":
     unittest.main()

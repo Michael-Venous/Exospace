@@ -64,8 +64,9 @@ then click the newly visible submenu item in a separate stage. Drag holds the
 button while moving to destination. These are different actions.
 Other actions: type_text(text), hotkey(keys), scroll(dy: mouse-wheel notches,
 positive down, about 5 per screenful; never pixels),
-skill(name=open_app,text=app), skill(name=wait) as its own stage while a page, install
-or restart is still loading, remember(key,text), ask_user(message), fail(message).
+skill(name=open_app,text=app), skill(name=wait) as its own stage ONLY when the
+screenshot shows a spinner, progress bar or blank page that is still loading (a
+loaded page never needs it), remember(key,text), ask_user(message), fail(message).
 No done action is needed: completion is checked after the last stage.
 Never close, quit or minimize a window, tab or app, or switch to an unrelated
 app, unless the goal asks for it; recover inside the app the goal is about.
