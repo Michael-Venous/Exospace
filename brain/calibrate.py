@@ -57,8 +57,10 @@ def _look(capture: Capture, move, x: float, y: float, settle_s: float) -> np.nda
 
 
 def _cursor_tip(before: np.ndarray, after: np.ndarray) -> tuple[float, float] | None:
-    """The cursor's tip (top-left of its image) in `before`: of the two cursor-sized changes between the
-    frames, the one up and left of the other (the pointer moved right and down)."""
+    """The cursor's tip (top-left of its image) in `before`. The pointer moved right and down by the same
+    fraction of the screen's width and height, so of the cursor-sized changes the pair offset that way, with
+    alike sizes, is the cursor; other changes (a redraw, a clock) are ignored. On the Pi rig a frame held 6
+    changes beside the cursor."""
     diff = cv2.cvtColor(cv2.absdiff(before, after), cv2.COLOR_BGR2GRAY)
     _, mask = cv2.threshold(diff, 40, 255, cv2.THRESH_BINARY)
     mask = cv2.dilate(mask, np.ones((3, 3), np.uint8))
@@ -66,9 +68,18 @@ def _cursor_tip(before: np.ndarray, after: np.ndarray) -> tuple[float, float] | 
     blobs = [stats[i] for i in range(1, count)
              if CURSOR_AREA[0] <= stats[i][cv2.CC_STAT_AREA] <= CURSOR_AREA[1]
              and stats[i][cv2.CC_STAT_WIDTH] <= CURSOR_SIDE and stats[i][cv2.CC_STAT_HEIGHT] <= CURSOR_SIDE]
-    if len(blobs) != 2:  # anything else moved too (an animation, a hover highlight): don't guess
+    h, w = before.shape[:2]
+    pairs = []
+    for a in blobs:
+        for b in blobs:
+            dx, dy = b[cv2.CC_STAT_LEFT] - a[cv2.CC_STAT_LEFT], b[cv2.CC_STAT_TOP] - a[cv2.CC_STAT_TOP]
+            alike = abs(int(a[cv2.CC_STAT_HEIGHT]) - int(b[cv2.CC_STAT_HEIGHT])) <= 4
+            # The nudge is NUDGE of the screen both ways: dx/w and dy/h agree for any screen inside the frame.
+            if dx > 0 and dy > 0 and alike and 0.5 <= (dx / w) / (dy / h) <= 2 and NUDGE / 3 <= dy / h <= NUDGE * 1.5:
+                pairs.append((a, b))
+    if len(pairs) != 1:  # none, or ambiguous: don't guess
         return None
-    first = min(blobs, key=lambda s: s[cv2.CC_STAT_LEFT] + s[cv2.CC_STAT_TOP])
+    first = pairs[0][0]
     return float(first[cv2.CC_STAT_LEFT]), float(first[cv2.CC_STAT_TOP])
 
 
