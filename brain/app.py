@@ -131,6 +131,12 @@ def main(argv: list[str] | None = None) -> int:
             pointed: tuple[float, float] | None = None
 
             status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
+            if monitor.connected:  # detect now, not on the first request: it took ~8 s on the Pi (OS check, calibration)
+                try:
+                    profile, generation = _connected_profile(
+                        monitor, capture, executor, args.os, token, profile, generation, status, controller.hover)
+                except (Cancelled, RuntimeError, HIDError):
+                    pass  # detected again on the first request
             while True:
                 try:
                     if bus is None:
