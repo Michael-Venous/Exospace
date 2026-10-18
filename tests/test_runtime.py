@@ -62,7 +62,7 @@ class RuntimeTests(unittest.TestCase):
         self.hid = HID(self.capture)
         self.cancel = CancelToken()
         self.controller = Controller(self.hid, self.capture, self.cancel,
-                                     SettleConfig(min_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
+                                     SettleConfig(min_s=0, react_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
         self.memory = Memory(self.root / "nested/session.json")
         self.telemetry = Telemetry(self.root / "results.csv", "test")
         self.profile = DeviceProfile("macos", Rect(0, 0, 160, 100), "mouse", 1)

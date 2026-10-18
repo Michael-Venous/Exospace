@@ -26,6 +26,10 @@ _ASCII_FIXES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "�
 @dataclass(frozen=True)
 class SettleConfig:
     min_s: float = 0.12  # give the target time to react before judging
+    # With no change yet, wait this long for one: through the Pi's capture card the effect of an input
+    # appeared after the screen had already looked settled, and checks on the stale screen failed and
+    # replanned (3-6 s each, 4 of 4 tasks).
+    react_s: float = 0.45
     stable_s: float = 0.12  # screen must stay still this long
     timeout_s: float = 2.5  # stop waiting on spinners and animations
     poll_s: float = 0.03
@@ -128,6 +132,7 @@ class Controller:
         start = time.monotonic()
         prev = None
         still_since: float | None = None
+        changed = False
         while True:
             self.cancel.check()
             now = time.monotonic()
@@ -137,9 +142,11 @@ class Controller:
                 thumb = thumbnail(frame)
                 if prev is not None and frame_change(prev, thumb) < cfg.threshold:
                     still_since = still_since if still_since is not None else now
-                    if elapsed >= cfg.min_s and now - still_since >= cfg.stable_s:
+                    if elapsed >= (cfg.min_s if changed else max(cfg.min_s, cfg.react_s)) \
+                            and now - still_since >= cfg.stable_s:
                         return elapsed
                 else:
+                    changed = changed or prev is not None
                     still_since = None
                 prev = thumb
             if elapsed >= cfg.timeout_s:
