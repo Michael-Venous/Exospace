@@ -17,8 +17,8 @@ import cv2
 import numpy as np
 
 from brain.agent.jev import JevVision, probability
-from brain.agent.solo import (INTENT_GATE, KEY_CRITERIA, SCROLL_CRITERIA, SOLO_CRITERIA, SPAN_SKILLS, VALUE_GATE,
-                              Spans, solo_questions, spans)
+from brain.agent.solo import (FIRST_ONLY, INTENT_GATE, KEY_CRITERIA, SCROLL_CRITERIA, SOLO_CRITERIA, SPAN_SKILLS,
+                              VALUE_GATE, Ends, Spans, first_ends, rest_after, solo_questions, spans)
 from brain.cancel import CancelToken
 
 Mode = Literal["act", "keys", "plan", "none"]
@@ -58,18 +58,20 @@ class Triage:
     gesture: Gesture = "click"
     skill: str = ""  # mode "keys": a SOLO_CRITERIA intent
     text: str = ""  # mode "keys": copied utterance words, a KEY_CRITERIA id, or a scroll direction
+    rest: str = ""  # solo: the words after the first instruction, triaged again on the next screen
 
 
 def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
            solo: bool = False, run_id: str = "", step: int = 0) -> Triage:
-    options = spans(utterance) if solo else {}
-    answers, size, padded = jev.evaluate(jpeg, triage_questions(options), run_id=run_id, step=step,
-                                         state={"utterance": utterance})
-    return decide(jev, jpeg, utterance, answers, size, padded, options, cancel, run_id=run_id, step=step)
+    options, ends = (spans(utterance), first_ends(utterance)) if solo else ({}, {})
+    answers, size, padded = jev.evaluate(jpeg, triage_questions(options, ends, utterance), run_id=run_id,
+                                         step=step, state={"utterance": utterance})
+    return decide(jev, jpeg, utterance, answers, size, padded, options, cancel, ends=ends, run_id=run_id, step=step)
 
 
-def triage_questions(options: Spans) -> dict[str, dict]:
-    """Triage's questions; with solo span `options`, two solo intents and their questions join."""
+def triage_questions(options: Spans, ends: Ends | None = None, utterance: str = "") -> dict[str, dict]:
+    """Triage's questions. With solo span `options`, the solo intents and their questions join, and
+    the action questions judge only the first instruction (the irreversible check reads it all)."""
     questions = {
         "intent": {"type": "choice", "criteria": {**INTENT_CRITERIA, **(SOLO_CRITERIA if options else {})},
                    "instructions":
@@ -86,16 +88,49 @@ def triage_questions(options: Spans) -> dict[str, dict]:
                    "The single visible control in `screen` that the `utterance` asks to click, tap or open "
                    "right now. For an item in a list or grid, locate the whole item."},
     }
-    return {**questions, **solo_questions(options)} if options else questions
+    if not options:
+        return questions
+    for key in ("intent", "present", "unique", "gesture", "target"):
+        questions[key] = {**questions[key], "instructions": FIRST_ONLY + questions[key]["instructions"]}
+    return {**questions, **solo_questions(options, ends or {}, utterance)}
 
 
 def decide(jev: JevVision, jpeg: bytes, utterance: str, answers: dict, size: tuple[int, int],
-           padded: tuple[int, int], options: Spans, cancel: CancelToken, *,
+           padded: tuple[int, int], options: Spans, cancel: CancelToken, *, ends: Ends | None = None,
            run_id: str = "", step: int = 0) -> Triage:
     irreversible = probability(answers["irreversible"].get("noul")) >= GATE
     choice = answers["intent"].get("choice")
     if choice == "no_action":
         return Triage("none", None, irreversible)
+    first, rest = utterance, ""
+    if options and ends:
+        split = _first_instruction(answers.get("first_end", {}), ends, utterance)
+        if split is None:  # unsure where the first instruction ends: the planner takes it all
+            return Triage("plan", None, irreversible)
+        first, rest = split
+    result = _decide_first(jev, jpeg, first, answers, size, padded, options, choice, irreversible, cancel,
+                           run_id=run_id, step=step)
+    if result.mode == "keys" and result.skill in SPAN_SKILLS and result.text not in first:
+        return Triage("plan", None, irreversible)  # words picked from a later instruction
+    return replace(result, rest=rest) if result.mode in ("act", "keys") else result
+
+
+def _first_instruction(answer: dict, ends: Ends, utterance: str) -> tuple[str, str] | None:
+    """(first instruction, rest). The whole utterance as one instruction needs no confidence; a
+    split needs VALUE_GATE, since a wrong split would act on half an instruction."""
+    last = max(ends, key=ends.get)
+    chosen = answer.get("choice", last)
+    if chosen not in ends:
+        return None
+    if chosen != last and _chosen_probability(answer) < VALUE_GATE:
+        return None
+    return utterance[:ends[chosen]], rest_after(utterance, ends[chosen])
+
+
+def _decide_first(jev: JevVision, jpeg: bytes, utterance: str, answers: dict, size: tuple[int, int],
+                  padded: tuple[int, int], options: Spans, choice: str, irreversible: bool, cancel: CancelToken, *,
+                  run_id: str = "", step: int = 0) -> Triage:
+    """Route the (first) instruction: a solo skill, a Jev click, or the planner."""
     present = min(probability(answers["present"].get("noul")), probability(answers["unique"].get("noul")))
     point = _box_center(answers["target"], size, padded)
     if options and choice in SOLO_CRITERIA:

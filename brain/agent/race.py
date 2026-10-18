@@ -2,7 +2,9 @@
 
   act   confident Jev target -> one zoom-refined click, no LLM wait; the plan is discarded
   keys  (JEV_SOLO_SKILLS=1) easy tasks (open app/site, type, key, scroll, find), no LLM wait
-With JEV_LEARNED_CACHE=1, a decision that worked replays on the same request and screen
+With solo skills, a chained request ("open chrome and go to youtube") runs one instruction at
+a time: after each works, the remaining words are triaged on the new screen, and the planner
+only ever sees what's left. With JEV_LEARNED_CACHE=1, a decision that worked replays on the same request and screen
 with no Jev call at all; a replay that changes nothing is forgotten (brain/agent/learned.py).
   none  a remark or context -> remembered, no input
   plan  the planner's already-running result is used, so a Jev miss costs no extra time
@@ -39,6 +41,8 @@ class RaceExecutor:
     solo = False  # JEV_SOLO_SKILLS: triage may route easy keyboard tasks without the planner
     learned: LearnedCache | None = None  # JEV_LEARNED_CACHE: replay decisions that worked
     _decided: tuple[str, str, bytes, Triage, bool] | None = None  # os, utterance, screen, decision, replayed
+    _rest = ""  # words of a chained request still to do after the current instruction
+    _chained = False  # the current instruction is a later part of a chained request
 
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
         self.planner = JevFlashExecutor(cfg, cancel)
@@ -74,7 +78,7 @@ class RaceExecutor:
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
         key = (ctx.run_id, ctx.goal)
         if key != self._key:
-            self._key, self._clicked, self._approved_goal = key, False, None
+            self._key, self._clicked, self._approved_goal, self._chained = key, False, None, False
             return self._start(image, ctx)
         if self.mode in ("act", "keys"):
             if not self._clicked and ctx.step != self._triage_step:
@@ -84,6 +88,9 @@ class RaceExecutor:
                 return self._direct() if self.mode == "act" else self._solo()
             if "unchanged" not in (ctx.note or ""):
                 self._learn(worked=True)
+                if self._rest:  # a chained request: triage what's left on this new screen
+                    rest, self._clicked, self._chained = self._rest, False, True
+                    return self._route(image, ctx, rest, confirmed=False)
                 return Plan("Jev direct action done", [Action("done", summary="Done.")], [])
             self._learn(worked=False)
             self.mode = "plan"  # the click had no visible effect: let the planner recover
@@ -127,7 +134,7 @@ class RaceExecutor:
             self._pending = _Pending(utterance, ctx.goal, ctx.profile.connected_at)
             return Plan("Irreversible request needs approval",
                         [Action("ask_user", question=f'This can\'t be undone: "{utterance}". Should I go ahead?')], [])
-        self.mode, self._point, self._gesture = result.mode, result.point, result.gesture
+        self.mode, self._point, self._gesture, self._rest = result.mode, result.point, result.gesture, result.rest
         if self.mode == "none" and declined:
             return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
         if self.mode == "none":
@@ -146,7 +153,11 @@ class RaceExecutor:
         return self.cancel.run(self._plan.result)
 
     def _planner_ctx(self, ctx: StepContext) -> StepContext:
-        return replace(ctx, goal=self._approved_goal) if self._approved_goal else ctx
+        if self._approved_goal:
+            return replace(ctx, goal=self._approved_goal)
+        if self._chained:  # earlier instructions are done: plan only the words still to do
+            return replace(ctx, goal="\n".join([*ctx.goal.splitlines()[:-1], self._utterance]))
+        return ctx
 
     def _direct(self, label: str = "") -> Plan:
         return Plan(f"{label}Jev direct action", [Action(self._gesture, x=self._point[0], y=self._point[1])], [])

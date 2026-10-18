@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 
 from brain.agent.jev import JevError, JevVision
-from brain.agent.solo import solo_actions, spans
+from brain.agent.solo import first_ends, solo_actions, spans
 from brain.agent.triage import decide, triage_questions
 from brain.cancel import CancelToken
 from brain.config import Config
@@ -42,16 +42,17 @@ def main() -> int:
     jpeg = _screenshot(args)
     try:
         for utterance in args.utterances:
-            options = spans(utterance)
+            options, ends = spans(utterance), first_ends(utterance)
             started = time.monotonic()
             try:
-                answers, size, padded = jev.evaluate(jpeg, triage_questions(options), state={"utterance": utterance})
+                answers, size, padded = jev.evaluate(jpeg, triage_questions(options, ends, utterance),
+                                                     state={"utterance": utterance})
             except JevError as exc:
                 hint = " (check TYPESAFE_API_KEY and the account's credit)" if "401" in str(exc) else ""
                 raise SystemExit(f"{exc}{hint}") from None
             elapsed = time.monotonic() - started
-            result = decide(jev, jpeg, utterance, answers, size, padded, options, cancel)
-            _report(utterance, answers, options, result, args.os, elapsed)
+            result = decide(jev, jpeg, utterance, answers, size, padded, options, cancel, ends=ends)
+            _report(utterance, answers, options, ends, result, args.os, elapsed)
     finally:
         jev.close()
     return 0
@@ -71,11 +72,13 @@ def _screenshot(args: argparse.Namespace) -> bytes:
     return buf.tobytes()
 
 
-def _report(utterance: str, answers: dict, options: dict, result, os: str, elapsed: float) -> None:
+def _report(utterance: str, answers: dict, options: dict, ends: dict, result, os: str, elapsed: float) -> None:
     intent = answers["intent"]
     probs = intent.get("probabilities") or {}
     print(f"\n“{utterance}”  ({elapsed:.2f} s, one Jev call)")
     print("  intent:  " + "  ".join(f"{k} {v:.2f}" for k, v in sorted(probs.items(), key=lambda kv: -kv[1])))
+    if "first_end" in answers:
+        print("  first instruction: " + _top(answers["first_end"], lambda k: f"“{utterance[:ends.get(k, 0)]}”"))
     if "value_span" in answers:
         print("  words:   " + _top(answers["value_span"], lambda k: f"“{options.get(k, k)}”"))
         print("  key:     " + _top(answers["key"], str))
@@ -87,6 +90,8 @@ def _report(utterance: str, answers: dict, options: dict, result, os: str, elaps
     if result.mode == "keys":
         actions = solo_actions(result.skill, result.text, os, result.point) or []
         print("  would send: " + (", ".join(a.brief() for a in actions) or f"nothing (no keyboard route on {os})"))
+    if result.rest:
+        print(f"  then, on the next screen: “{result.rest}” (run the probe on that text and a new screenshot)")
 
 
 def _top(answer: dict, label) -> str:

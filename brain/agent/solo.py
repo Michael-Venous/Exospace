@@ -6,6 +6,10 @@ which contiguous words of the utterance to use (code types exactly those words, 
 model-written text, computah's span idea on pixels + keyboard), which key from a closed
 list, or which scroll direction. The only per-OS knowledge is the key tables below.
 No phrase, app or site rules.
+
+Chained requests ("open chrome and go to youtube") use computah's boundary idea: the same
+call asks where the FIRST instruction ends and judges only that one; the rest of the words
+are triaged again on the next screen. Easy chains then never need the LLM planner.
 """
 
 from __future__ import annotations
@@ -27,7 +31,11 @@ SOLO_CRITERIA = {
     "find_on_page": "The utterance asks to find or search for words on the current page or document, "
                     "and nothing else.",
 }
-VALUE_QUESTION = ("Which exact contiguous words of the `utterance` are the value it acts on: the application or "
+FIRST_ONLY = ("The user may chain several instructions in one `utterance` (e.g. 'open X and then do Y'). "
+              "Consider only its FIRST instruction. ")
+FIRST_END_QUESTION = ("Where does the FIRST instruction in the `utterance` end? Choose the words that make up "
+                      "exactly the first instruction; choose all of the words when there is only one instruction.")
+VALUE_QUESTION = (FIRST_ONLY + "Which exact contiguous words of the `utterance` are the value it acts on: the application or "
                   "website to open, the text to type, or the words to find? Leave out request words such as "
                   "open, go to, type, find, search for, in the, the, my, please.")
 BROWSER_QUESTION = "Is a web browser window open and in front in `screen`, ready to type an address?"
@@ -39,8 +47,8 @@ KEY_CRITERIA = {
     "page_up": "Page up", "page_down": "Page down", "home": "Home, go to the top", "end": "End, go to the bottom",
     "undo": "Undo", "redo": "Redo", "back": "Go back to the previous page", "refresh": "Refresh or reload the page",
 }
-KEY_QUESTION = "Which one key or standard shortcut does the `utterance` ask to press?"
-SCROLL_QUESTION = "Which way does the `utterance` ask to scroll?"
+KEY_QUESTION = FIRST_ONLY + "Which one key or standard shortcut does the `utterance` ask to press?"
+SCROLL_QUESTION = FIRST_ONLY + "Which way does the `utterance` ask to scroll?"
 SCROLL_CRITERIA = {"up": "Scroll up, toward the top", "down": "Scroll down, toward the bottom"}
 
 INTENT_GATE = 0.7  # probability of the chosen solo intent
@@ -67,12 +75,36 @@ SHORTCUTS: dict[str, dict[str, list[str]]] = {  # per OS; phones and BIOS have n
 }
 
 Spans = dict[str, str]  # option id -> the exact utterance text it stands for
+Ends = dict[str, int]  # first-instruction option id -> where that instruction ends in the utterance
 SPAN_SKILLS = frozenset({"open_app", "go_to_site", "type_into", "find_on_page"})
 
 
 def spans(utterance: str) -> Spans:
     """Every contiguous run of up to MAX_SPAN_WORDS words, as exact slices of the utterance.
     Punctuation at word edges is trimmed ("youtube." -> "youtube"), inner dots kept ("google.com")."""
+    words = _words(utterance)
+    if not words or len(words) > MAX_WORDS:
+        return {}
+    options = {f"s{i}_{j}": utterance[words[i][0]:words[j][1]]
+               for i in range(len(words)) for j in range(i, min(i + MAX_SPAN_WORDS, len(words)))}
+    return options if len(options) <= MAX_OPTIONS else {}
+
+
+def first_ends(utterance: str) -> Ends:
+    """Each possible end of the first instruction: after word 1, after word 2, ... after the last."""
+    words = _words(utterance)
+    if not words or len(words) > MAX_WORDS:
+        return {}
+    return {f"e{j}": end for j, (_, end) in enumerate(words)}
+
+
+def rest_after(utterance: str, end: int) -> str:
+    """The words left after the first instruction ("and go to youtube"), or "" when none are."""
+    rest = utterance[end:].strip(" \t" + _EDGE_PUNCTUATION)
+    return rest if any(char.isalnum() for char in rest) else ""
+
+
+def _words(utterance: str) -> list[tuple[int, int]]:
     words = []
     for match in re.finditer(r"\S+", utterance):
         start, end = match.start(), match.end()
@@ -82,16 +114,14 @@ def spans(utterance: str) -> Spans:
             end -= 1
         if start < end:
             words.append((start, end))
-    if not words or len(words) > MAX_WORDS:
-        return {}
-    options = {f"s{i}_{j}": utterance[words[i][0]:words[j][1]]
-               for i in range(len(words)) for j in range(i, min(i + MAX_SPAN_WORDS, len(words)))}
-    return options if len(options) <= MAX_OPTIONS else {}
+    return words
 
 
-def solo_questions(options: Spans) -> dict[str, dict]:
+def solo_questions(options: Spans, ends: Ends, utterance: str) -> dict[str, dict]:
     """The extra questions triage adds to its single Jev call when solo skills are on."""
     return {
+        "first_end": {"type": "choice", "instructions": FIRST_END_QUESTION,
+                      "criteria": {key: utterance[:end] for key, end in ends.items()}},
         "value_span": {"type": "choice", "instructions": VALUE_QUESTION,
                        "criteria": {**options, "none_here": "The utterance names no such value."}},
         "browser_front": {"type": "noul", "instructions": BROWSER_QUESTION},

@@ -12,7 +12,7 @@ import numpy as np
 from brain.agent.executor import Plan, StepContext
 from brain.agent.memory import Memory
 from brain.agent.race import RaceExecutor
-from brain.agent.solo import solo_actions, spans
+from brain.agent.solo import first_ends, rest_after, solo_actions, spans
 from brain.agent.triage import INTENT_CRITERIA, Triage, triage, triage_questions
 from brain.cancel import CancelToken
 from brain.types import Action, DeviceProfile, Rect
@@ -32,12 +32,13 @@ def choice(value, p=.9):
 
 
 def answers(intent, intent_p=.95, span=None, span_p=.9, browser=.95, irreversible=.02, key="enter", key_p=.9,
-            direction="down", direction_p=.9, field=.1):
+            direction="down", direction_p=.9, field=.1, first_end=None, first_end_p=.9):
     return ({"intent": choice(intent, intent_p), "present": {"noul": field}, "unique": {"noul": field},
              "gesture": {"choice": "click"}, "irreversible": {"noul": irreversible},
              "target": BOX if field > .5 else {"box": {}}, "value_span": choice(span or "none_here", span_p),
              "browser_front": {"noul": browser}, "key": choice(key, key_p),
-             "scroll_direction": choice(direction, direction_p)}, *SIZE)
+             "scroll_direction": choice(direction, direction_p),
+             **({"first_end": choice(first_end, first_end_p)} if first_end else {})}, *SIZE)
 
 
 def span_id(utterance, text):
@@ -53,6 +54,12 @@ class SpanTests(unittest.TestCase):
 
     def test_multiword_names_are_offered(self):
         self.assertIn("visual studio code", spans("open visual studio code").values())
+
+    def test_the_rest_of_a_chain_is_the_words_after_the_first_instruction(self):
+        utterance = "open chrome, then go to youtube."
+        ends = first_ends(utterance)
+        self.assertEqual(rest_after(utterance, ends["e1"]), "then go to youtube")
+        self.assertEqual(rest_after(utterance, ends[max(ends, key=ends.get)]), "")
 
     def test_long_utterances_offer_no_solo_skills(self):
         self.assertEqual(spans("word " * 31), {})
@@ -111,6 +118,25 @@ class TriageSoloTests(unittest.TestCase):
         self.assertEqual(triage(self.jev, jpeg(), "scroll up", CancelToken(), solo=True).text, "up")
         self.jev.evaluate.return_value = answers("press_key", key="enter", key_p=.4)
         self.assertEqual(triage(self.jev, jpeg(), "hit it", CancelToken(), solo=True).mode, "plan")
+
+    def test_a_chained_request_runs_the_first_instruction_and_keeps_the_rest(self):
+        utterance = "open chrome and go to youtube"
+        self.jev.evaluate.return_value = answers("open_app", span=span_id(utterance, "chrome"), first_end="e1")
+        result = triage(self.jev, jpeg(), utterance, CancelToken(), solo=True)
+        self.assertEqual((result.mode, result.text, result.rest), ("keys", "chrome", "and go to youtube"))
+
+    def test_an_unsure_split_or_words_from_a_later_instruction_go_to_the_planner(self):
+        utterance = "open chrome and go to youtube"
+        self.jev.evaluate.return_value = answers("open_app", span=span_id(utterance, "chrome"), first_end="e1",
+                                                 first_end_p=.3)
+        self.assertEqual(triage(self.jev, jpeg(), utterance, CancelToken(), solo=True).mode, "plan")
+        self.jev.evaluate.return_value = answers("open_app", span=span_id(utterance, "youtube"), first_end="e1")
+        self.assertEqual(triage(self.jev, jpeg(), utterance, CancelToken(), solo=True).mode, "plan")
+
+    def test_action_questions_judge_the_first_instruction_but_safety_reads_it_all(self):
+        questions = triage_questions(spans("open chrome and delete my files"), {}, "open chrome and delete my files")
+        self.assertIn("FIRST instruction", questions["intent"]["instructions"])
+        self.assertNotIn("FIRST instruction", questions["irreversible"]["instructions"])
 
     def test_solo_questions_join_only_when_on(self):
         self.assertIn("go_to_site", triage_questions(spans("go to youtube"))["intent"]["criteria"])
@@ -179,6 +205,29 @@ class RaceKeysTests(unittest.TestCase):
         self.race.acknowledge(True)
         plan = self.race.next_actions(b"img", self.ctx("open spotify", note="Screen unchanged; try something"))
         self.assertEqual(plan.reasoning, "planned")
+
+    def test_a_chain_triages_the_rest_on_the_next_screen_then_finishes(self):
+        first = Triage("keys", None, False, skill="open_app", text="chrome", rest="and go to youtube")
+        second = Triage("keys", None, False, skill="go_to_site", text="youtube")
+        with patch("brain.agent.race.triage", side_effect=[first, second]) as triaged:
+            plan = self.race.next_actions(b"img", self.ctx("open chrome and go to youtube"))
+            self.assertEqual(plan.actions[0].name, "open_app")
+            self.race.acknowledge(True)
+            plan = self.race.next_actions(b"img", self.ctx("open chrome and go to youtube", step=2))
+            self.assertEqual(triaged.call_args.args[2], "and go to youtube")
+            self.assertEqual([a.type for a in plan.actions], ["hotkey", "type_text", "hotkey"])
+            self.race.acknowledge(True)
+            plan = self.race.next_actions(b"img", self.ctx("open chrome and go to youtube", step=3))
+        self.assertEqual(plan.actions[0].type, "done")
+
+    def test_the_planner_gets_only_what_is_left_of_a_chain(self):
+        first = Triage("keys", None, False, skill="open_app", text="chrome", rest="and write a poem in it")
+        with patch("brain.agent.race.triage", side_effect=[first, Triage("plan", None, False)]):
+            self.race.next_actions(b"img", self.ctx("open chrome and write a poem in it"))
+            self.race.acknowledge(True)
+            self.race.next_actions(b"img", self.ctx("open chrome and write a poem in it", step=2))
+        planned_goal = self.race.planner.next_actions.call_args.args[1].goal
+        self.assertEqual(planned_goal, "and write a poem in it")
 
     def test_os_without_a_keyboard_route_uses_the_plan(self):
         with patch("brain.agent.race.triage", return_value=Triage("keys", None, False, skill="go_to_site",
