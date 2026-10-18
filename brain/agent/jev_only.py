@@ -60,6 +60,7 @@ COMPOSED = ("Does what remains of the `goal`, after the `executed_steps`, need t
 STEP_CONTROL = "the one control that the next step of the `goal` acts on, after the `executed_steps`"
 NEXT_IRREVERSIBLE = "Would the next step of the `goal`, after the `executed_steps`, " + IRREVERSIBLE_KINDS
 WAIT = Action("skill", name="wait")
+MAX_WAITS = 2  # looks again before a target still not visible hands the request to Flash
 # Race's COMPLETION_GATE (0.3) let two unfinished goals through here, at 0.57 and 0.63 (2026-10-18: Google
 # results for "go to Wikipedia", a typed search never sent); finished ones scored 0.68-0.89.
 # shortcut: set from 5 live runs; move it if finished goals below 0.65 keep taking an extra step.
@@ -142,7 +143,7 @@ class JevOnlyPlanner:
             point = box_center(answers["target"], size, padded)
             sure = probability(answers["present"].get("noul"))
             if point is None or sure < NEAR_PRESENCE:
-                return _fail("its target isn't clearly visible")
+                return _look_again(ctx) or _fail("its target isn't clearly visible")
             # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
             # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
             # shortcuts). Keeping the zoom nearer the first box is a majority of the three looks.
@@ -158,7 +159,7 @@ class JevOnlyPlanner:
             agree = len(looks) == 2 and (all(box_contains(answers["target"], size, padded, p) for p in looks)
                                          or math.dist(*looks) < ZOOMS_AGREE)
             if not looks or sure < self.jev.min_presence and not agree:
-                return _fail("its target isn't clearly visible")
+                return _look_again(ctx) or _fail("its target isn't clearly visible")
             point = min(looks, key=lambda p: math.dist(p, point))
             actions.append(Action("click" if step == "fill" else step, x=point[0], y=point[1]))
         if step in ("type", "fill"):
@@ -215,6 +216,18 @@ class JevOnlyPlanner:
         if ctx.history[-1] != WAIT.brief():  # the launcher, its results or the chosen app still appearing
             return Plan("Waiting for the app", [WAIT], [])
         return _fail("no app suited to the request is visible")
+
+
+def _look_again(ctx: StepContext) -> Plan | None:
+    """A target not visible yet is often a page still loading: right after a launch, YouTube's search box
+    wasn't there and Flash took the rest (30 s on the Pi). Wait briefly instead, up to MAX_WAITS in a row
+    (nrebolloso, origin/live-speech cfb822b)."""
+    waits = 0
+    for done in reversed(ctx.history):
+        if done != WAIT.brief():
+            break
+        waits += 1
+    return Plan("Jev waits for the page", [WAIT], []) if ctx.history and waits < MAX_WAITS else None
 
 
 def _words(text: str) -> list[str]:

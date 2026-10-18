@@ -50,6 +50,13 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("click the other one", present=.4).type, "fail")
         self.assertEqual(self.step("click the other one", looks=(None, None)).type, "fail")  # lost when zoomed
 
+    def test_a_target_not_visible_after_a_step_is_looked_for_again_twice(self):
+        goal = "search youtube for horses"
+        self.assertEqual(self.step(goal, present=.4, history=["skill(open_app {'name': 'firefox'})"]).brief(),
+                         "skill(wait {})")
+        waited = ["skill(open_app {'name': 'firefox'})", "skill(wait {})", "skill(wait {})"]
+        self.assertEqual(self.step(goal, present=.4, history=waited).type, "fail")
+
     def test_a_zoom_that_strays_is_outvoted(self):
         for looks in ((ON, STRAY), (STRAY, ON)):
             action = self.step("open calculator, then click 7", looks=looks)
