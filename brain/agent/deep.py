@@ -18,8 +18,8 @@ from dataclasses import replace
 from typing import Any
 
 from brain.agent.executor import ModelExecutor, Plan, StepContext
-from brain.agent.jev import SIDE_EFFECT_GATE, SIDE_EFFECTS, probability
-from brain.agent.triage import GATE, IRREVERSIBLE_KINDS
+from brain.agent.jev import SIDE_EFFECT_GATE, SIDE_EFFECTS, STEP_IRREVERSIBLE, probability
+from brain.agent.triage import GATE
 from brain.cancel import CancelToken, Cancelled
 from brain.config import Config
 from brain.imaging import grid_copy
@@ -27,7 +27,6 @@ from brain.types import OSName
 
 UNPRODUCTIVE = ("unchanged", "Rejected action", "Recovery required")
 WINDOW = 6  # race steps looked at; deep mode once DEEP_AFTER of them were unproductive
-STEP_IRREVERSIBLE = "Would carrying out the proposed `actions` on this `screen` " + IRREVERSIBLE_KINDS
 DEEP_STALL_S = 60.0  # one Argon step can take 20 s+; race keeps the 20 s no-progress rule
 
 

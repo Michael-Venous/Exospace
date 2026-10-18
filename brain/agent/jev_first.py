@@ -8,6 +8,8 @@ planner for the rest of its run, so Flash is called only when Jev is stuck.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.jev_only import FAILED, JevOnlyPlanner
@@ -19,10 +21,10 @@ from brain.types import OSName
 class JevFirstPlanner:
     image_side = JevFlashExecutor.image_side
 
-    def __init__(self, cfg: Config, cancel: CancelToken) -> None:
-        self.flash = JevFlashExecutor(cfg, cancel)
+    def __init__(self, cfg: Config, cancel: CancelToken, approved: Callable[[], bool] | None = None) -> None:
+        self.flash = JevFlashExecutor(cfg, cancel, approved)
         self.jev = self.flash.jev
-        self.steps = JevOnlyPlanner(self.jev)
+        self.steps = JevOnlyPlanner(self.jev, approved)
         self._flash_run: str | None = None  # the run Jev handed to Flash
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:

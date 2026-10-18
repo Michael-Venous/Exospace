@@ -123,5 +123,15 @@ class JevTests(unittest.TestCase):
         values,points=self.jev.assess(self.image,{}, {'target':'the thing'})
         self.assertEqual(values['route_execute'],0)
 
+    def test_irreversible_proposal_is_scored_in_the_same_call(self):
+        self.answers={'route':{'choice':'execute','confidence':.9},'side_effects':{'noul':.1},
+                      'irreversible':{'noul':.93}}
+        send=[{'type':'click','target':'Send button'}]
+        values,_=self.jev.assess(self.image,{},{},proposal=send,irreversible=True)
+        self.assertEqual(values['irreversible'],.93)
+        self.assertIn('Send button',self.body['state']['actions'])
+        self.jev.assess(self.image,{},{},proposal=send)
+        self.assertNotIn('irreversible',self.body['questions'])
+
 
 if __name__=='__main__': unittest.main()

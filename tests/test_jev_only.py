@@ -121,6 +121,44 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step(goal, **search | {"history": typed}).type, "click")  # then the result
 
 
+class JevOnlyGuardTests(unittest.TestCase):
+    """With race's approval policy, Jev's own next step can't send, delete, pay or submit on its own."""
+
+    def next_step(self, approved):
+        planner = JevOnlyPlanner(Mock(min_presence=.85), approved)
+        answers = {"complete": {"noul": .1}, "question": {"noul": .05}, "next": {"choice": "enter"},
+                   "present": {"noul": .95}, "target": BOX, "text": {"choice": "none"}, "replace": {"noul": .1},
+                   "fits": {"noul": .95}, "app_present": {"noul": .1}, "app_name": {"choice": "none"},
+                   "launcher": {"noul": .1}, "app": BOX, "irreversible": {"noul": .95}}
+        planner.jev.evaluate.return_value = (answers, (400, 300), (400, 300))
+        ctx = StepContext("reply saying six and send it", DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1),
+                          Mock(), ["type_text('six')"], 2, 10, run_id="r")
+        return planner.next_actions(b"img", ctx), planner.jev.evaluate.call_args.args[1]
+
+    def test_an_unapproved_irreversible_next_step_is_held(self):
+        plan, questions = self.next_step(lambda: False)
+        self.assertEqual((plan.actions, plan.held), ([], "hotkey(ENTER)"))
+        self.assertIn("irreversible", questions)
+
+    def test_an_approved_run_takes_the_irreversible_next_step(self):
+        plan, questions = self.next_step(lambda: True)
+        self.assertEqual(([a.brief() for a in plan.actions], plan.held), (["hotkey(ENTER)"], ""))
+        self.assertNotIn("irreversible", questions)
+
+    def test_without_a_policy_no_irreversible_question_is_asked(self):
+        plan, questions = self.next_step(None)
+        self.assertEqual([a.brief() for a in plan.actions], ["hotkey(ENTER)"])
+        self.assertNotIn("irreversible", questions)
+
+    def test_jev_first_gives_both_planners_the_policy(self):
+        policy = Mock()
+        with patch("brain.agent.jev_first.JevFlashExecutor") as flash, \
+             patch("brain.agent.jev_first.JevOnlyPlanner") as steps:
+            JevFirstPlanner(Mock(), Mock(), policy)
+        self.assertIs(flash.call_args.args[2], policy)
+        self.assertIs(steps.call_args.args[1], policy)
+
+
 class JevFirstTests(unittest.TestCase):
     def setUp(self):
         self.planner = object.__new__(JevFirstPlanner)

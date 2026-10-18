@@ -3,7 +3,9 @@
   act   confident Jev target -> one zoom-refined click, no LLM wait; the plan is discarded
   none  a remark or context -> remembered, no input
   plan  the planner's already-running result is used, so a Jev miss costs no extra time
-Irreversible requests never execute until the user approves them in the next turn.
+Irreversible requests never execute until the user approves them in the next turn. A correction
+is judged together with the request it corrects, and a planner stage that Jev scores irreversible
+is held for approval too, so a plan can't send, delete, pay or submit on its own.
 Measured in bench/arch: 89% end-to-end vs 53% for the planner alone, 0 unsafe actions.
 """
 
@@ -33,11 +35,13 @@ LAUNCHED = ("Is the app the `utterance` asks to open now open in front as its ow
 
 @dataclass(frozen=True)
 class _Pending:
-    """An irreversible request waiting for the user's answer, bound to the device that asked."""
+    """An irreversible request waiting for the user's answer, bound to the device that asked.
+    `step` is the planner or deep step the question named; empty when it named the request."""
 
     utterance: str
     goal: str
     connected_at: float
+    step: str = ""
 
 
 class RaceExecutor:
@@ -45,7 +49,8 @@ class RaceExecutor:
     image_side = JevFlashExecutor.image_side
 
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
-        self.planner = JevFirstPlanner(cfg, cancel) if cfg.jev_first else JevFlashExecutor(cfg, cancel)
+        planner = JevFirstPlanner if cfg.jev_first else JevFlashExecutor
+        self.planner = planner(cfg, cancel, approved=self.approved_run)
         self.jev = self.planner.jev
         self.cancel = cancel
         # One worker: a speculative plan for an earlier segment always finishes before
@@ -98,7 +103,7 @@ class RaceExecutor:
             if not launched:
                 ctx = replace(ctx, note=ctx.note or f'Opening "{self._launched}" from the launcher did not open '
                                                     "that app; find it another way.")
-            return self.planner.next_actions(image, self._planner_ctx(ctx))
+            return self._planned(self.planner.next_actions(image, self._planner_ctx(ctx)), ctx)
         if self.mode == "act":
             if not self._clicked and ctx.step != self._triage_step:
                 # The loop discarded the click (the screen moved): aim again on this screen.
@@ -109,34 +114,36 @@ class RaceExecutor:
                 return Plan("Jev direct action done", [Action("done", summary="Done.")], [])
             self.mode = "plan"  # no visible effect, or not the goal (a neighbouring button): the planner recovers
         self._settle_speculation()
-        return self.planner.next_actions(image, self._planner_ctx(ctx))
+        return self._planned(self.planner.next_actions(image, self._planner_ctx(ctx)), ctx)
 
     def _start(self, image: bytes, ctx: StepContext) -> Plan:
-        utterance = ctx.goal.splitlines()[-1]
+        *lines, utterance = ctx.goal.splitlines()
+        earlier = "\n".join(lines)
         pending, self._pending = self._pending, None
         if pending is not None and pending.connected_at == ctx.profile.connected_at:
             answer = self.cancel.run(lambda: answer_to_pending(self.jev, image, pending.utterance, utterance,
-                                                               run_id=ctx.run_id))
+                                                               held=pending.step, run_id=ctx.run_id))
             if answer == "decline":
                 # "No" alone is just a refusal; "no, open John's email instead" also asks for something.
                 self._approved_goal = None
-                return self._route(image, ctx, utterance, confirmed=False, declined=True)
+                return self._route(image, ctx, utterance, earlier, confirmed=False, declined=True)
             if answer == "approve":
                 self._approved_goal = pending.goal + "\nThe user approved this request."
                 return self._route(image, ctx, pending.utterance, confirmed=True)
             # Neither: a new command or a correction. Handle it as its own request.
         self._approved_goal = None
-        return self._route(image, ctx, utterance, confirmed=False)
+        return self._route(image, ctx, utterance, earlier, confirmed=False)
 
-    def _route(self, image: bytes, ctx: StepContext, utterance: str, *, confirmed: bool,
+    def _route(self, image: bytes, ctx: StepContext, utterance: str, earlier: str = "", *, confirmed: bool,
                declined: bool = False) -> Plan:
         self._utterance, self._triage_step = utterance, ctx.step
         # The single planner worker queues this behind any discarded speculation, so triage
         # (the fast path) never waits for an old plan to finish.
         self._plan = self._pool.submit(self.planner.next_actions, image, self._planner_ctx(ctx))
-        result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, run_id=ctx.run_id))
+        result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, earlier=earlier,
+                                                run_id=ctx.run_id))
         if result.irreversible and not confirmed:
-            return self.hold(ctx, f'"{utterance}"')
+            return self.hold(ctx)
         self.mode, self._point, self._gesture, self._scroll = result.mode, result.point, result.gesture, result.scroll
         if self.mode == "none" and declined:
             return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
@@ -154,17 +161,22 @@ class RaceExecutor:
         if self.mode == "launch":
             self._launched = result.app
             return Plan("Jev launch", [Action("skill", name="open_app", args={"name": result.app})], [])
-        return self.cancel.run(self._plan.result)
+        return self._planned(self.cancel.run(self._plan.result), ctx)
 
     def approved_run(self) -> bool:
         return self._approved_goal is not None
 
-    def hold(self, ctx: StepContext, what: str) -> Plan:
-        """Ask before an irreversible request or step; the user's next reply answers it."""
+    def hold(self, ctx: StepContext, step: str = "") -> Plan:
+        """Ask before an irreversible request, or before one `step` of it; the user's next reply answers it."""
         self.mode = "none"
-        self._pending = _Pending(ctx.goal.splitlines()[-1], ctx.goal, ctx.profile.connected_at)
+        utterance = ctx.goal.splitlines()[-1]
+        self._pending = _Pending(utterance, ctx.goal, ctx.profile.connected_at, step)
+        what = step or f'"{utterance}"'
         return Plan("Irreversible request needs approval",
                     [Action("ask_user", question=f"This can't be undone: {what}. Should I go ahead?")], [])
+
+    def _planned(self, plan: Plan, ctx: StepContext) -> Plan:
+        return self.hold(ctx, plan.held) if plan.held else plan
 
     def _goal_met(self, image: bytes, ctx: StepContext) -> bool:
         """One Jev completion call on the new screen: a changed screen alone is no proof

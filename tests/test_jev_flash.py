@@ -14,7 +14,7 @@ def stage(target, expected='next screen visible', kind='click'):
     return {'ready':'screen ready','expected':expected,'actions':[{'type':kind,'target':target}]}
 
 
-class SemanticTests(unittest.TestCase):
+class PlannerCase(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup)
         self.executor=object.__new__(JevFlashExecutor)
@@ -35,6 +35,8 @@ class SemanticTests(unittest.TestCase):
         zoom=patch('brain.agent.jev_flash.refine',return_value=None)  # zoom keeps each point
         self.refine=zoom.start();self.addCleanup(zoom.stop)
 
+
+class SemanticTests(PlannerCase):
     def test_cached_sequence_calls_flash_once(self):
         for expected in ('click','click','done'):
             result=self.executor.next_actions(b'image',self.ctx)
@@ -215,5 +217,46 @@ class SemanticTests(unittest.TestCase):
         self.assertEqual((plan.actions[0].type,plan.actions[0].x,plan.actions[0].y),('click',.91,.02))
         self.assertIsNone(self.executor._key)  # re-planned on the maximized screen
         self.assertNotEqual(self.executor.next_actions(b'image',self.ctx).reasoning,'Maximize the app window first')
+
+
+class IrreversibleGuardTests(PlannerCase):
+    """With race's approval policy, a plan can't send, delete, pay or submit on its own."""
+
+    def guard(self,approved):
+        self.executor.approved=approved
+        self.plan['steps']=[stage('Send button','message sent')]
+        self.executor.jev.assess.side_effect=lambda image,checks,targets,irreversible=False,**kw: (
+            {**{k:.99 for k in checks},**({'irreversible':.95} if irreversible else {})},{k:(.25,.75) for k in targets})
+
+    def test_unapproved_irreversible_stage_asks_instead_of_clicking(self):
+        self.guard(lambda:False)
+        result=self.executor.next_actions(b'compose',self.ctx)
+        self.assertEqual((result.actions,result.held),([],'click Send button'))
+        self.assertTrue(self.executor.jev.assess.call_args.kwargs['irreversible'])
+
+    def test_approved_run_takes_the_irreversible_stage(self):
+        self.guard(lambda:True)
+        result=self.executor.next_actions(b'compose',self.ctx)
+        self.assertEqual((result.actions[0].type,result.held),('click',''))
+        self.assertFalse(self.executor.jev.assess.call_args.kwargs['irreversible'])
+
+    def test_without_a_policy_no_irreversible_question_is_asked(self):
+        self.guard(None)
+        result=self.executor.next_actions(b'compose',self.ctx)
+        self.assertEqual(result.actions[0].type,'click')
+        self.assertFalse(self.executor.jev.assess.call_args.kwargs['irreversible'])
+
+    def test_visual_fallback_stage_is_held_too(self):
+        self.executor.approved=lambda:False
+        fallback={'reasoning':'Locate visually','completion':'message sent',
+                  'steps':[{'ready':'compose visible','expected':'message sent',
+                            'actions':[{'type':'click','target':'Send button','fallback_x':100,'fallback_y':900}]}]}
+        self.plan['steps']=[stage('Send button','message sent')]
+        self.executor.model.generate.side_effect=[self.plan,fallback]
+        self.executor.jev.assess.side_effect=[({'ready':.99,'route_execute':0,'irreversible':.95},{'target':None}),
+                                              ({'route_execute':1,'safe':1,'irreversible':.95},{})]
+        result=self.executor.next_actions(b'compose',self.ctx)
+        self.assertEqual((result.actions,result.held),([],'click Send button'))
+        self.assertEqual(self.executor.jev.assess.call_count,2)
 
 if __name__=='__main__':unittest.main()
