@@ -26,7 +26,7 @@ from brain.types import Action, OSName
 MATCH = 6.0  # mean grayscale difference (0-255) between screens that count as the same
 SIZE = (160, 100)  # finer than the settle thumbnail: a moved window must not match
 GATE = 0.5  # completion score that confirms a replay (as the planner's completion gate)
-RECORD_GATE = 0.8  # only clear successes are recorded: a replay repeats mistakes too
+RECORD_GATE = 0.8  # only clear, clean successes are recorded: a replay repeats mistakes too
 # (measured: a minimize click passed as "closed" at 0.5 and replayed the same wrong click)
 
 
@@ -48,6 +48,7 @@ class _Recording:
     screens: list[np.ndarray] = field(default_factory=list)
     actions: list[list[Action]] = field(default_factory=list)
     summary: str = ""
+    clean: bool = True  # no rejected step, replan or recovery note on the way
 
 
 class ReplayCache:
@@ -128,13 +129,15 @@ class ReplayCache:
         recording = self._recording
         if recording is None or screen is None:
             return
+        if plan.rejected or ctx.note:  # a run that had to recover is not a pattern worth repeating
+            recording.clean = False
         terminal = next((a for a in plan.actions if a.type in ("done", "ask_user", "fail")), None)
         if terminal is None:
             steps = [a for a in plan.actions if a.type != "remember"]
             self._pending = (screen, steps) if steps else None
             return
         approved = "approved this request" in ctx.goal or "User correction" in ctx.goal
-        if terminal.type == "done" and recording.actions and not approved and self._clear(image_jpeg, ctx, recording,
+        if terminal.type == "done" and recording.actions and not approved and recording.clean and self._clear(image_jpeg, ctx, recording,
                                                                                             terminal.summary):
             recording.summary = terminal.summary
             self._save(ctx.goal, recording)

@@ -87,5 +87,18 @@ class ReplayTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
 
 
+    def test_a_run_that_had_to_recover_is_not_recorded(self):
+        cache = ReplayCache(self.inner, self.path)
+        self.inner.next_actions.side_effect = [Plan("click", [Action("click", x=.3, y=.2)], []),
+                                               Plan("again", [Action("click", x=.4, y=.2)], []),
+                                               Plan("done", [Action("done", summary="ok")], [])]
+        cache.next_actions(screen(40), self.ctx("make it dark", 1, "a"))
+        cache.acknowledge(True)
+        cache.next_actions(screen(90), StepContext("make it dark", self.profile, self.memory, [], 2, 10,
+                                                   note="Screen unchanged; try something different.", run_id="a"))
+        cache.acknowledge(True)
+        cache.next_actions(screen(200), self.ctx("make it dark", 3, "a"))
+        self.assertFalse(self.path.exists())
+
 if __name__ == "__main__":
     unittest.main()
