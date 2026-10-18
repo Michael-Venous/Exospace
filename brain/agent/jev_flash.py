@@ -75,7 +75,8 @@ Never close, quit or minimize a window, tab or app, or switch to an unrelated
 app, unless the goal asks for it; recover inside the app the goal is about.
 Never click the small window-control buttons in a title bar's corner (they sit
 next to close): a small app window is maximized for you before your plan runs.
-Typing is literal. NEVER put tabs in text. Each hotkey is ONE simultaneous
+Typing is literal. When the goal says what to type or search for, type those
+words exactly; never shorten, reword or translate them. NEVER put tabs in text. Each hotkey is ONE simultaneous
 combination, not a sequence. Batch TAB and typing only when focus/tab order are
 clear. Separate field fills into stages with expected values to detect mistakes.
 Use CTRL+A to replace a field. A click+type stage is permitted if the field is

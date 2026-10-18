@@ -48,6 +48,14 @@ class ActiveRectTests(unittest.TestCase):
         rect = active_rect(frame)
         self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (0, 0, 2880, 1800))
 
+    def test_a_dark_frame_lit_only_by_the_cursor_is_not_cropped(self):
+        from brain.capture import active_rect
+        frame = np.zeros((1800, 2880, 3), np.uint8)
+        frame[:, 1431:1449] = 30  # a dim page edge-to-edge in one column
+        frame[900:930, 1435:1445] = 255  # the cursor
+        rect = active_rect(frame)
+        self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (0, 0, 2880, 1800))
+
 
 if __name__ == "__main__":
     unittest.main()

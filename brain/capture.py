@@ -23,6 +23,7 @@ from brain.types import Frame, Rect
 STALE_S = 0.5  # a frame older than this counts as no signal
 BLANK_MAX = 12  # brightest pixel below this (0-255) = blank / no signal
 BAR_MIN_FRACTION = 0.05  # pillarbox bars must each be at least this wide
+ASPECT_RANGE = (0.3, 3.4)  # width/height of any real screen; a tall phone is ~0.43
 THUMB_SIZE = (64, 36)
 
 
@@ -180,7 +181,10 @@ def active_rect(frame: Frame) -> Rect:
     sides, ends = _symmetric_bars(left, right, w), _symmetric_bars(top, bottom, h)
     if sides == ends:
         return full
-    return Rect(left, 0, w - right, h) if sides else Rect(0, top, w, h - bottom)
+    rect = Rect(left, 0, w - right, h) if sides else Rect(0, top, w, h - bottom)
+    # A dark loading page lit only by the cursor once "cropped" the screen to an 18 px strip.
+    aspect = (rect.x1 - rect.x0) / (rect.y1 - rect.y0)
+    return rect if ASPECT_RANGE[0] <= aspect <= ASPECT_RANGE[1] else full
 
 
 def _symmetric_bars(a: int, b: int, size: int) -> bool:
