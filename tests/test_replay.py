@@ -67,6 +67,21 @@ class ReplayTests(unittest.TestCase):
         self.inner.next_actions.return_value = Plan("planned", [], [])
         self.assertEqual(cache.next_actions(screen(200), self.ctx("open the talk page", 2, "b")).reasoning, "planned")
 
+    def test_unclear_successes_are_not_recorded_and_failed_replays_are_forgotten(self):
+        self.inner.jev.completion.return_value = .6
+        self.record(ReplayCache(self.inner, self.path))
+        self.assertFalse(self.path.exists())
+        self.inner.jev.completion.return_value = .9
+        self.record(ReplayCache(self.inner, self.path), run_id="b")
+        cache = ReplayCache(self.inner, self.path)
+        cache.next_actions(screen(40), self.ctx("open the talk page", 1, "c"))
+        cache.acknowledge(True)
+        self.inner.jev.completion.return_value = .1
+        self.inner.next_actions.side_effect = None
+        self.inner.next_actions.return_value = Plan("planned", [], [])
+        cache.next_actions(screen(200), self.ctx("open the talk page", 2, "c"))
+        self.assertEqual(ReplayCache(self.inner, self.path)._store, {})
+
     def test_approved_runs_are_never_recorded(self):
         self.record(ReplayCache(self.inner, self.path), goal="email john\nUser correction: yes")
         self.assertFalse(self.path.exists())

@@ -26,6 +26,8 @@ from brain.types import Action, OSName
 MATCH = 6.0  # mean grayscale difference (0-255) between screens that count as the same
 SIZE = (160, 100)  # finer than the settle thumbnail: a moved window must not match
 GATE = 0.5  # completion score that confirms a replay (as the planner's completion gate)
+RECORD_GATE = 0.8  # only clear successes are recorded: a replay repeats mistakes too
+# (measured: a minimize click passed as "closed" at 0.5 and replayed the same wrong click)
 
 
 def fingerprint(jpeg: bytes) -> np.ndarray | None:
@@ -79,7 +81,7 @@ class ReplayCache:
                 return plan
             self._replaying = None  # the screen differs from the recording: plan from here
         plan = self.inner.next_actions(image_jpeg, ctx)
-        self._observe(screen, plan, ctx)
+        self._observe(image_jpeg, screen, plan, ctx)
         return plan
 
     def acknowledge(self, executed: bool) -> None:
@@ -116,12 +118,13 @@ class ReplayCache:
         score = jev.completion(image_jpeg, ctx.goal, executed, evidence=recording.summary,
                                run_id=ctx.run_id, step=ctx.step)
         if score < GATE:
+            self._forget(ctx.goal)  # it no longer leads where it did
             return None
         return Plan("Replay verified", [Action("done", summary=recording.summary or "Done.")], [])
 
     # -- recording -------------------------------------------------------------
 
-    def _observe(self, screen: np.ndarray | None, plan: Plan, ctx: StepContext) -> None:
+    def _observe(self, image_jpeg: bytes, screen: np.ndarray | None, plan: Plan, ctx: StepContext) -> None:
         recording = self._recording
         if recording is None or screen is None:
             return
@@ -131,10 +134,24 @@ class ReplayCache:
             self._pending = (screen, steps) if steps else None
             return
         approved = "approved this request" in ctx.goal or "User correction" in ctx.goal
-        if terminal.type == "done" and recording.actions and not approved:
+        if terminal.type == "done" and recording.actions and not approved and self._clear(image_jpeg, ctx, recording,
+                                                                                            terminal.summary):
             recording.summary = terminal.summary
             self._save(ctx.goal, recording)
         self._recording = None
+
+    def _clear(self, image_jpeg: bytes, ctx: StepContext, recording: _Recording, summary: str) -> bool:
+        jev = getattr(self.inner, "jev", None)
+        if jev is None:
+            return False
+        executed = [a.brief() for step in recording.actions for a in step]
+        return jev.completion(image_jpeg, ctx.goal, executed, evidence=summary,
+                              run_id=ctx.run_id, step=ctx.step) >= RECORD_GATE
+
+    def _forget(self, goal: str) -> None:
+        with self._lock:
+            if self._store.pop(_key(goal), None) is not None:
+                self._write()
 
     def _save(self, goal: str, recording: _Recording) -> None:
         with self._lock:
@@ -143,10 +160,13 @@ class ReplayCache:
                 "actions": [[_action_json(a) for a in step] for step in recording.actions],
                 "summary": recording.summary,
             }
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self.path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(self._store))
-            tmp.replace(self.path)
+            self._write()
+
+    def _write(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(self._store))
+        tmp.replace(self.path)
 
     def _load(self) -> dict[str, dict[str, Any]]:
         try:
