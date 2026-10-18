@@ -246,7 +246,7 @@ addEventListener("blur", release);  // the keyup goes to another window
 // Live view of the connected device: the agent's capture-card frame (/screen.jpg, relayed by this server).
 // While closed, a probe every 5 s keeps the device icon current (dim when nothing is connected).
 const FRAME_MS = 250;
-let viewing = false;
+let viewing = false, loops = 0;  // loops numbers each open; a loop from an earlier open stops
 const loadFrame = img => new Promise(done => {
   img.onload = () => done(true); img.onerror = () => done(false);
   img.src = `/screen.jpg?t=${Date.now()}`;
@@ -255,8 +255,8 @@ function showDevice(ok, img) {
   device.classList.toggle("none", !ok);
   if (ok) device.classList.toggle("phone", img.naturalHeight > img.naturalWidth);
 }
-async function streamFrames() {
-  while (viewing) {
+async function streamFrames(mine) {
+  while (viewing && mine === loops) {
     const ok = await loadFrame(frame);
     showDevice(ok, frame);
     view.classList.toggle("empty", !ok);
@@ -266,7 +266,7 @@ async function streamFrames() {
 function openView(on) {
   if (viewing === on) return;
   viewing = on; view.hidden = !on; device.setAttribute("aria-expanded", on);
-  if (on) streamFrames();
+  if (on) streamFrames(++loops);
 }
 device.onclick = () => openView(true);
 back.onclick = () => openView(false);
