@@ -15,6 +15,7 @@ from brain.agent.factory import build_executor
 from brain.agent.jev_only import DEADLINE_S
 from brain.agent.loop import RESUMABLE, Agent
 from brain.agent.memory import Memory
+from brain.agent.quick import JUST_DID
 from brain.cancel import Cancelled, CancelToken
 from brain.capture import Capture, CommandCapture, ScreenCapture, V4L2Capture, active_rect
 from brain.config import Config
@@ -175,6 +176,9 @@ def main(argv: list[str] | None = None) -> int:
                     pointed = None
                 if line.startswith("/new "):
                     goal = line[5:].strip()
+                elif command.after and previous_goal:
+                    # Its last line only: a chain of follow-ons stays one note long.
+                    goal = f"{JUST_DID}{previous_goal.splitlines()[-1]}\n{line}"
                 elif correction or (command.continues and previous_goal):
                     goal = previous_goal + "\nUser correction: " + line
                 else:

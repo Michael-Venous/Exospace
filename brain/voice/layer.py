@@ -6,10 +6,12 @@ Run the agent with a display server, then this:
 or both in one process (the extra arguments go to the agent):
     .venv/bin/python -m brain.voice.layer --display 8770
 
-Hold the button (or Space) and speak. Each pause sends what was said to the agent's
-POST /goal, so work starts while the user keeps talking; starting to speak while the
-agent is busy sends POST /stop first. Later segments of the same hold continue that
-request ("go to youtube" ... "and search lofi", "actually go back"). Narration comes from the
+Hold the button (or Space) and speak. A quick command acts as soon as more words follow
+it ("open a new tab and ..." opens the tab mid-sentence); everything else goes to the
+agent's POST /goal at each pause, so work starts while the user keeps talking. Starting
+to speak while the agent is busy sends POST /stop first. Later speech in the same hold
+follows on from the request ("go to youtube" ... "and search lofi") unless it corrects it
+("no, go back"), which stops it and redoes it with the correction. Narration comes from the
 agent's event stream: questions (including irreversible-action confirmations) are
 always spoken, plan stages briefly, then the result; a request that runs silently gets
 "On it." and then a progress line every few seconds, so a hard task never leaves dead air.
@@ -26,9 +28,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import json
 import os
 import queue
+import re
 import threading
 import time
 import urllib.request
@@ -38,6 +42,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from brain.agent.quick import spoken_commands
+from brain.types import TERMINAL_ACTIONS
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
 DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=300&smart_format=true"
@@ -45,6 +51,10 @@ KEEPALIVE_S = 15.0
 MAX_BODY = 4096
 ACK_S = 2.5  # a request still running this long with nothing said gets "On it."
 PROGRESS_S = 10.0  # then each this long of silence gets a progress line: a hard task never leaves dead air
+# Later speech that starts like this corrects the request instead of following on from it.
+# shortcut: a correction without one of these words ("the other one") follows on; widen the list if that misfires.
+CORRECTION = re.compile(r"(?:no|nope|wait|stop|actually|cancel|undo|instead|not that)\b", re.I)
+JOINER = re.compile(r"^(?:(?:and|then|also)\b[\s,]*)+", re.I)
 
 
 def narrate(event: dict[str, Any]) -> str | None:
@@ -77,6 +87,26 @@ def filler(quiet_s: float, spoken: bool) -> str | None:
     return "Still working on it." if quiet_s >= PROGRESS_S else None
 
 
+STEP_NAMES = {"click": "Click", "double_click": "Double-click", "right_click": "Right-click", "enter": "Press Enter",
+              "scroll_down": "Scroll down", "scroll_up": "Scroll up"}
+
+
+def step_label(event: dict[str, Any]) -> str | None:
+    """The checklist line for one plan; None for one that only ends the run, notes something or waits."""
+    briefs = [str(b) for b in event.get("actions", [])]
+    if event.get("ev") != "plan" or all(b in TERMINAL_ACTIONS or b.startswith(("remember(", "skill(wait"))
+                                        for b in briefs):
+        return None
+    reasoning = str(event.get("reasoning", "")).strip()
+    if reasoning.startswith("Stage "):
+        return reasoning.split(":", 1)[-1].strip() or None
+    typed = next((b for b in briefs if b.startswith("type_text(")), "")
+    if typed:
+        return f"Type {typed[10:-1]}"  # the brief quotes the text
+    step = reasoning.removeprefix("Jev next step: ").removeprefix("Jev ")
+    return STEP_NAMES.get(step, step[:1].upper() + step[1:]) or None
+
+
 class Agent:
     """The agent's display server, reached as a local program (no Origin header)."""
 
@@ -89,6 +119,7 @@ class Agent:
         self._said_at = 0.0  # monotonic time of the last line for the running request
         self._spoken = False  # anything said for it yet
         self._last = ""  # its last line: a result that repeats the final stage is said once
+        self._early: list[str] = []  # commands already sent from speech not yet sent as a segment
 
     def post(self, path: str, body: dict[str, Any]) -> None:
         request = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST",
@@ -96,8 +127,33 @@ class Agent:
         with urllib.request.urlopen(request, timeout=5) as response:
             response.read()
 
-    def submit(self, text: str, continues: bool = False) -> None:
-        self.post("/goal", {"text": text, "continues": continues})
+    def submit(self, text: str, continues: bool = False, after: bool = False) -> None:
+        self.post("/goal", {"text": text, "continues": continues, "after": after})
+
+    def listen(self) -> None:
+        """The user started a new hold: it barges in on running work."""
+        self._early = []
+        self.interrupt()
+
+    def hearing(self, text: str, continues: bool) -> None:
+        """Speech still coming in: send each command that later words can no longer change now."""
+        for command, _ in spoken_commands(text)[len(self._early):]:
+            self.submit(command, after=continues or bool(self._early))
+            self._early.append(command)
+
+    def heard(self, text: str, continues: bool) -> None:
+        """A finished segment: send what is left after the commands already sent from it."""
+        if early := len(self._early):
+            commands = spoken_commands(text)
+            # shortcut: a transcript revised after a command acted is sent whole; compare the words if that repeats one.
+            text = commands[min(early, len(commands)) - 1][1] if commands else text
+            continues, self._early = True, []
+            if not text.strip(" .,;!?"):
+                return
+        if continues and not CORRECTION.match(text):
+            return self.submit(JOINER.sub("", text, count=1) or text, after=True)
+        self.interrupt()  # a correction ("no, go back") stops the work it corrects
+        self.submit(text, continues)
 
     def screen(self) -> bytes | None:
         """The latest capture-card frame as JPEG, or None when the agent has none or is down."""
@@ -129,6 +185,13 @@ class Agent:
                             self._said_at, self._spoken, self._last = time.monotonic(), False, ""
                         elif event.get("ev") == "result":
                             self.busy = False
+                            if fresh:
+                                lines.put({"finished": event.get("status")})  # the page's checklist ends
+                        if event.get("ev") in ("run", "result"):
+                            lines.put({"busy": self.busy})
+                        step = step_label(event)
+                        if step and fresh:
+                            lines.put({"step": step})
                         line = narrate(event)
                         if not (line and fresh):
                             continue
@@ -168,7 +231,8 @@ class Agent:
 
 def page_server(agent: Agent, port: int, ws_port: int, updates: queue.Queue[dict[str, Any]]) -> ThreadingHTTPServer:
     """The voice page, narration stream and agent forwarding (no audio). Port 0 picks a free port."""
-    page = resources.files("brain.voice").joinpath("layer.html").read_text().replace("__WS_PORT__", str(ws_port))
+    page = resources.files("brain.voice").joinpath("layer.html").read_text().replace("__WS_PORT__", str(ws_port)) \
+        .replace("__AGENT__", html.escape(agent.base))
     hosts: set[str] = set()
     pages: set[queue.Queue[dict[str, Any]]] = set()  # one per open narration stream
 
@@ -211,16 +275,15 @@ def page_server(agent: Agent, port: int, ws_port: int, updates: queue.Queue[dict
                 if self.path == "/talk":  # the user started speaking: barge in on running work
                     if agent.describer is not None:
                         agent.describer.cancel()
-                    agent.interrupt()
+                    agent.listen()
                 elif self.path == "/describe":
                     agent.describe_on = body.get("on") is True and agent.describer is not None
                     return self._reply(200, json.dumps({"ok": True, "on": agent.describe_on}).encode())
-                elif self.path == "/segment":
+                elif self.path in ("/segment", "/partial"):  # a pause ended it / speech still coming in
                     text = str(body.get("text", "")).strip()
                     if not 0 < len(text) <= 500:
                         return self._reply(400, b'{"error":"text must be 1-500 characters"}')
-                    agent.interrupt()  # speaking while it works ("stop", a correction) barges in
-                    agent.submit(text, body.get("continues") is True)
+                    (agent.heard if self.path == "/segment" else agent.hearing)(text, body.get("continues") is True)
                 else:
                     return self._reply(404, b'{"error":"not found"}')
             except OSError as exc:

@@ -68,7 +68,10 @@ class RaceExecutor:
         key = (ctx.run_id, ctx.goal)
         if key != self._key:
             self._key, self._clicked, self._approved_goal = key, False, None
-            return self._start(image, ctx)
+            if ctx.history:  # a quick command already acted: triage would redo it ("+" after Ctrl+T), the planner checks it
+                self.mode = "plan"
+            else:
+                return self._start(image, ctx)
         if self.mode == "scroll":
             # "scroll down to the comments" also triages as a scroll: done only if the goal is met.
             if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):

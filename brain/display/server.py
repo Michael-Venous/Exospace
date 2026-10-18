@@ -4,8 +4,9 @@ GET  /            the display page
 GET  /events      server-sent events from the EventBus
 GET  /screen.jpg  latest screen image (active rect, so tap coordinates map 1:1)
 GET  /frame/N.jpg  the screen a step was decided on (N from its plan event; the last KEPT_FRAMES steps)
-POST /goal        {"text": "...", "continues": bool} a typed or transcribed request; continues: it
-                                                  extends the last request (more of the same utterance)
+POST /goal        {"text": "...", "continues": bool, "after": bool} a typed or transcribed request;
+                  continues: it corrects the last request (more of the same utterance); after: it
+                  runs once the last one is done and builds on it ("open a new tab" ... "and search x")
 POST /tap         {"x": 0-1, "y": 0-1, "mode": "click"|"point"}
 POST /stop        cancel whatever is running (same path as barge-in) and drop queued requests
 
@@ -44,6 +45,7 @@ class Command:
     kind: Literal["goal", "click", "point"]
     text: str = ""
     continues: bool = False  # more of the same spoken request
+    after: bool = False  # follows on from the last request once that is done
     x: float = 0.0
     y: float = 0.0
 
@@ -122,7 +124,8 @@ class _Handler(BaseHTTPRequestHandler):
                 text = str(body.get("text", "")).strip()
                 if not text:
                     raise ValueError("text is required")
-                self.commands.put(Command("goal", text=text, continues=body.get("continues") is True))
+                self.commands.put(Command("goal", text=text, continues=body.get("continues") is True,
+                                          after=body.get("after") is True))
             elif self.path == "/tap":
                 mode = body.get("mode", "click")
                 if mode not in ("click", "point"):

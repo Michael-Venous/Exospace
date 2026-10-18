@@ -156,10 +156,13 @@ class JevOnlyPlanner:
             choice = answers["text"].get("choice")
             if choice not in {str(i) for i in range(len(texts))}:
                 return _fail("the text to type isn't in the request")
-            if probability(answers["replace"].get("noul")) >= GATE:
+            replace = probability(answers["replace"].get("noul")) >= GATE
+            if replace:
                 # Select-all only in a filled single-line box: in a document it would replace everything.
                 actions.append(Action("hotkey", keys=("GUI" if ctx.profile.os in ("macos", "ios") else "CTRL", "A")))
             actions.append(Action("type_text", text=texts[int(choice)]))
+            if replace:  # the box now holds only the text: Delete drops an inline completion ("cats" -> "cats videos")
+                actions.append(Action("hotkey", keys=("DELETE",)))
         if step == "enter":
             actions.append(Action("hotkey", keys=("ENTER",)))
         if step in ("scroll_down", "scroll_up"):

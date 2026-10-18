@@ -120,6 +120,14 @@ class RaceTests(unittest.TestCase):
         result = self.race.next_actions(b"img", self.ctx("open it", note="Screen unchanged; try something different."))
         self.assertEqual(result.reasoning, "planned")
 
+    def test_after_a_quick_command_the_planner_checks_it_instead_of_triage_redoing_it(self):
+        ctx = self.ctx("open up a new tab")
+        ctx.history.append("hotkey(CTRL+T)")
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)) as tri:
+            result = self.race.next_actions(b"img", ctx)
+        self.assertEqual(result.reasoning, "planned")
+        tri.assert_not_called()
+
     def test_remark_is_remembered_without_input(self):
         with patch("brain.agent.race.triage", return_value=Triage("none", None, False)):
             result = self.race.next_actions(b"img", self.ctx("oh john wants a report"))
@@ -296,7 +304,7 @@ class JevOnlyTests(unittest.TestCase):
     def test_filled_box_is_selected_before_typing(self):
         actions = self.plan("search for cats", next="type", text=str(spans("search for cats").index("cats")),
                             replace=.9)
-        self.assertEqual([a.brief() for a in actions], ["hotkey(CTRL+A)", "type_text('cats')"])
+        self.assertEqual([a.brief() for a in actions], ["hotkey(CTRL+A)", "type_text('cats')", "hotkey(DELETE)"])
 
     def test_fill_clicks_the_field_then_types(self):
         goal = 'enter "Morgan" in Name'

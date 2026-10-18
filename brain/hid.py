@@ -9,6 +9,7 @@ from __future__ import annotations
 import itertools
 import json
 import platform
+import re
 import subprocess
 import threading
 import time
@@ -24,6 +25,7 @@ PING_ATTEMPTS = 3
 
 EventCallback = Callable[[str], None]  # receives "mounted" / "unmounted"
 VOICE_WINDOW = "Exospace Voice"  # brain/voice/layer.html's title
+_BROWSER_CLASS = re.compile(r"chrom|firefox|brave|edge|vivaldi|opera", re.I)  # WM_CLASS
 
 
 class HIDError(RuntimeError):
@@ -198,14 +200,15 @@ class LocalHID:
             self._keyboard.close()
 
     def _check_focus(self, cmd: dict[str, Any]) -> None:
-        """Refuse keys bound for the voice app: it keeps focus after the user talks to it, which
-        the model cannot see, and a typed space there barges in on the run. A click moves focus."""
+        """Keep keys from the voice app: it keeps focus after the user talks to it, which the model
+        cannot see, and a typed space there barges in on the run. They go to the window the user
+        was in before it, else they are refused. A click moves focus."""
         keys = set(cmd.get("keys", ()))
         if "GUI" in keys:
             self.menu_open = True
         elif self.menu_open:
             self.menu_open = not keys & {"ENTER", "ESC"}
-        elif _focused_title() == VOICE_WINDOW:
+        elif _focused_title() == VOICE_WINDOW and not _focus_window_below():
             raise ActionError(f"keyboard focus is on the {VOICE_WINDOW} window; click the field to type into first")
 
     def _key(self, name: str) -> str:
@@ -215,6 +218,35 @@ class LocalHID:
         area = self._area or dict(zip(("left", "top", "width", "height"), (0, 0, *self._gui.size())))
         return (area["left"] + round(x / HID_MAX * (area["width"] - 1)),
                 area["top"] + round(y / HID_MAX * (area["height"] - 1)))
+
+
+def _focus_window_below() -> bool:
+    """Focus the topmost window on this workspace other than the voice app; False if none took it."""
+    def run(*cmd: str) -> str:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=1).stdout
+    try:
+        workspace = run("xprop", "-root", "_NET_CURRENT_DESKTOP").split()[-1]
+        listed = {int(w, 16): (d, title) for w, d, _, title in
+                  ((line.split(None, 3) + [""])[:4] for line in run("wmctrl", "-l").splitlines())}
+        for window in reversed(re.findall(r"0x[0-9a-f]+", run("xprop", "-root", "_NET_CLIENT_LIST_STACKING"))):
+            on, title = listed.get(int(window, 16), ("", ""))
+            props = run("xprop", "-id", window, "WM_CLASS", "_NET_WM_WINDOW_TYPE")
+            if on == workspace and title != VOICE_WINDOW and "_DESKTOP" not in props:
+                # Never a terminal or an editor: keys meant for a page there run as commands.
+                # shortcut: browsers only; widen the list when another app needs spoken keys.
+                if not _BROWSER_CLASS.search(props.partition("_NET_WM_WINDOW_TYPE")[0]):
+                    return False
+                run("wmctrl", "-i", "-a", window)
+                break
+        else:
+            return False
+    except (OSError, subprocess.SubprocessError, IndexError, ValueError):
+        return False
+    for _ in range(10):  # activation lands a moment later; a key sent before it reaches the voice app
+        if _focused_title() != VOICE_WINDOW:
+            return True
+        time.sleep(0.03)
+    return False
 
 
 def _focused_title() -> str:

@@ -1,111 +1,59 @@
 <!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Exospace Voice</title>
 <style>
-:root{--ink:#f5f5f7;--dim:#8e8e93;--tone:#1c1c1e;--edge:clamp(32px,7vw,140px)}
-body{margin:0;min-height:100dvh;display:grid;grid-template-rows:1fr auto;gap:48px;box-sizing:border-box;
-  padding:clamp(32px,6vmin,96px) var(--edge);overflow:hidden;background:#000;color:var(--ink);
-  font:500 16px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;-webkit-tap-highlight-color:transparent}
-button{font:inherit;color:inherit;border:0;cursor:pointer}
-/* What you say is the headline. */
-main{align-self:center}
-#heard{margin:0;max-width:11ch;font-size:clamp(56px,5.8vw,112px);line-height:1;letter-spacing:-.035em;text-wrap:balance}
-#heard.long{max-width:16ch;font-size:clamp(40px,3.8vw,72px)}
-body:not(.on,.wait) #said:empty~#live:empty::before{content:"What are we doing today?";color:var(--ink)}
-#live,#says{color:var(--dim)}
-#says{margin-top:.9em;max-width:40ch;min-height:1.3em;font-size:clamp(24px,2vw,36px);letter-spacing:-.01em}
-.err{color:#ff6961}
-footer{display:flex;align-items:center;gap:28px}
-/* The control: a white dot; the dark disc behind it swells with the voice (--lvl, eased in the script). */
-#talk{--d:clamp(120px,14vmin,170px);position:relative;isolation:isolate;width:var(--d);height:var(--d);
-  padding:0;border-radius:50%;background:none;animation:breathe 4s ease-in-out infinite}
-#talk::before,#talk::after{content:"";position:absolute;inset:0;border-radius:50%}
-#talk::before{z-index:-1;background:var(--tone);scale:calc(1 + var(--lvl,0) * .6);transition:scale .18s ease-out}
-#talk::after{background:#fff}
-#talk:focus-visible{outline:3px solid #fff;outline-offset:14px}
-/* Waiting on the speech service or the agent: the dot bounces gently. */
-.wait #talk{animation:bounce 1.1s cubic-bezier(.45,0,.55,1) infinite}
-#hint{flex:1;font-size:clamp(22px,1.8vw,32px);color:var(--dim)}
-#hint::after{content:"Hold to talk"}
-.on #hint::after{content:"Listening"}
-.wait #hint::after{content:"Working on it"}
-#describe{padding:8px 16px;border-radius:999px;background:var(--tone);color:var(--dim)}
-#describe[aria-pressed=true]{background:#fff;color:#000}
-#mics{max-width:30vw;font:inherit;font-size:16px;color:var(--dim);background:var(--tone);border:0;border-radius:999px;
-  padding:8px 16px;cursor:pointer}
-/* The connected device: its icon follows the live picture's shape (portrait means a phone). */
-#device{display:grid;place-items:center;width:84px;height:84px;border-radius:50%;background:var(--tone)}
-#device svg{width:40px;height:40px;fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
-#device .phone,#device.phone .computer{display:none}
-#device.phone .phone{display:block}
-#device.none svg{stroke:var(--dim)}
-#view{position:fixed;inset:0;z-index:2;display:grid;place-items:center;background:#000}
-#view[hidden]{display:none}
-#frame{max-width:100%;max-height:100%;object-fit:contain}
-#view.empty #frame{display:none}
-#view:not(.empty) #nodevice{display:none}
-#nodevice{font-size:clamp(32px,3vw,56px);letter-spacing:-.02em;color:var(--dim)}
-#back{position:fixed;top:24px;right:24px;padding:16px 32px;border-radius:999px;background:var(--tone);font-size:24px}
-/* Orbi keeps the user company on the right: it floats, blinks, and its face follows the page's state. */
-#orbi{position:fixed;right:4vw;top:46%;width:clamp(320px,40vw,760px);translate:0 -50%;pointer-events:none;
-  animation:float 7s ease-in-out infinite alternate}
-#orbi [data-mood]{display:none}
-body:not(.on,.wait,.done) #orbi [data-mood=idle],.on #orbi [data-mood=listen],
-.wait:not(.on) #orbi [data-mood=work],.done:not(.on,.wait) #orbi [data-mood=done]{display:inline}
-#orbi .blink{transform-box:fill-box;transform-origin:center;animation:blink 5s infinite}
-@media (max-aspect-ratio:5/4){#orbi{display:none}}
-@keyframes float{to{translate:0 -54%}}
-@keyframes blink{0%,94%,100%{scale:1}97%{scale:1 .1}}
-@keyframes breathe{50%{scale:1.03}}
-@keyframes bounce{0%,100%{translate:0 0;scale:1}40%{translate:0 -12%;scale:.97 1.03}
-  70%{translate:0 0;scale:1.04 .96}}
+body{margin:0;min-height:100vh;display:grid;place-content:center;justify-items:center;gap:100px;padding:16px;box-sizing:border-box;
+  background:#fff;color:#1d1d1f;font:500 22px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;text-align:center}
+#talk{width:150px;height:150px;padding:0;border:0;border-radius:50%;cursor:pointer;background:none;--glow:125 147 255;
+  box-shadow:0 18px 50px rgb(var(--glow)/.35),0 0 0 calc(var(--lvl,0)*36px) rgb(var(--glow)/.12);
+  transform:scale(calc(1 + var(--lvl,0)*.55));transition:transform 90ms ease-out,box-shadow 90ms ease-out;animation:breathe 4s ease-in-out infinite}
+#talk:focus-visible{outline:2px solid #7d93ff;outline-offset:8px}
+#talk canvas{display:block;width:100%;height:100%}
+#heard{max-width:min(640px,90vw);min-height:2.8em;margin:0}
+#live,#says{color:#86868b}
+#said:empty~#live:empty::before{content:"Hold to talk";color:#a1a1a6}
+#says{font-size:18px;min-height:1.2em;max-width:min(640px,90vw)}
+.err{color:#d70015}
+/* The agent's steps under what was said: each ticks off as the next begins, then "Done" and the list fades. */
+#steps{display:inline-grid;gap:.5em;margin:.4em auto 0;padding:0;list-style:none;text-align:left;font-size:18px;
+  color:#86868b;transition:opacity .6s ease,translate .6s ease}
+#steps:empty{display:none}
+#steps.out{opacity:0;translate:0 -8px}
+#steps li{position:relative;max-width:min(32ch,80vw);padding-left:1.7em;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;animation:rise .35s ease-out}
+#steps li:nth-last-child(n+6){display:none}
+#steps li::before{content:"";position:absolute;left:0;top:.2em;width:1em;height:1em;border:2px solid #d2d2d7;
+  border-radius:50%;box-sizing:border-box;transition:background .3s,border-color .3s}
+#steps li:last-child:not(.ok){color:#1d1d1f}
+#steps li:last-child:not(.ok)::before{border-color:#1d1d1f;animation:ring 1.2s ease-in-out infinite}
+#steps .ok::before{background:#1d1d1f;border-color:#1d1d1f}
+#steps .ok::after{content:"";position:absolute;left:.37em;top:.4em;width:.24em;height:.46em;border:solid #fff;
+  border-width:0 .12em .12em 0;rotate:45deg}
+#steps .end{color:#1d1d1f}
+#mics,#log{position:fixed;font:inherit;font-size:15px;color:#86868b;background:none;border:0;cursor:pointer}
+#mics{bottom:16px;left:50%;translate:-50%;max-width:calc(100vw - 32px)}
+#log{top:16px;right:16px}
+#log[aria-expanded=true]{color:#1d1d1f}
+/* Log open: it takes the room left under the transcript, clear of the mic switcher. */
+.log{height:100vh;align-content:stretch;grid-template-rows:auto auto auto minmax(320px,1fr);gap:32px;padding-bottom:48px}
+#trace{display:none;width:min(900px,calc(100vw - 32px));height:100%;border:1px solid #e5e5ea;border-radius:14px}
+.log #trace{display:block}
+@keyframes rise{from{opacity:0;translate:0 6px}}
+@keyframes ring{50%{border-color:#d2d2d7}}
+@keyframes breathe{50%{scale:1.04}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important}}
 </style>
-<svg id=orbi viewBox="0 0 200 200" aria-hidden=true>
-  <ellipse cx="100" cy="108" rx="92" ry="22" transform="rotate(-14 100 108)" fill="none" stroke="#636366" stroke-width="7"/>
-  <circle cx="100" cy="100" r="58" fill="#f5f5f7"/>
-  <path d="M10.7 130.3A92 22-14 0 0 189.3 85.7" fill="none" stroke="#636366" stroke-width="7" stroke-linecap="round"/>
-  <circle cx="68" cy="108" r="7" fill="#d1d1d6"/><circle cx="132" cy="108" r="7" fill="#d1d1d6"/>
-  <g data-mood=idle><g class=blink><ellipse cx="81" cy="92" rx="6" ry="8"/><ellipse cx="119" cy="92" rx="6" ry="8"/></g>
-    <path d="M88 108Q100 120 112 108" fill="none" stroke="#000" stroke-width="4.5" stroke-linecap="round"/></g>
-  <g data-mood=listen><ellipse cx="81" cy="90" rx="7" ry="9"/><ellipse cx="119" cy="90" rx="7" ry="9"/>
-    <ellipse cx="100" cy="116" rx="7" ry="8"/></g>
-  <g data-mood=work><ellipse cx="85" cy="87" rx="6" ry="8"/><ellipse cx="123" cy="87" rx="6" ry="8"/>
-    <path d="M92 113h16" stroke="#000" stroke-width="4.5" stroke-linecap="round"/></g>
-  <g data-mood=done><path d="M74 94Q81 86 88 94M112 94Q119 86 126 94" fill="none" stroke="#000" stroke-width="4.5" stroke-linecap="round"/>
-    <path d="M86 108Q100 124 114 108Z"/></g>
-</svg>
-<main>
-  <p id=heard aria-live=polite><span id=said></span> <span id=live></span></p>
-  <div id=says aria-live=polite></div>
-</main>
-<footer>
-  <button id=talk aria-label="Hold to talk" aria-pressed=false></button>
-  <span id=hint></span>
-  <button id=describe aria-pressed=false>Describe</button>
-  <select id=mics aria-label=Microphone></select>
-  <button id=device class=none aria-label="Show the connected screen" aria-expanded=false>
-    <svg class=computer viewBox="0 0 24 24" aria-hidden=true><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>
-    <svg class=phone viewBox="0 0 24 24" aria-hidden=true><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18.5h2"/></svg>
-  </button>
-</footer>
-<div id=view hidden>
-  <img id=frame alt="Live view of the connected device">
-  <p id=nodevice>No device connected</p>
-  <button id=back>Close</button>
-</div>
+<button id=talk aria-label="Hold to talk" aria-pressed=false><canvas></canvas></button>
+<div><p id=heard aria-live=polite><span id=said></span> <span id=live></span></p>
+  <ol id=steps aria-label="Steps" aria-live=polite></ol></div>
+<div id=says aria-live=polite></div>
+<iframe id=trace title="Decision log" data-src="__AGENT__/#log"></iframe>
+<select id=mics aria-label=Microphone></select>
+<button id=log aria-expanded=false>Decision log</button>
 <script>
 let stopListening = null;
 const post = (path, body = {}) => fetch(path, {method: "POST", headers: {"Content-Type": "application/json"},
   body: JSON.stringify(body)}).then(r => r.json()).catch(err => ({error: err.message}));
-function showError(text) { waiting(false); said.className = "err"; said.textContent = text; }
-
-// Waiting on the speech service or the agent's reply: the orb bounces until it answers (at most 6 s).
-let waitTimer;
-function waiting(on) {
-  document.body.classList.toggle("wait", on);
-  clearTimeout(waitTimer);
-  if (on) waitTimer = setTimeout(() => waiting(false), 6000);
-}
+function showError(text) { said.className = "err"; said.textContent = text; }
 
 // Mic switcher. Chrome hides device names until the first mic grant, so the list is refilled after it.
 async function listMics() {
@@ -120,80 +68,117 @@ mics.onchange = () => { try { localStorage.mic = mics.value; } catch {} if (stop
 navigator.mediaDevices.ondevicechange = listMics;
 listMics();
 
-// Narration: speak the agent's questions and results, but never over the user. Lines that
-// arrive while the mic is open are held and spoken when the user stops, so a confirmation
-// question is never lost.
-let unspoken = [], doneTimer;
-const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
-new EventSource("/narration").onmessage = e => {
-  const m = JSON.parse(e.data);
-  if (m.pcm) return stopListening || play(m.pcm, m.rate);  // never over the user
-  const line = m.say || m.show;
-  waiting(false);
-  document.body.classList.add("done");
-  clearTimeout(doneTimer); doneTimer = setTimeout(() => document.body.classList.remove("done"), 4000);
-  says.textContent = line;
-  if (!m.say) return;
-  if (stopListening) unspoken.push(line); else speak(line);
+// Decision log: the agent's display shows its history and step decisions under the transcript.
+log.onclick = () => {
+  trace.src ||= trace.dataset.src;  // connect to the agent only once opened
+  log.setAttribute("aria-expanded", document.body.classList.toggle("log"));
 };
 
-// Describe mode: after each request, Gemini Live's spoken description of the screen streams in as
-// PCM chunks, queued back to back. Talking cuts it off.
-let out, playAt = 0, playing = [];
-function play(b64, rate) {
-  out ??= new AudioContext();
-  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0)), pcm = new Int16Array(bytes.buffer);
-  const buffer = out.createBuffer(1, pcm.length, rate);
-  buffer.getChannelData(0).set(Float32Array.from(pcm, v => v / 32768));
-  const source = out.createBufferSource();
-  source.buffer = buffer; source.connect(out.destination);
-  playAt = Math.max(playAt, out.currentTime);
-  source.start(playAt); playAt += buffer.duration;
-  playing.push(source); source.onended = () => playing = playing.filter(s => s !== source);
+// The orb: a lit sphere drawn per pixel, so it can turn. It drifts slowly, turns red while it
+// listens and spins fast in purple while the agent works; its glow follows its colour. Each pixel's point on the sphere and its light are
+// worked out once; a frame only turns the points and colours them.
+const orb = talk.firstElementChild.getContext("2d"), size = Math.round(talk.offsetWidth * devicePixelRatio);
+orb.canvas.width = orb.canvas.height = size;
+const pixels = orb.createImageData(size, size), points = [];  // per pixel: offset, x, y, z, light, shine, alpha
+const CALM = [[125, 147, 255], [183, 123, 255], [255, 154, 213]], LISTEN = [[215, 0, 21], [255, 59, 48], [255, 138, 122]],
+  WORK = [[76, 29, 222], [140, 52, 255], [217, 70, 239]];
+const tilt = 0.35;  // the axis leans toward the viewer, so the turn reads as 3D
+for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
+  const x = (2 * i + 1) / size - 1, y = (2 * j + 1) / size - 1, r = Math.hypot(x, y);
+  if (r >= 1) continue;
+  const z = Math.sqrt(1 - r * r);
+  const diffuse = Math.max(0, -0.54 * x - 0.74 * y + 0.41 * z);  // lit from the upper left
+  const shine = 0.9 * Math.max(0, -0.32 * x - 0.44 * y + 0.84 * z) ** 12 + 0.25 * (1 - z) ** 2;  // highlight, glassy rim
+  points.push(4 * (j * size + i), x, y * Math.cos(tilt) - z * Math.sin(tilt), y * Math.sin(tilt) + z * Math.cos(tilt),
+    0.82 + 0.28 * diffuse, Math.min(1, shine), Math.min(1, (1 - r) * size / 2) * 255);
 }
-function stopAudio() { playing.forEach(s => s.stop()); playing = []; playAt = 0; }
-let describing = false; try { describing = localStorage.describe === "1"; } catch {}
-async function setDescribe(on) {
-  const r = await post("/describe", {on});
-  describing = !!r.on;
-  describe.setAttribute("aria-pressed", describing);
-  try { localStorage.describe = describing ? "1" : ""; } catch {}
+let angle = 0, speed = 0, colors = CALM, last = performance.now();
+const still = matchMedia("(prefers-reduced-motion: reduce)");
+(function turn(now) {
+  const dt = Math.min(0.1, (now - last) / 1000), state = document.body.classList;
+  last = now;
+  const goal = state.contains("busy") ? (still.matches ? 1 : 12) : (still.matches ? 0 : 0.3);  // radians per second
+  speed += (goal - speed) * (1 - Math.exp(-3 * dt));  // spin up and wind down, never jump
+  const palette = state.contains("on") ? LISTEN : state.contains("busy") ? WORK : CALM, fade = 1 - Math.exp(-5 * dt);
+  colors = colors.map((c, k) => c.map((v, ch) => v + (palette[k][ch] - v) * fade));  // blend over about half a second
+  talk.style.setProperty("--glow", colors[0].map(Math.round).join(" "));
+  angle += speed * dt;
+  const cos = Math.cos(angle), sin = Math.sin(angle), out = pixels.data;
+  const [low, mid, high] = colors;
+  for (let k = 0; k < points.length; k += 7) {
+    const x = points[k + 1] * cos + points[k + 3] * sin, z = points[k + 3] * cos - points[k + 1] * sin;
+    const band = Math.sin(3 * x + 2 * Math.sin(3 * points[k + 2] + 2 * z));  // soft swirls across the surface
+    const edge = band < 0 ? low : high, f = Math.abs(band);
+    for (let ch = 0; ch < 3; ch++) {
+      const c = (mid[ch] + (edge[ch] - mid[ch]) * f) * points[k + 4];
+      out[points[k] + ch] = c + (255 - c) * points[k + 5];
+    }
+    out[points[k] + 3] = points[k + 6];
+  }
+  orb.putImageData(pixels, 0, 0);
+  requestAnimationFrame(turn);
+})(last);
+
+// Narration: speak the agent's questions and results, but never over the user. Lines that
+// arrive while the mic is open are held and spoken when the user stops, so a confirmation
+// question is never lost. The same stream says when the agent is busy, which spins the orb.
+let unspoken = [];
+const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+new EventSource("/narration").onmessage = e => {
+  const {say, busy, step, finished} = JSON.parse(e.data);
+  if (step || finished) checklist(step, finished);
+  if (busy !== undefined) document.body.classList.toggle("busy", busy);
+  if (!say) return;
+  says.textContent = say;
+  if (stopListening) unspoken.push(say); else speak(say);
+};
+// Checklist: a new step ticks the ones before it; the run's end ticks the rest and adds "Done" (a failed or
+// stopped run just fades), then the list goes. A step after that starts a fresh list.
+let stepsTimer, stepsOver = false;
+function checklist(step, finished) {
+  clearTimeout(stepsTimer);
+  steps.classList.remove("out");
+  if (stepsOver) { steps.replaceChildren(); stepsOver = false; }
+  const row = (text, cls = "") => steps.append(Object.assign(document.createElement("li"), {textContent: text, className: cls}));
+  if (step) { for (const li of steps.children) li.className = "ok"; return row(step); }
+  if (!steps.children.length) return;
+  stepsOver = true;
+  if (finished === "done") { for (const li of steps.children) li.className = "ok"; row("Done", "ok end"); }
+  stepsTimer = setTimeout(() => {
+    steps.classList.add("out");
+    stepsTimer = setTimeout(() => { steps.replaceChildren(); steps.classList.remove("out"); }, 600);
+  }, 1600);
 }
-describe.onclick = () => setDescribe(!describing);
-setDescribe(describing);
 function speakHeld() { if (unspoken.length) { speak(unspoken.at(-1)); unspoken = []; } }
 
-// Later segments of one hold continue its request ("go to youtube" ... "and search lofi").
-async function send(text, continues) {
-  const r = await post("/segment", {text, continues});
-  if (r.error) showError(r.error);
+// Later segments of one hold follow on from its request ("go to youtube" ... "and search lofi").
+// Posts go out one at a time: a command sent mid-sentence must arrive before the segment it came from.
+let outbox = Promise.resolve();
+function send(text, continues, path = "/segment") {
+  outbox = outbox.then(() => post(path, {text, continues})).then(r => { if (r.error) showError(r.error); });
 }
 
 let starting = false;
 async function start() {
   if (starting) return;      // a double tap must not open a second mic session
   starting = true;
-  waiting(true);
   speechSynthesis.cancel();  // the user is talking: stop speaking at once
-  stopAudio();
   post("/talk");             // barge in on whatever the agent is doing
   let mic;
   try { mic = await navigator.mediaDevices.getUserMedia({audio: mics.value ? {deviceId: {exact: mics.value}} : true}); }
   catch (err) { starting = false; return showError("Microphone blocked: " + err.message); }
-  if (!held) { starting = false; waiting(false); return mic.getTracks().forEach(t => t.stop()); }  // let go before the mic opened
+  if (!held) { starting = false; return mic.getTracks().forEach(t => t.stop()); }  // let go before the mic opened
   listMics();
   const rec = new MediaRecorder(mic), sock = new WebSocket(`ws://${location.hostname}:__WS_PORT__`);
-  let done = "", sent = false;
+  let done = "", sent = false, hearing = "";
   const ctx = new AudioContext(), an = ctx.createAnalyser(), buf = new Uint8Array(512);
   an.fftSize = buf.length;
   ctx.createMediaStreamSource(mic).connect(an);
-  let level = 0;  // eased toward the mic's loudness, so the orb swells and settles instead of twitching
   (function tick() {
     if (ctx.state === "closed") return talk.style.removeProperty("--lvl");
     an.getByteTimeDomainData(buf);
     let sum = 0; for (const v of buf) sum += (v - 128) ** 2;
-    level += (Math.min(1, Math.sqrt(sum / buf.length) / 30) - level) * .12;
-    talk.style.setProperty("--lvl", level.toFixed(3));
+    talk.style.setProperty("--lvl", Math.min(1, Math.sqrt(sum / buf.length) / 30));
     requestAnimationFrame(tick);
   })();
   stopListening = () => rec.state === "recording" ? rec.stop() : sock.close();
@@ -201,7 +186,6 @@ async function start() {
   rec.onstop = () => { if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
   sock.onopen = () => {
     starting = false;
-    waiting(false);
     rec.start(100);
     document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Listening";
     said.className = ""; said.textContent = ""; live.textContent = "";
@@ -212,9 +196,14 @@ async function start() {
     const words = m.channel.alternatives[0].transcript;
     if (m.is_final && words) done = (done + " " + words).trim();
     if (words) { said.className = ""; said.textContent = done; live.textContent = m.is_final ? "" : words; }
-    heard.classList.toggle("long", (said.textContent + live.textContent).length > 80);
     // Each pause ends a segment: send it now so execution starts while the user keeps talking.
-    if (m.speech_final && done) { send(done, sent); done = ""; sent = true; }
+    if (m.speech_final && done) { send(done, sent); done = ""; sent = true; hearing = ""; }
+    // Mid-sentence, the server acts on finished quick commands ("open a new tab and ..."). Not while Space is
+    // held on this machine's target: the focus those keys need would take the key's repeats with it.
+    else if (held === "pointer" && (done || words)) {
+      const text = m.is_final ? done : (done + " " + words).trim();
+      if (text !== hearing) send(hearing = text, sent, "/partial");
+    }
   };
   sock.onclose = e => {
     stopListening = null;
@@ -226,48 +215,17 @@ async function start() {
     live.textContent = "";
     speakHeld();
     if (done) send(done, sent);
-    waiting(sent || !!done);
     if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
   };
 }
 // Push to talk: listen only while the orb or Space is held, so speech meant for someone else is never acted on.
-let held = false;
-function press() { if (!held && !stopListening) { held = true; start(); } }
+let held = false;  // or how: "pointer" or "key"
+function press(how) { if (!held && !stopListening) { held = how; start(); } }
 function release() { if (held) { held = false; if (stopListening) stopListening(); } }
-talk.onpointerdown = e => { talk.setPointerCapture(e.pointerId); press(); };
+talk.onpointerdown = e => { talk.setPointerCapture(e.pointerId); press("pointer"); };
 talk.onpointerup = talk.onpointercancel = release;
-addEventListener("keydown", e => { if (e.code === "Space" && e.target !== mics) { e.preventDefault(); if (!e.repeat) press(); } });
+addEventListener("keydown", e => { if (e.code === "Space" && e.target !== mics) { e.preventDefault(); if (!e.repeat) press("key"); } });
 addEventListener("keyup", e => { if (e.code === "Space" && e.target !== mics) release(); });
-addEventListener("blur", release);  // the keyup goes to another window
-
-// Live view of the connected device: the agent's capture-card frame (/screen.jpg, relayed by this server).
-// While closed, a probe every 5 s keeps the device icon current (dim when nothing is connected).
-const FRAME_MS = 250;
-let viewing = false;
-const loadFrame = img => new Promise(done => {
-  img.onload = () => done(true); img.onerror = () => done(false);
-  img.src = `/screen.jpg?t=${Date.now()}`;
-});
-function showDevice(ok, img) {
-  device.classList.toggle("none", !ok);
-  if (ok) device.classList.toggle("phone", img.naturalHeight > img.naturalWidth);
-}
-async function streamFrames() {
-  while (viewing) {
-    const ok = await loadFrame(frame);
-    showDevice(ok, frame);
-    view.classList.toggle("empty", !ok);
-    await new Promise(r => setTimeout(r, ok ? FRAME_MS : 1000));
-  }
-}
-function openView(on) {
-  if (viewing === on) return;
-  viewing = on; view.hidden = !on; device.setAttribute("aria-expanded", on);
-  if (on) streamFrames();
-}
-device.onclick = () => openView(true);
-back.onclick = () => openView(false);
-addEventListener("keydown", e => { if (e.key === "Escape") openView(false); });
-const probe = new Image(), checkDevice = async () => { if (!viewing) showDevice(await loadFrame(probe), probe); };
-checkDevice(); setInterval(checkDevice, 5000);
+// The keyup goes to another window. A held pointer stays captured: the agent may focus the target mid-hold.
+addEventListener("blur", () => { if (held === "key") release(); });
 </script>

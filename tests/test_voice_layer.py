@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 from brain.display.server import Command, DisplayServer
 from brain.events import EventBus
-from brain.voice.layer import Agent, filler, narrate, page_server
+from brain.voice.layer import Agent, filler, narrate, page_server, step_label
 
 
 class NarrationTests(unittest.TestCase):
@@ -49,6 +49,20 @@ class NarrationTests(unittest.TestCase):
         self.assertIsNone(narrate({"ev": "plan", "reasoning": "Jev direct action"}))
         self.assertIsNone(narrate({"ev": "action", "action": "click(0.1,0.2)"}))
 
+    def test_each_step_becomes_a_checklist_line(self):
+        def label(reasoning, *actions):
+            return step_label({"ev": "plan", "reasoning": reasoning, "actions": list(actions)})
+
+        self.assertEqual(label("Stage 1/2: The reply window is open", "click(100,200)"), "The reply window is open")
+        self.assertEqual(label("Jev next step: fill", "click(1,2)", "hotkey(CTRL+A)", "type_text('lofi')"),
+                         "Type 'lofi'")
+        self.assertEqual(label("Jev next step: click", "click(1,2)"), "Click")
+        self.assertEqual(label("Open the app launcher", "hotkey(GUI)"), "Open the app launcher")
+        self.assertIsNone(label("Jev verified the completed goal", "done"))  # the run's end, not a step
+        self.assertIsNone(label("Waiting for the app", "skill(wait {})"))
+        self.assertIsNone(step_label({"ev": "action", "action": "click(1,2)"}))
+
+
 
 class AgentLinkTests(unittest.TestCase):
     def setUp(self):
@@ -63,6 +77,39 @@ class AgentLinkTests(unittest.TestCase):
         self.assertEqual(self.commands.get(timeout=2), Command("goal", text="open chrome"))
         self.agent.submit("and search lofi", continues=True)
         self.assertEqual(self.commands.get(timeout=2), Command("goal", text="and search lofi", continues=True))
+
+    def test_a_finished_command_acts_mid_sentence_and_the_rest_follows_on(self):
+        self.agent.busy = True
+        for heard in ("open a new tab", "open a new tab and", "open a new tab and search"):
+            self.agent.hearing(heard, False)
+        self.assertEqual(self.commands.get(timeout=2), Command("goal", text="open a new tab"))
+        self.agent.heard("Open a new tab, and search Genghis Khan.", False)
+        self.assertEqual(self.commands.get(timeout=2), Command("goal", text="search Genghis Khan.", after=True))
+        self.stop.assert_not_called()  # the tab it opened is kept
+        self.assertTrue(self.commands.empty())
+
+    def test_a_segment_that_was_all_commands_sends_nothing_more(self):
+        self.agent.hearing("press ctrl c then press", False)
+        self.agent.heard("Press ctrl c.", False)
+        self.assertEqual(self.commands.get(timeout=2), Command("goal", text="press ctrl c"))
+        self.agent.hearing("press escape and", True)  # a later segment's command follows on
+        self.agent.heard("press escape and", True)
+        self.assertEqual(self.commands.get(timeout=2), Command("goal", text="press escape", after=True))
+        self.assertTrue(self.commands.empty())
+
+    def test_later_speech_follows_on_unless_it_corrects(self):
+        self.agent.busy = True
+        self.agent.heard("and then search lofi", True)
+        self.assertEqual(self.commands.get(timeout=2), Command("goal", text="search lofi", after=True))
+        self.stop.assert_not_called()
+        self.agent.heard("no, go back", True)
+        self.stop.assert_called_once_with("barge-in")
+        self.assertEqual(self.commands.get(timeout=2), Command("goal", text="no, go back", continues=True))
+
+    def test_model_work_waits_for_the_pause(self):
+        for heard in ("click the red", "click the red button and", "scroll down and", "press control and"):
+            self.agent.hearing(heard, False)
+        self.assertTrue(self.commands.empty())
 
     def test_talking_interrupts_only_running_work(self):
         self.agent.interrupt()
@@ -81,8 +128,11 @@ class AgentLinkTests(unittest.TestCase):
         while not self.agent.busy and time.monotonic() < deadline:
             time.sleep(0.02)
         self.assertTrue(self.agent.busy)
+        self.bus.publish("plan", step=1, reasoning="Jev next step: enter", actions=["hotkey(ENTER)"])
         self.bus.publish("result", status="ask_user", message="This can't be undone. Should I go ahead?")
-        self.assertEqual(lines.get(timeout=2), {"say": "This can't be undone. Should I go ahead?"})
+        got = [lines.get(timeout=2) for _ in range(6)]
+        self.assertEqual(got, [{"busy": False}, {"busy": True}, {"step": "Press Enter"}, {"finished": "ask_user"},
+                               {"busy": False}, {"say": "This can't be undone. Should I go ahead?"}])
         self.assertFalse(self.agent.busy)
 
     def test_describe_mode_describes_a_finished_request(self):
@@ -159,15 +209,19 @@ class PageServerTests(unittest.TestCase):
 
     def test_segment_is_forwarded(self):
         self.assertEqual(self.post("/segment", {"text": "actually go back"}), 200)
-        self.agent.submit.assert_called_once_with("actually go back", False)
+        self.agent.heard.assert_called_once_with("actually go back", False)
 
     def test_a_later_segment_is_forwarded_as_a_continuation(self):
         self.assertEqual(self.post("/segment", {"text": "and search lofi", "continues": True}), 200)
-        self.agent.submit.assert_called_once_with("and search lofi", True)
+        self.agent.heard.assert_called_once_with("and search lofi", True)
+
+    def test_speech_still_coming_in_is_forwarded(self):
+        self.assertEqual(self.post("/partial", {"text": "open a new tab and"}), 200)
+        self.agent.hearing.assert_called_once_with("open a new tab and", False)
 
     def test_talk_barges_in(self):
         self.assertEqual(self.post("/talk", {}), 200)
-        self.agent.interrupt.assert_called_once()
+        self.agent.listen.assert_called_once()
 
     def test_screen_is_relayed(self):
         self.agent.screen.return_value = b"jpeg"
@@ -181,7 +235,9 @@ class PageServerTests(unittest.TestCase):
     def test_cross_site_and_empty_requests_are_refused(self):
         self.assertEqual(self.post("/segment", {"text": "send it"}, origin=False), 403)
         self.assertEqual(self.post("/segment", {"text": ""}), 400)
-        self.agent.submit.assert_not_called()
+        self.assertEqual(self.post("/partial", {"text": "x" * 501}), 400)
+        self.agent.heard.assert_not_called()
+        self.agent.hearing.assert_not_called()
 
 
 if __name__ == "__main__":
