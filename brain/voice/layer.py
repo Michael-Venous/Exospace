@@ -31,6 +31,7 @@ import queue
 import threading
 import time
 import urllib.request
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from typing import Any
@@ -105,7 +106,7 @@ class Agent:
         try:
             with urllib.request.urlopen(self.base + "/screen.jpg", timeout=2) as response:
                 return response.read() or None  # 204: no frame yet
-        except OSError:
+        except (OSError, HTTPException):  # an agent that dies mid-frame raises IncompleteRead
             return None
 
     def interrupt(self) -> None:

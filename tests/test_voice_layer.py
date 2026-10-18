@@ -7,6 +7,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import Mock
 
 from brain.display.server import Command, DisplayServer
@@ -110,6 +111,23 @@ class AgentLinkTests(unittest.TestCase):
         self.bus.set_frame(b"jpeg")
         self.assertEqual(self.agent.screen(), b"jpeg")
         self.assertIsNone(Agent("http://127.0.0.1:9").screen())
+
+    def test_screen_is_no_frame_when_the_agent_dies_mid_frame(self):
+        class Dying(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"cut off")
+
+            def log_message(self, format, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Dying)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.assertIsNone(Agent(f"http://127.0.0.1:{server.server_address[1]}").screen())
 
 
 class PageServerTests(unittest.TestCase):
