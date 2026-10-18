@@ -335,7 +335,8 @@ class JevFlashExecutor:
                                           request=ctx.goal,proposal=stage['actions'])
             self.cancel.check()
             if check_window:
-                small=values.pop('small_window',0.0)>=self.jev.min_presence
+                # Small windows scored 0.83-0.87 (the presence gate missed half), maximized ones 0.02-0.04.
+                small=values.pop('small_window',0.0)>=ZOOM_GATE
                 button={'maximize':targets.pop('maximize')}
                 point={'maximize':points.pop('maximize',None)}
                 # Window buttons sit ~13 px apart: one zoom aimed between maximize and minimize, a
