@@ -168,21 +168,24 @@ class Controller:
                 return elapsed
             self.cancel.sleep(cfg.poll_s)
 
-    def wait_for_change(self, timeout_s: float | None = None, since: np.ndarray | None = None) -> None:
+    def wait_for_change(self, timeout_s: float | None = None, since: np.ndarray | None = None) -> bool:
         """Block until the screen differs from `since` (a thumbnail; default: now), as a load,
-        restart or app start progresses, or `timeout_s` (default WAIT_S) passes."""
+        restart or app start progresses, or `timeout_s` (default WAIT_S) passes. True if it changed."""
         if since is None:
             frame = self.capture.grab()
             if frame is None:
-                return
+                return False
             since = thumbnail(frame)
         before = since
         deadline = time.monotonic() + (WAIT_S if timeout_s is None else timeout_s)
         while time.monotonic() < deadline:
             self.cancel.sleep(self.settle.poll_s)
             frame = self.capture.grab()
-            if frame is None or frame_change(before, thumbnail(frame)) >= self.settle.threshold:
-                return
+            if frame is None:
+                return False
+            if frame_change(before, thumbnail(frame)) >= self.settle.threshold:
+                return True
+        return False
 
     def _send(self, cmd: dict[str, object]) -> None:
         self.cancel.check()

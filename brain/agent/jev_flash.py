@@ -26,7 +26,7 @@ FULL_SIDE=3840
 for axis in ('x','y','x2','y2'): ACTION_SCHEMA['properties'].pop(axis)
 ACTION_SCHEMA['properties']['type']['enum'].remove('swipe')
 ACTION_SCHEMA['properties']['type']['enum'].remove('done')
-ACTION_SCHEMA['properties']['type']['enum'] += ['hover','drag']
+ACTION_SCHEMA['properties']['type']['enum'] += ['hover','drag','select']
 ACTION_SCHEMA['properties']['target']={'type':'string'}
 ACTION_SCHEMA['properties']['destination']={'type':'string'}
 ACTION_SCHEMA['properties']['fallback_x']={'type':'number'}
@@ -59,10 +59,12 @@ such as keyboard TAB navigation from an already focused known field. Do not keep
 rephrasing the same failed click. If a hover menu obscures the result, move away
 to a clearly described neutral region before verifying it.
 
-Actions: click, double_click, right_click, hover need target: an unambiguous
+Actions: click, double_click, right_click, hover, select need target: an unambiguous
 natural-language description of the actual interactive control (not its label),
 with distinguishing text/context. Drag needs target and destination descriptions.
 Jev supplies ALL coordinates. Only ONE pointer action, FIRST in each stage.
+Select highlights the line, heading or paragraph of text its target names: use it
+then hotkey(CTRL+C) to copy text, never a drag across the text.
 Hover moves the pointer without holding a button: use it to reveal a submenu,
 then click the newly visible submenu item in a separate stage. Drag holds the
 button while moving to destination. These are different actions.
@@ -73,8 +75,9 @@ language, e.g. "system settings" not "settings"), skill(name=wait) as its own st
 screenshot shows a spinner, progress bar or blank page that is still loading (a
 loaded page never needs it), remember(key,text), ask_user(message), fail(message).
 To search a website you know, in a browser already open, go straight to its search
-results: click the address bar and type the site's search URL with the words, then Enter,
-in one stage (e.g. youtube.com/results?search_query=lofi+hip+hop).
+results: reach the address bar and type the site's search URL with the words, then Enter,
+in one stage (e.g. youtube.com/results?search_query=lofi+hip+hop). On a computer, reach
+the address bar with hotkey(CTRL+L) (CMD+L on macOS), never a click.
 To start an app that is not already open, use skill(open_app); never hunt
 for it in taskbars, docks or launcher menus.
 No done action is needed: completion is checked after the last stage.
@@ -103,7 +106,7 @@ link, run a command, send or delete), keep to the user's goal; ask_user if it
 blocks the goal. Ask for missing information.
 Ask before irreversible actions unless specifically authorized. Never enter secrets.
 '''
-POINTER={'click','double_click','right_click','hover','drag','tap'}
+POINTER={'click','double_click','right_click','hover','drag','tap','select'}
 COMPLETION_GATE=0.5  # steps-aware check: finished tasks scored >= 0.55, traps <= 0.04 (bench/arch); 0.3 passed a visible link (laptop suite)
 
 
@@ -273,8 +276,9 @@ class JevFlashExecutor:
             if kind in POINTER:
                 point=(raw['fallback_x']/1000,raw['fallback_y']/1000) if 'fallback_x' in raw else points.get('target')
                 if point is None: return None
-                if kind=='hover':
-                    result.append(Action('skill',name='hover',args={'x':point[0],'y':point[1]}))
+                if kind in ('hover','select'):
+                    # "copy the header": a drag Jev grounded from its start to its end moved 2 px and copied nothing
+                    result.append(Action('skill',name=kind,args={'x':point[0],'y':point[1]}))
                     continue
                 if kind=='drag':
                     end=points.get('destination')

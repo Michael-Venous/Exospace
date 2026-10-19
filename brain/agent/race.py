@@ -47,9 +47,10 @@ class RaceExecutor:
     image_side = JevFlashExecutor.image_side
 
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
-        # Speed first: Jev's steps only, a step Jev can't take ends the request. Each segment goes straight to
-        # Jev's step: triage's launch opened "youtube" in the launcher (no such app) and its hover checks cost a
-        # step each.
+        # Speed first: Jev's steps only, a step Jev can't take ends the request (Flash takes one step that needs text
+        # written or has a target Jev can't make out).
+        # Each segment goes straight to Jev's step: triage's launch opened "youtube" in the launcher (no such app)
+        # and its hover checks cost a step each.
         self.jev_steps = cfg.executor == "jev"
         if self.jev_steps:
             self.planner = JevFirstPlanner(cfg, cancel, approved_run=self.approved_run, handoff=False)

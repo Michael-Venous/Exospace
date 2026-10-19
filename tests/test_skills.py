@@ -43,6 +43,14 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(self.controller.method_calls[calls.index("wait_for_change")],
                          unittest.mock.call.wait_for_change(2.0, since=unittest.mock.ANY))
 
+    def test_open_app_types_nothing_when_the_launcher_never_shows(self):
+        self.controller.capture.grab.return_value = np.zeros((10, 10, 3), np.uint8)
+        self.controller.wait_for_change.return_value = False
+        with self.assertRaises(ActionError):
+            run_skill("open_app", {"name": "Notes"}, self.profile("linux"), self.controller)
+        self.controller.type_text.assert_not_called()
+        self.controller.hotkey.assert_called_once_with(["GUI"])
+
     def test_open_app_waits_for_the_window_not_just_the_launcher(self):
         self.controller.capture.grab.return_value = np.zeros((10, 10, 3), np.uint8)
         run_skill("open_app", {"name": "Notes"}, self.profile("macos"), self.controller)
@@ -56,7 +64,7 @@ class SkillTests(unittest.TestCase):
     def test_select_triple_clicks_with_no_settle_between(self):
         run_skill("select", {"x": .4, "y": .2}, self.profile("linux"), self.controller)
         self.assertEqual([(c[0], c[1][0].brief()) for c in self.controller.method_calls],
-                         [("execute", "double_click(400,200)"), ("execute", "click(400,200)")])
+                         [("execute", "click(400,200)")] * 3)
         with self.assertRaises(ActionError):
             run_skill("select", {"x": 2, "y": .2}, self.profile("linux"), self.controller)
 

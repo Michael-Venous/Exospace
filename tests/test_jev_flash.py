@@ -85,6 +85,11 @@ class SemanticTests(PlannerCase):
         self.assertEqual(first.actions,second.actions)
         self.executor.model.generate.assert_called_once()
 
+    def test_select_is_the_select_skill(self):
+        self.plan['steps']=[stage('Genghis Khan heading','heading highlighted','select')]
+        action=self.executor.next_actions(b'image',self.ctx).actions[0]
+        self.assertEqual((action.type,action.name,action.args),('skill','select',{'x':.25,'y':.75}))
+
     def test_hover_is_separate_from_submenu_click(self):
         self.plan['steps']=[stage('Tools','submenu visible','hover'),stage('Export')]
         result=self.executor.next_actions(b'image',self.ctx)

@@ -21,15 +21,17 @@ class JevOnlyTests(unittest.TestCase):
     def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
-             target=BOX, run="r", drawing=.05, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95):
+             target=BOX, run="r", drawing=.05, browser_front=.05, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
+             lookup=.05):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
                 "app": {"box": dict(zip(("left", "right", "top", "bottom"), app))}, "site": {"noul": site},
-                "submit": {"noul": submit}, "browser_named": {"noul": .05}, "left": {"noul": left},
+                "submit": {"noul": submit}, "browser_named": {"noul": .05}, "browser_front": {"noul": browser_front}, "left": {"noul": left},
                 "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
-                "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed}}
+                "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
+                "lookup": {"noul": lookup}}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
         profile = DeviceProfile(os, Rect(0, 0, 400, 300), "mouse", 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
@@ -44,6 +46,12 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("open calculator", left=.1).type, "done")
         self.assertEqual(self.step("open calculator", next="stuck", complete=.9).type, "done")  # nothing left to do
 
+    def test_a_line_already_done_when_reached_takes_no_step(self):
+        self.assertEqual(self.step("scroll down to the wikipedia link", complete=.88).type, "done")
+        self.assertEqual(self.step("close google", complete=.46, next="close_tab", run="s").brief(), "hotkey(CTRL+W)")
+        clicked = self.step("click the link", complete=.88, history=["click(300,300)"], run="t", left=.9)
+        self.assertNotEqual(clicked.type, "done")  # after its own step only the line-done check ends it
+
     def test_unfinished_goals_are_not_done(self):
         self.assertEqual(self.step("go to wikipedia", complete=.63).type, "click")
         typed = self.plan("search for cats", left=.1, next="enter", history=["type_text('cats')"])
@@ -52,6 +60,7 @@ class JevOnlyTests(unittest.TestCase):
 
     def test_text_typed_into_nothing_is_typed_again_into_the_field_clicked_first(self):
         typed = ["type_text('horses')", "hotkey(ENTER)", "skill(wait {'s': 1.0})"]
+        self.planner.run_id, self.planner.typed = "r", typed[0]  # Jev typed it
         again = self.plan("search for horses", left=.1, next="stuck", submit=.9, typed=.01, history=typed,
                           looks=((.4, .1), (.4, .1)))  # though Jev sees the line done
         self.assertEqual([a.brief() for a in again], ["click(400,100)", "type_text('horses')", "hotkey(ENTER)"])
@@ -59,6 +68,10 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("search for horses", left=.1, typed=.6, history=typed, run="s").type, "done")
         address = ["hotkey(CTRL+L)", "type_text('gmail')", "hotkey(CTRL+ENTER)"]  # the page it opened replaced it
         self.assertEqual(self.step("go to gmail", left=.1, typed=.01, history=address, run="s").type, "done")
+        self.planner.jev.evaluate.reset_mock()
+        flash = ["click(400,30)", "type_text('docs.new\\n')"]  # Flash's typing: it checked the field itself
+        self.assertEqual(self.step("open a doc", left=.1, typed=.01, history=flash, run="t").type, "done")
+        self.assertFalse(any("typed" in c.args[1] for c in self.planner.jev.evaluate.call_args_list))
 
     def test_a_done_line_hands_the_screen_to_the_next_one_and_a_continued_request_skips_it(self):
         goal = "open up discord\nclose discord"
@@ -70,6 +83,13 @@ class JevOnlyTests(unittest.TestCase):
         more = goal + "\nopen a terminal"
         launch = self.step(more, run="s", fits=.1, app_name=str(spans("open a terminal").index("terminal")))
         self.assertEqual(launch.brief(), "skill(open_app {'name': 'terminal'})")  # not discord's lines again
+
+    def test_a_failed_run_continued_in_a_new_run_starts_at_the_line_it_failed_on(self):
+        goal = "open up google\nclose google\nsearch up genghis khan"
+        self.plan(goal, left=.1, next="close_tab")
+        self.assertEqual(self.step(goal, left=.1, complete=.9, question=.9, history=["hotkey(CTRL+W)"]).type, "fail")
+        self.plan(goal + "\nUser correction: scroll down", run="s")  # its history starts empty
+        self.assertEqual(self.planner.line, 2)  # not "close google" again
 
     def test_question_sets_on_one_image_in_one_state_share_a_call(self):
         self.planner.jev.evaluate.side_effect = lambda image, questions, **_: ({k: image for k in questions}, 1, 2)
@@ -87,9 +107,17 @@ class JevOnlyTests(unittest.TestCase):
         action = self.step("open calculator, then click 7")
         self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))
 
+    def test_the_current_line_is_the_one_jev_is_on(self):
+        self.step("open up youtube\nUser correction: search for horses", left=.1, next="click", present=.4)
+        self.assertEqual(self.planner.current_line, "search for horses")
+        ctx = StepContext(self.planner.goal, DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1), Mock(), [], 2, 10,
+                          run_id="r")
+        self.assertEqual(self.planner.line_done(b"img", ctx).actions[0].type, "done")  # Flash finished its last line
+
     def test_unclear_target_fails_instead_of_guessing(self):
         self.assertEqual(self.step("click the other one", present=.4).type, "fail")
         self.assertEqual(self.step("click the other one", looks=(None, None)).type, "fail")  # lost when zoomed
+        self.assertTrue(self.last.needs_planner)  # Flash takes that one step
 
     def test_a_target_not_visible_after_a_step_is_looked_for_again_twice(self):
         goal = "search youtube for horses"
@@ -137,9 +165,22 @@ class JevOnlyTests(unittest.TestCase):
                 self.assertNotEqual(self.step(goal, target=BIG, run=str(later), **later).type, "done")
             self.assertEqual(marked.call_count, 1)
 
+    def test_a_click_ends_its_line_unless_jev_is_fairly_sure_something_is_left(self):
+        goal = "click the wikipedia link"
+        with patch("brain.agent.jev_only.mark", return_value=b"marked"):
+            click = self.step(goal).brief()
+            self.assertEqual(self.step(goal, history=[click], left=.55).type, "done")
+            self.step(goal, run="s")
+            self.assertNotEqual(self.step(goal, history=[click], left=.85, run="s").type, "done")
+            menu = self.step("copy the title", next="right_click", run="r").brief()
+            self.assertNotEqual(self.step("copy the title", history=[menu], left=.55, run="r").type, "done")
+        self.assertNotEqual(self.step(goal, history=[click], left=.55, run="t").type, "done")  # no click of its own
+
     def test_a_big_target_is_clicked_without_a_closer_look(self):
         action = self.step("click the third video", target=BIG, looks=(STRAY, STRAY))
         self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))
+        unsure = self.step("copy the header", next="copy", target=BIG, present=.54, looks=(STRAY, STRAY))
+        self.assertEqual(unsure.type, "fail")  # looked at closer: a stray look is outside the box, so Flash takes it
 
     def test_typed_text_is_a_run_of_the_goals_words(self):
         goal = 'type "hello world", then press enter'
@@ -147,6 +188,7 @@ class JevOnlyTests(unittest.TestCase):
                            history=["click(300,300)"])
         self.assertEqual((action.type, action.text), ("type_text", "hello world"))
         self.assertEqual(self.step("write a poem", next="type").type, "fail")
+        self.assertTrue(self.last.needs_planner)  # Flash writes it
         self.assertEqual(self.step("type hi", next="type", text="99").type, "fail")
 
     def test_typing_not_right_after_a_click_clicks_the_field_first(self):
@@ -172,6 +214,7 @@ class JevOnlyTests(unittest.TestCase):
     def test_a_question_or_nonsense_is_left_to_flash(self):
         self.assertEqual(self.step("what is this page about?", complete=.9, question=.9).type, "fail")
         self.assertEqual(self.step("asdkjh qwe zxcv", fits=.1, next="stuck").type, "fail")  # no launcher
+        self.assertEqual(self.step("search up genghis khan", question=.6, run="s").type, "click")  # a step to take
 
     def test_the_same_input_is_never_repeated_right_after_it_ran(self):
         self.assertEqual(self.step("open calculator, then click 7", history=["click(300,300)"]).type, "fail")
@@ -196,6 +239,13 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual([a.brief() for a in pasted], ["hotkey(CTRL+V)"])
         unfocused = self.plan("paste it in", next="paste", focused=.2, target=BIG, run="t")
         self.assertEqual([a.brief() for a in unfocused], ["click(300,300)", "hotkey(CTRL+V)"])
+        # The clipboard doesn't show: the line isn't done until its copy or paste is taken
+        self.assertEqual(self.step("copy the header", next="copy", left=.1, history=["click(53,179)"], run="v").type,
+                         "skill")
+        self.assertEqual(self.step("copy the header", next="paste", left=.1, history=["hotkey(Control_L+c)"],
+                                   run="w").type, "done")
+        opening = self.step("paste it in", next="paste", focused=.2, history=["click(500,300)"], run="u")
+        self.assertEqual(opening.brief(), "skill(wait {'s': 1.0})")  # the click's document may still be opening
 
     def test_a_scroll_first_moves_the_pointer_over_what_it_scrolls(self):
         actions = self.plan("scroll down to the comments", next="scroll_down")
@@ -205,6 +255,7 @@ class JevOnlyTests(unittest.TestCase):
 
     def test_text_the_request_does_not_give_word_for_word_is_left_to_flash(self):
         self.assertEqual(self.step("work out 12 times 9", composed=.9, next="type").type, "fail")
+        self.assertTrue(self.last.needs_planner)  # text to write goes to Flash even without hand-off
         self.assertEqual(self.step("open camera", composed=.9).type, "click")  # a tap needs no text
 
     def test_reasoning_fails_over(self):
@@ -308,6 +359,7 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step(goal, **site).brief(), "skill(open_app {'name': 'web browser'})")  # not 'youtube'
         opened = ["skill(open_app {'name': 'web browser'})", "hotkey(GUI)"]
         self.assertEqual(self.step(goal, **site, launcher=.9, history=opened).brief(), "type_text('web browser')")
+        self.assertEqual(self.step(goal, **site, browser_front=.99, run="s").type, "click")  # in the browser in front
 
     def test_each_line_routes_again(self):
         first = "open up discord"
@@ -322,6 +374,7 @@ class JevOnlyTests(unittest.TestCase):
         closed = ["skill(open_app {'name': 'chrome'})", "hotkey(CTRL+W)"]
         self.assertEqual(self.step(goal, left=.1, fits=.1, window=.1, next="new_tab", history=closed).brief(),
                          "skill(open_app {'name': 'chrome'})")
+        self.setUp()  # a planner that hasn't seen the first line done
         self.assertEqual(self.step(goal, left=.1, fits=.1, next="new_tab", history=closed, run="s").brief(),
                          "hotkey(CTRL+T)")
 
@@ -339,6 +392,13 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual([a.brief() for a in actions], ["hotkey(CTRL+L)", "type_text('google docs')", "hotkey(ENTER)"])
         self.assertTrue(self.last.blind)  # the address bar takes it whatever the page draws meanwhile
         self.assertEqual(self.step("go to email", next="address").type, "click")  # no words: the page's link
+        goal = "open up a google doc template"  # describes a page: its words, typed or clicked, would search the web
+        for text in (str(spans(goal).index("google doc template")), "none"):
+            self.assertEqual(self.step(goal, next="address", text=text, lookup=.65).type, "fail")
+            self.assertTrue(self.last.needs_planner)  # Flash finds the page
+        goal = "search up genghis khan"  # a search the line asks for is typed there
+        self.assertEqual(self.plan(goal, next="address", text=str(spans(goal).index("genghis khan")), lookup=.6,
+                                   submit=.9)[-1].brief(), "hotkey(ENTER)")
 
     def test_a_site_named_by_its_dotcom_word_is_opened_without_a_search(self):
         goal = "open up youtube"
@@ -404,6 +464,9 @@ class JevOnlyTests(unittest.TestCase):
             self.assertEqual(self.step("search for horses", history=opened, **still).brief(), "skill(wait {'s': 1.0})")
         self.assertTrue(asked())
         self.assertEqual(self.step("search for horses", history=opened).type, "click")
+        self.assertEqual(self.step("search for horses", drawing=.9, history=opened + opened[1:]).type, "click")
+        self.assertEqual(self.step("close google", next="close_tab", drawing=.9, history=opened).brief(),
+                         "hotkey(CTRL+W)")  # a key needs nothing drawn
         # after other steps the question isn't asked, and a page still loading is no reason to wait
         evaluate.reset_mock()
         self.assertEqual(self.step("search for horses", drawing=.9, loading=.9, history=["click(1,1)"]).type, "click")
@@ -484,6 +547,26 @@ class JevFirstTests(unittest.TestCase):
         for ctx in (self.ctx("a"), note):
             self.assertEqual(self.planner.next_actions(b"img", ctx).actions[0].type, "fail")
         self.planner.flash.next_actions.assert_not_called()
+
+    def test_without_handoff_text_jev_cant_write_still_goes_to_flash(self):
+        self.planner.handoff = False
+        self.planner.steps.next_actions.return_value = Plan(FAILED, [Action("fail", reason="composed")], [],
+                                                            needs_planner=True)
+        self.planner.steps.current_line = "work out 12 times 9"
+        self.assertIn("[Jev handed off: composed]", self.planner.next_actions(b"img", self.ctx("a")).reasoning)
+        self.assertEqual(self.planner.flash.next_actions.call_args.args[1].goal, "work out 12 times 9")  # its line only
+        self.planner.next_actions(b"img", self.ctx("a"))
+        self.assertEqual(self.planner.steps.next_actions.call_count, 2)  # Jev takes the next step again
+        self.planner.flash.next_actions.return_value = Plan("verified", [Action("done", summary="Done.")], [])
+        self.planner.steps.line_done.return_value = Plan("Jev next step: click", [Action("click", x=.1, y=.1)], [])
+        self.assertEqual(self.planner.next_actions(b"img", self.ctx("a")).actions[0].type, "click")
+        self.assertEqual(self.planner.steps.line_done.call_args.args[1].goal, "summarize this page")  # its line done
+        failed = Plan(FAILED, [Action("fail", reason="no sure spot")], [], needs_planner=True)
+        self.planner.steps.line_done.return_value, self.planner.steps.current_line = failed, "paste it in"
+        self.planner.flash.next_actions.side_effect = [self.planner.flash.next_actions.return_value,
+                                                       Plan("Stage 1/1: pasted", [Action("hotkey", keys=("V",))], [])]
+        self.assertEqual(self.planner.next_actions(b"img", self.ctx("a")).actions[0].brief(), "hotkey(V)")
+        self.assertEqual(self.planner.flash.next_actions.call_args.args[1].goal, "paste it in")  # the next line's step
 
     def test_a_recovery_note_hands_the_run_to_flash(self):
         ctx = StepContext("open calculadora", DeviceProfile("linux", Rect(0, 0, 4, 3), "mouse", 1), Mock(), [], 2,

@@ -1,5 +1,5 @@
 """Explicit executor selection. Default `race`: Jev triage racing the Jev + language-model planner,
-with or without ZAI_API_KEY; `jev` is race with Jev's steps only (no Flash or deep hand-off, fastest);
+with or without ZAI_API_KEY; `jev` is race with Jev's steps only (Flash only for text Jev can't write, no deep hand-off, fastest);
 `direct` is one model call per step."""
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.race import RaceExecutor

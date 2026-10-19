@@ -58,10 +58,11 @@ def run_skill(
         if name == "hover":
             controller.hover(x, y)
         else:
-            # A triple click selects the line or paragraph under the pointer. The Pico clicks at most twice per
-            # command, and a settle between two pointer actions would make them separate gestures.
-            controller.execute(Action("double_click", x=x, y=y), profile)
-            controller.execute(Action("click", x=x, y=y), profile)
+            # A triple click selects the line or paragraph under the pointer, with no settle between its clicks.
+            # Three single clicks: after a double click command, Chrome took the third as a new gesture and kept
+            # one word ("Genghis" of the title "Genghis Khan", 2026-10-19).
+            for _ in range(3):
+                controller.execute(Action("click", x=x, y=y), profile)
         return
     if name != "open_app":
         raise SkillUnavailable(f"Unknown skill: {name!r}")
@@ -83,8 +84,10 @@ def run_skill(
     controller.hotkey(OPEN_APP_KEYS[profile.os])
     # Type only once the launcher shows: through the capture card the screen looked "settled" before the
     # launcher appeared, the name went nowhere, and Enter opened the launcher's first entry (an emulator).
-    if start is not None:
-        controller.wait_for_change(LAUNCHER_S, since=start)
+    # When it never shows, typing goes wherever the focus is: a terminal off the captured screen ran
+    # "web browser" (2026-10-19).
+    if start is not None and not controller.wait_for_change(LAUNCHER_S, since=start):
+        raise ActionError("the launcher didn't open, so nothing was typed")
     controller.wait_settled()
     if profile.os in SEARCH_KEYS:
         controller.hotkey(SEARCH_KEYS[profile.os])

@@ -36,7 +36,9 @@ NEXT_CRITERIA = {
              "field with nothing to type into it.",
     "fill": "Click an input field and type into it text that the goal gives word for word.",
     "double_click": "Open an icon on a computer desktop, or a file or folder in a desktop file manager.",
-    "right_click": "Open the context menu of a visible item.",
+    # "copy the title" on a Wikipedia article chose right_click 0.38-0.51 to copy 0.26-0.31 (6/6), copy 0.37-0.45
+    # once told (6/6); "right click the title" stayed right_click 0.70-0.74 (2026-10-19).
+    "right_click": "Open the context menu of a visible item. Text to copy is copied with copy, not from this menu.",
     "type": "Type text that the goal gives word for word into the input field that is focused right now.",
     "enter": "Press Enter to submit or confirm the text that was just typed.",
     "address": "Go to a website or web page that the goal names by its name or address, by typing it into the "
@@ -72,6 +74,11 @@ COMMIT = ("Once the text is typed into the input the next step of the `goal` typ
 # shortcut: a site off .com reached by its bare name (bbc.co.uk) goes through the search engine; ask for its domain
 # if those matter.
 DOTCOM = "Does the `goal` name a website by the word that comes before .com in its web address, such as youtube for youtube.com?"
+# "open up a google doc template" typed its words in the address bar, or clicked them from its history, and searched
+# the web into a third-party template site (5 runs). Template lines scored 0.64-0.65, "open a resume template" 0.94;
+# "go to email", gmail, google docs, wikipedia and youtube 0.01-0.08 (3 tries each, 2026-10-19).
+LOOKUP = ("Does the `goal` ask for a particular kind of page, document or template that must be looked for on the web, "
+          "rather than going to a place or service it names?")
 DOTCOM_OS = ("windows", "linux", "chromeos")  # a Mac's browsers differ in the key for it
 # A click on a box the line then types into is one step with the typing: Jev chose a click, not "fill", on YouTube's
 # search box (6/6) and a type took another look (~1.5 s on the Pi). Inputs scored 0.85-0.98 on 6 frames (3 tries
@@ -85,6 +92,10 @@ INPUT = ("Is the one control that the next step of the `goal` acts on an input t
 TYPED = ("Does `screen` show the text {text} where it was typed, such as in an input field, a cell, a document or a "
          "search query, rather than only in content the page already showed?")
 MISSING = 0.2  # below this the text typed isn't there: it is typed again, so only a clear miss counts
+# A line already true when it is reached takes no step: "scroll down to the wiki pedia link" with the link in view
+# scored 0.86-0.90 complete and the link was clicked, doing the next line's step. On 12 frames (3 tries each) lines
+# already done scored 0.86-0.98 there, all but a click credited to the line before; lines not yet done 0.46 at most.
+ALREADY = 0.7
 # Jev chose "type" on Google Docs' home page, before any document was open (0.34 here; 0.85 in a blank document).
 FOCUSED = ("Would text typed right now go into the input field, cell or document where the next step of the `goal` "
            "types it?")
@@ -106,6 +117,10 @@ SITE = ("Does the next step of the `goal` go to a website or web service, rather
         "installed on the device?")
 # Asked apart from SITE: "open up chrome, ..., make a new tab" with Chrome closed scored 0.76-0.81 as a website.
 BROWSER_NAMED = "Does the `goal` name a specific web browser by its name?"
+# A website's line fits the browser in front, whatever page it shows: "copy the header" on a Wikipedia article fitted
+# it 0.45, and "open up a google doc template" 0.10, and each opened another browser (2026-10-19). Browsers in front
+# scored 0.99-1.00 on 5 frames, Discord, LibreOffice and the desktop 0.01-0.03 on 4 (3 tries each).
+BROWSER_FRONT = "Is the window in front in `screen` a web browser, with tabs and an address bar?"
 # The kind of app a website opens in, typed into the launcher's search: a site's own name found nothing there
 # ("youtube" on Cinnamon), and the panel's browser icon went unrecognised (0.28-0.39).
 BROWSER = "web browser"
@@ -133,7 +148,9 @@ COMPOSED = ("Does what remains of the `goal`, after the `executed_steps`, need t
 OPENER = "When what it works in isn't open yet, that control is the one that creates or opens it."
 STEP_CONTROL = "the spot that the next step of the `goal`, after the `executed_steps`, clicks"
 # A box this big holds the spot it was drawn on without a closer look, and a zoom loses where it sits among
-# its neighbours: on "click the third video" zooms chose the second or fourth of YouTube's Shorts row.
+# its neighbours: on "click the third video" zooms chose the second or fourth of YouTube's Shorts row. Only when
+# Jev is sure of it: "copy the header" boxed four rows of Wikipedia's citations 0.54 sure, and the select at its
+# centre clicked a citation's link (2026-10-19).
 BIG_TARGET = 0.1  # of the screen's width and height
 # A zoom shows the whole target with this margin: one cutting YouTube's search box to its last letter left Jev
 # 0.26 sure it was there (4/4), one holding all of it 0.75.
@@ -158,7 +175,12 @@ LINE_LEFT = ("The `goal` lists requests one per line, and those before its last 
 LINE_LEFT_CLICKED = ("The `goal` lists requests one per line, and those before its last line are already done. "
                      "`screen` is the device just before the last of the `executed_steps`, a click on the red circle. "
                      "Once that click is done, is anything still left to do for the request on its last line?")
+# A click's line is done unless Jev is fairly sure something is left: lines a click finished scored 0.11-0.52 left on
+# the surer of the two looks (21 steps), lines it didn't 0.83-0.97 (6). At 0.52 a Google result's Wikipedia link read
+# as not done, and the article's logo was clicked as "the wikipedia link" (2026-10-19).
+CLICK_DONE = 0.3
 CLICKS = ("click", "double_click", "right_click")
+CLIPBOARD = {"copy": "C", "paste": "V"}  # the key each clipboard step presses with Ctrl (Cmd on macOS)
 # The agent joins words said mid-run on as "User correction: ..." lines (loop.py, app.py). Jev read "add hello to b1"
 # so marked as a fix to "open up libre office" and waited on its Start Center (3/3); unmarked it clicked Calc (2/2).
 CORRECTION = "User correction: "
@@ -177,10 +199,22 @@ class JevOnlyPlanner:
         self.prev = 0  # where the line before it started: Jev sees its steps too ("delete hello" after typing it)
         self.routed = False  # Jev has seen the app in front can take the line's next step
         self.seen = False  # Jev planned the line's next step at an earlier step: it wasn't done then
-        self.finished = ""  # the last goal Jev saw done: a request continuing it starts at its new lines
+        # The goal's lines Jev saw done: a request continuing it starts at its next line. A failed run's too: its
+        # restart with the words said since redid "close google" after "open up google again".
+        self.finished = ""
         self.goal = ""  # the goal of the last step: a run whose goal goes on from it continues that request
         self.opened: str | None = None  # the app the request last opened, also in an earlier run it continues
         self.clicked: tuple[bytes, tuple[float, float], str] | None = None  # the last plan's click: screen, point, step
+        # Jev's last typing, as its step reads: Flash's went where its own focus check saw a field. Flash clicked
+        # the address bar and typed "docs.new\n"; on the document it opened that text was nowhere (0.09), and it
+        # was typed again into the document (2026-10-19).
+        self.typed: str | None = None
+
+    @property
+    def current_line(self) -> str:
+        """The line of the request Jev's last step was for."""
+        lines = self.goal.splitlines()
+        return lines[self.line].removeprefix(CORRECTION) if self.line < len(lines) else self.goal
 
     def acknowledge(self, executed: bool) -> None:
         pass  # no plan cursor: every step is chosen afresh from the screen and the history
@@ -189,7 +223,7 @@ class JevOnlyPlanner:
         if self.run_id != ctx.run_id:
             continued = bool(self.finished) and ctx.goal.startswith(self.finished + "\n")
             self.run_id, self.line, self.since = ctx.run_id, self.finished.count("\n") + 1 if continued else 0, 0
-            self.prev, self.routed, self.clicked, self.seen = 0, False, None, False
+            self.prev, self.routed, self.clicked, self.seen, self.typed = 0, False, None, False, None
             if not ctx.goal.startswith(self.goal + "\n"):
                 self.opened = None  # a new request: what an earlier one opened isn't its app
         # A run that failed starts again with the words said since joined on, its history empty: "make a new tab"
@@ -211,7 +245,7 @@ class JevOnlyPlanner:
                  not self.routed)]
         if self.line + 1 < len(lines):
             asks.append((lines[self.line + 1], [], _seen(ctx.history, lines[self.line], self.since), True))
-        typed = _typed_into_field(ctx.history[self.since:])
+        typed = _typed_into_field(ctx.history[self.since:], self.typed)
         looks = [self._line_done(image, ctx, lines)]
         if clicked:
             looks.append(self._line_done(mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED))
@@ -220,9 +254,12 @@ class JevOnlyPlanner:
         answered = replies[len(looks) + len(shown):]
         missing = bool(shown) and probability(replies[len(looks)][0]["typed"].get("noul")) < MISSING
         left = max(1 - probability(answers["left"].get("noul")) for answers, _, _ in replies[:len(looks)])
-        finished = not missing and _finished(answered[0][0], ctx.history[self.since:], left, self.seen)
+        # Not for a right-click: the menu it opens is for a step still to come ("copy the title" read 0.31 done).
+        lenient = clicked and not clicked[2].startswith("right_click(")
+        finished = not missing and _finished(answered[0][0], ctx.history[self.since:], left, self.seen,
+                                             CLICK_DONE if lenient else GATE)
         if finished and len(answered) > 1:
-            self.line, self.prev, self.since, self.routed = self.line + 1, self.since, len(ctx.history), False
+            self._advance(ctx)
             answered, finished = answered[1:], False  # the next line's first step
         self.seen = True
         answers, size, padded = answered[0]
@@ -231,24 +268,32 @@ class JevOnlyPlanner:
         texts = spans(line, MAX_SPANS)
         named = {str(i) for i in range(len(texts))}
         routing = "fits" in answers
-        if probability(answers["question"].get("noul")) >= GATE:
-            # Jev called "what is this page about?" complete and said "Done." with no answer.
+        if probability(answers["question"].get("noul")) >= GATE \
+                and (finished or probability(answers["complete"].get("noul")) >= GATE):
+            # Jev called "what is this page about?" complete and said "Done." with no answer. Only then: "search up
+            # genghis khan" scored a question 0.50-0.63 (3/3) with Google's search box boxed to click.
             return _fail("the request asks for an answer, not an action")
         if probability(answers["composed"].get("noul")) >= GATE and answers["next"].get("choice") in ("type", "fill"):
             # Only a step that types needs the text: "open camera" on a phone (a tap) was refused here, and so was
             # "go to google docs" (0.55) when the address bar takes a site's name as the request gives it.
             # "work out 12 times 9": Jev pressed keypad keys one per step and missed one (41.7 s; Flash typed
             # "12*9=" in one step, 12.2 s).
-            return _fail("the rest needs text the request doesn't give word for word")
+            return _fail("the rest needs text the request doesn't give word for word", planner=True)
         if finished:
             return self._next_line(image, ctx, lines, "Jev verified the completed goal")
+        if not steps and probability(answers["complete"].get("noul")) >= ALREADY:
+            return self._next_line(image, ctx, lines, "Jev sees the line already done")
         if "unchanged" in ctx.note and steps:
             return _fail("the last step had no visible effect")  # Jev would choose it again
         # Only when nothing can be done yet: YouTube's placeholder page already has a search box to click. An app
         # just opened is waited for before its first step: its own controls may not be there yet.
-        drawing = opened and probability(answers["drawing"].get("noul")) >= GATE
-        loading = drawing or probability(answers["loading"].get("noul")) >= GATE
-        wait = _look_again(ctx, MAX_LOADING_WAITS, anytime=True) if loading else None
+        # A key for a tab or window needs nothing drawn: Chrome's drawn new tab page read as drawing 0.51-0.58, and
+        # "close google" waited 12 s for it (2026-10-19). What is still drawing is drawn within two looks.
+        keys = answers["next"].get("choice") in (*TAB_KEYS, "close_app")
+        drawing = opened and not keys and probability(answers["drawing"].get("noul")) >= GATE
+        loading = probability(answers["loading"].get("noul")) >= GATE
+        wait = _look_again(ctx, MAX_LOADING_WAITS if loading else MAX_WAITS, anytime=True) if loading or drawing \
+            else None
         if opened and wait:
             return wait
         if routing:
@@ -271,7 +316,8 @@ class JevOnlyPlanner:
             search = self._search(answers, ctx, name, steps)
             if search:
                 return search
-            fits = probability(answers["fits"].get("noul")) >= GATE
+            fits = probability(answers["fits"].get("noul")) >= GATE \
+                or site and probability(answers["browser_front"].get("noul")) >= GATE
             if not fits and again and launch.brief() not in steps:
                 return wait or Plan("Open the app again", [launch], [])
             # Only a request that names an app or a site is routed: gibberish ("asdkjh qwe zxcv") opened the launcher.
@@ -291,6 +337,9 @@ class JevOnlyPlanner:
             step, text = "fill", typed  # into the field this time, clicked first
         mod = "GUI" if ctx.profile.os in ("macos", "ios") else "CTRL"
         actions: list[Action] = []
+        if step == "address" and probability(answers["lookup"].get("noul")) >= GATE \
+                and probability(answers["submit"].get("noul")) < GATE:
+            return _fail("the request describes a page to look for, and names no website", planner=True)
         if step == "address" and (text is None or _is_the_request(text, line)):
             # "go to email" on Chrome's new tab: Jev chose the address bar with nothing to type (6/6), and boxed
             # the page's Gmail link as the step's control.
@@ -304,6 +353,11 @@ class JevOnlyPlanner:
         if step == "click" and text is not None and not _is_the_request(text, line) \
                 and probability(answers["input"].get("noul")) >= self.jev.min_presence:
             step = "fill"
+        if step == "paste" and ctx.history and ctx.history[-1].startswith("click(") \
+                and probability(answers["focused"].get("noul")) < GATE and (look := _look_again(ctx)):
+            # What the click opened may still be opening: a Docs template clicked in its gallery took the paste
+            # before its document showed (focused 0.25), and the line read done (2026-10-19).
+            return look
         # As with typing: a paste right after a click, or into the place Jev sees focused, needs no click first.
         focus = step == "paste" and not (ctx.history and ctx.history[-1].startswith("click(")) \
             and probability(answers["focused"].get("noul")) < GATE
@@ -311,9 +365,9 @@ class JevOnlyPlanner:
             point = box_center(answers["target"], size, padded)
             sure = probability(answers["present"].get("noul"))
             if point is None or sure < GATE:
-                return wait or _look_again(ctx) or _fail("its target isn't clearly visible")
+                return wait or _look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
             width, height = box_size(answers["target"], size, padded)
-            if min(width, height) < BIG_TARGET:
+            if min(width, height) < BIG_TARGET or sure < self.jev.min_presence:
                 # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
                 # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
                 # shortcuts). Keeping the zoom nearer the first box is a majority of the three looks. No tighter
@@ -334,20 +388,21 @@ class JevOnlyPlanner:
                 if sure < self.jev.min_presence:
                     looks = [p for p in looks if box_contains(answers["target"], size, padded, p)]
                 if not looks:
-                    return wait or _look_again(ctx) or _fail("its target isn't clearly visible")
+                    return wait or _look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
                 point = min(looks, key=lambda p: math.dist(p, point))
             if step == "copy":
                 actions.append(Action("skill", name="select", args={"x": round(point[0], 3), "y": round(point[1], 3)}))
             else:
                 actions.append(Action(step if step in CLICKS else "click", x=point[0], y=point[1]))
         if step in ("copy", "paste"):
-            actions.append(Action("hotkey", keys=(mod, "C" if step == "copy" else "V")))
+            actions.append(Action("hotkey", keys=(mod, CLIPBOARD[step])))
         if step in ("type", "fill", "address", "erase"):
             if text is None:
-                return _fail("the text to type isn't in the request")
+                # "open up a google doc template" on a new tab: Jev chose the address bar with no words to type
+                return _fail("the text to type isn't in the request", planner=True)
             if _is_the_request(text, line):
                 # "write a short note about my day" was typed as the note (Diego, agent/jev-only-fixes).
-                return _fail("the request asks for text to be written, not typed word for word")
+                return _fail("the request asks for text to be written, not typed word for word", planner=True)
             if step == "erase":
                 # shortcut: one word-erase per word assumes the caret ends the typed text and Ctrl+Backspace
                 # takes a word with its punctuation; select the text instead if punctuated text is left behind.
@@ -360,6 +415,7 @@ class JevOnlyPlanner:
                     # Select-all only in a filled single-line box: in a document it would replace everything.
                     actions.append(Action("hotkey", keys=(mod, "A")))
                 actions.append(Action("type_text", text=text))
+                self.typed = actions[-1].brief()
                 # Enter in the same batch: a separate step for it cost one more Jev call (0.5-0.7 s).
                 if step == "address" and ctx.profile.os in DOTCOM_OS and not re.search(r"\s", text) \
                         and probability(answers["dotcom"].get("noul")) >= GATE:
@@ -418,6 +474,7 @@ class JevOnlyPlanner:
                                 | options},
                    "site": {"type": "noul", "instructions": SITE},
                    "browser_named": {"type": "noul", "instructions": BROWSER_NAMED},
+                   "browser_front": {"type": "noul", "instructions": BROWSER_FRONT},
                    "launcher": {"type": "noul", "instructions": LAUNCHER_OPEN},
                    "window": {"type": "noul", "instructions": WINDOW}} \
             if route and ctx.profile.os in OPEN_APP_KEYS else {}  # firmware has no apps
@@ -428,11 +485,15 @@ class JevOnlyPlanner:
             "question": {"type": "noul", "instructions": QUESTION},
             "composed": {"type": "noul", "instructions": COMPOSED},
             "next": {"type": "choice", "instructions": NEXT_QUESTION, "criteria": NEXT_CRITERIA},
+            # "or text": what a copy selects is no control. A Wikipedia article's title as "the title" was seen
+            # 0.77-0.90 so, 0.33-0.49 as a control; on 11 frames of past clicks (3 tries each) it boxed the same
+            # targets as sure or surer, but for Calc on LibreOffice's Start Center (0.60-0.70, from 0.79-0.86).
             "present": {"type": "noul", "instructions":
-                        "Is the one control that the next step of the `goal` acts on visible in `screen`, "
+                        "Is the one control or text that the next step of the `goal` acts on visible in `screen`, "
                         f"with no ambiguity? {OPENER}"},
             "target": {"type": "box", "instructions":
-                       f"The single visible control in `screen` that the next step of the `goal` acts on. {OPENER}"},
+                       f"The single visible control or text in `screen` that the next step of the `goal` acts on. "
+                       f"{OPENER}"},
             "text": {"type": "choice", "instructions": TEXT_QUESTION,
                      "criteria": {"none": "No text to type."} | options},
             "replace": {"type": "noul", "instructions": REPLACE_QUESTION},
@@ -440,6 +501,7 @@ class JevOnlyPlanner:
             "commit": {"type": "noul", "instructions": COMMIT},
             "input": {"type": "noul", "instructions": INPUT},
             "dotcom": {"type": "noul", "instructions": DOTCOM},
+            "lookup": {"type": "noul", "instructions": LOOKUP},
             "focused": {"type": "noul", "instructions": FOCUSED},
             "loading": {"type": "noul", "instructions": LOADING},
         }
@@ -480,14 +542,22 @@ class JevOnlyPlanner:
         return [({k: v for i, questions in part for k, v in replies[i][0].items() if k in questions},
                  *replies[part[0][0]][1:]) for part in parts]
 
+    def line_done(self, image: bytes, ctx: StepContext) -> Plan:
+        """Another planner finished the line Jev is on: Jev's step for the next one, or the request is done."""
+        return self._next_line(image, ctx, ctx.goal.splitlines(), "Flash verified the line done")
+
     def _next_line(self, image: bytes, ctx: StepContext, lines: list[str], why: str) -> Plan:
         """The line Jev sees is done: go on to the next one, or the request is done."""
         if self.line + 1 < len(lines):
-            self.line, self.prev, self.since, self.routed = self.line + 1, self.since, len(ctx.history), False
+            self._advance(ctx)
             self.seen = False
             return self.next_actions(image, ctx)
         self.finished = ctx.goal
         return Plan(why, [Action("done", summary="Done.")], [])
+
+    def _advance(self, ctx: StepContext) -> None:
+        self.line, self.prev, self.since, self.routed = self.line + 1, self.since, len(ctx.history), False
+        self.finished = "\n".join(ctx.goal.splitlines()[:self.line])
 
     def _search(self, answers: dict, ctx: StepContext, name: str | None, steps: list[str]) -> Plan | None:
         """Search the launcher this clause opened for the app to open, once. Before any launcher icon is
@@ -572,15 +642,15 @@ def _seen(history: list[str], before: str, start: int, since: int | None = None)
     return [f"{s} for {json.dumps(before, ensure_ascii=False)}" for s in history[start:since]] + history[since:]
 
 
-def _typed_into_field(steps: list[str]) -> str | None:
-    """The text these steps' last input typed, Enter after it or not. None after other input, or for text typed into
-    the address bar: the page it opens replaces it."""
+def _typed_into_field(steps: list[str], own: str | None) -> str | None:
+    """The text these steps' last input typed, Enter after it or not, when it was the `own` step. None after other
+    input, or for text typed into the address bar: the page it opens replaces it."""
     inputs = [s for s in steps if s not in (LOOK_AGAIN.brief(), WAIT.brief())]
     while inputs and _ENTER.fullmatch(inputs[-1]):
         inputs.pop()
     if inputs[-2:-1] in (["hotkey(CTRL+L)"], ["hotkey(GUI+L)"]):
         return None
-    return _last_typed(inputs[-1:])
+    return _last_typed(inputs[-1:]) if inputs[-1:] == [own] else None
 
 
 def _last_opened(steps: list[str]) -> str | None:
@@ -589,7 +659,7 @@ def _last_opened(steps: list[str]) -> str | None:
     return ast.literal_eval(opened[-1][len("skill(open_app "):-1])["name"] if opened else None
 
 
-def _finished(answers: dict, steps: list[str], done: float, seen: bool) -> bool:
+def _finished(answers: dict, steps: list[str], done: float, seen: bool, gate: float = GATE) -> bool:
     """Jev verified the line done. Its own next step is Enter right after typing: the text isn't submitted,
     whatever the line-done score (0.94 for "add hello to b1" with hello typed into B1, not entered)."""
     unsent = bool(steps) and steps[-1].startswith("type_text") and answers["next"].get("choice") == "enter"
@@ -599,7 +669,14 @@ def _finished(answers: dict, steps: list[str], done: float, seen: bool) -> bool:
     # shortcut: a line the screen finishes on its own ("wait for the video to end") can't be done; let the
     # line-done check see why the screen changed if such lines matter.
     idle = seen and all(s in (LOOK_AGAIN.brief(), WAIT.brief()) for s in steps)
-    return done >= GATE and not unsent and not idle
+    # The screen doesn't show the clipboard: a copy or paste Jev still has next, on a line that pressed neither, is
+    # untaken. "copy the header" read done (0.52) after Flash scrolled to the title, and a paste line after a
+    # template's Insert click: neither copied nor pasted. Either key counts: once copied, Jev's next for "copy the
+    # header" was paste (2026-10-19).
+    # shortcut: a copy made through a menu still reads untaken while Jev picks copy; count menu copies if it matters.
+    untaken = answers["next"].get("choice") in CLIPBOARD \
+        and not any(re.fullmatch(rf"hotkey\(.*\+[{''.join(CLIPBOARD.values())}]\)", s, re.I) for s in steps)
+    return done >= gate and not unsent and not idle and not untaken
 
 
 def _is_the_request(text: str, line: str) -> bool:
@@ -632,5 +709,8 @@ def _repeats(actions: list[Action], history: list[str]) -> bool:
     return True
 
 
-def _fail(why: str) -> Plan:
-    return Plan(FAILED, [Action("fail", reason=f"Jev alone can't take the next step: {why}.")], [])
+def _fail(why: str, planner: bool = False) -> Plan:
+    """`planner`: Flash takes this one step even without hand-off: text written for it, which only a language
+    model can supply, or a target Jev still can't make out after looking again ("copy the header" after a
+    footnote jump: Jev 0.40-0.52 on the hatnote, the request ended; Flash copied a heading 4 of 6, 5-8 s)."""
+    return Plan(FAILED, [Action("fail", reason=f"Jev alone can't take the next step: {why}.")], [], needs_planner=planner)

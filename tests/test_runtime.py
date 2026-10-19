@@ -222,7 +222,9 @@ class RuntimeTests(unittest.TestCase):
         self.fast.next_actions.return_value = Plan("launch", [Action("skill", name="open_app",
                                                                      args={"name": "video player"})], [])
         with patch("brain.agent.loop.visibly_changed", return_value=True), \
-                patch("brain.skills.APP_START_S", 0.01):  # each try flashed the launcher; no window came
+                patch("brain.skills.APP_START_S", 0.01), \
+                patch.object(self.controller, "wait_for_change", side_effect=[True, False] * 3):
+            # each try flashed the launcher; no window came
             result = self.agent().run("See the video", self.profile)
         self.assertEqual((result.status, result.message, result.steps), ("fail", "Stuck repeating the same action", 3))
 
@@ -449,8 +451,9 @@ class RuntimeTests(unittest.TestCase):
     def test_wait_returns_when_the_screen_changes(self):
         with patch("brain.controller.WAIT_S", 5),                 patch.object(self.cancel, "sleep", side_effect=lambda s: self.capture.frame.fill(200)):
             started = time.monotonic()
-            self.controller.wait_for_change()
+            self.assertTrue(self.controller.wait_for_change())
         self.assertLess(time.monotonic() - started, 1)
+        self.assertFalse(self.controller.wait_for_change(0.05))  # a still screen
 
     def test_race_planner_can_wait(self):
         from brain.agent.jev_flash import ACTION_SCHEMA, validate_steps
