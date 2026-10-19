@@ -79,6 +79,7 @@ Model output (any space) → **normalized [0,1] within the active screen rect** 
 {"type":"hotkey","keys":["CMD","SPACE"]}
 {"type":"skill","name":"open_app","args":{"name":"Notes"}}
 {"type":"skill","name":"hover","args":{"x":..,"y":..}}   // pointer move, no button
+{"type":"skill","name":"select","args":{"x":..,"y":..}}  // triple click: selects the line or paragraph there
 {"type":"skill","name":"wait"}                 // until the screen changes, at most 10 s; sends no input
 {"type":"scroll","dy":-3}                      // wheel notches
 {"type":"remember","key":"...","value":...}

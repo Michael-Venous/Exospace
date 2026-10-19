@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 import math
 
 from brain.capture import thumbnail
-from brain.types import ActionError, DeviceProfile
+from brain.types import Action, ActionError, DeviceProfile
 
 if TYPE_CHECKING:
     from brain.controller import Controller
@@ -39,7 +39,7 @@ def run_skill(
     profile: DeviceProfile,
     controller: Controller,
 ) -> None:
-    """Run a named skill (hover, wait, open_app), checking cancellation between stages."""
+    """Run a named skill (hover, select, wait, open_app), checking cancellation between stages."""
     controller.cancel.check()
     if name == "wait":
         cap = args.get("s")  # an optional cap: the default waits up to WAIT_S for the screen to change
@@ -48,14 +48,20 @@ def run_skill(
         else:
             controller.wait_for_change()
         return
-    if name == "hover":
+    if name in ("hover", "select"):
         if profile.input == "touch":
-            raise SkillUnavailable("Hover is unavailable on touch targets")
+            raise SkillUnavailable(f"{name} is unavailable on touch targets")
         x, y = args.get("x"), args.get("y")
         if any(isinstance(v, bool) or not isinstance(v, (int, float))
                or not math.isfinite(v) or not 0 <= v <= 1 for v in (x, y)):
-            raise ActionError("hover requires normalized finite x/y")
-        controller.hover(x, y)
+            raise ActionError(f"{name} requires normalized finite x/y")
+        if name == "hover":
+            controller.hover(x, y)
+        else:
+            # A triple click selects the line or paragraph under the pointer. The Pico clicks at most twice per
+            # command, and a settle between two pointer actions would make them separate gestures.
+            controller.execute(Action("double_click", x=x, y=y), profile)
+            controller.execute(Action("click", x=x, y=y), profile)
         return
     if name != "open_app":
         raise SkillUnavailable(f"Unknown skill: {name!r}")

@@ -45,6 +45,8 @@ NEXT_CRITERIA = {
     "close_tab": "Close the tab in front, in a web browser or a tabbed app.",
     "close_app": "Close or quit the app in front.",
     "erase": "Erase text that an earlier step typed.",
+    "copy": "Copy one visible heading, line or paragraph of text that the goal names.",
+    "paste": "Paste what was copied into the input field, cell or document where the goal puts it.",
     "scroll_down": "Scroll down to reveal something the goal needs that is below the visible area.",
     "scroll_up": "Scroll up to reveal something the goal needs that is above the visible area.",
     "stuck": "The next step needs reasoning, writing new text, information that isn't visible, a key not "
@@ -302,7 +304,10 @@ class JevOnlyPlanner:
         if step == "click" and text is not None and not _is_the_request(text, line) \
                 and probability(answers["input"].get("noul")) >= self.jev.min_presence:
             step = "fill"
-        if step in ("click", "double_click", "right_click", "fill"):
+        # As with typing: a paste right after a click, or into the place Jev sees focused, needs no click first.
+        focus = step == "paste" and not (ctx.history and ctx.history[-1].startswith("click(")) \
+            and probability(answers["focused"].get("noul")) < GATE
+        if step in ("click", "double_click", "right_click", "fill", "copy") or focus:
             point = box_center(answers["target"], size, padded)
             sure = probability(answers["present"].get("noul"))
             if point is None or sure < GATE:
@@ -331,7 +336,12 @@ class JevOnlyPlanner:
                 if not looks:
                     return wait or _look_again(ctx) or _fail("its target isn't clearly visible")
                 point = min(looks, key=lambda p: math.dist(p, point))
-            actions.append(Action("click" if step == "fill" else step, x=point[0], y=point[1]))
+            if step == "copy":
+                actions.append(Action("skill", name="select", args={"x": round(point[0], 3), "y": round(point[1], 3)}))
+            else:
+                actions.append(Action(step if step in CLICKS else "click", x=point[0], y=point[1]))
+        if step in ("copy", "paste"):
+            actions.append(Action("hotkey", keys=(mod, "C" if step == "copy" else "V")))
         if step in ("type", "fill", "address", "erase"):
             if text is None:
                 return _fail("the text to type isn't in the request")

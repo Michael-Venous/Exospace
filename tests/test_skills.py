@@ -53,6 +53,13 @@ class SkillTests(unittest.TestCase):
         run_skill("wait", {}, self.profile("windows"), self.controller)
         self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change()])
 
+    def test_select_triple_clicks_with_no_settle_between(self):
+        run_skill("select", {"x": .4, "y": .2}, self.profile("linux"), self.controller)
+        self.assertEqual([(c[0], c[1][0].brief()) for c in self.controller.method_calls],
+                         [("execute", "double_click(400,200)"), ("execute", "click(400,200)")])
+        with self.assertRaises(ActionError):
+            run_skill("select", {"x": 2, "y": .2}, self.profile("linux"), self.controller)
+
     def test_unsupported_has_no_input(self):
         for os in ("ios", "unknown"):
             with self.assertRaises(SkillUnavailable):

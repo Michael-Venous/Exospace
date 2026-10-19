@@ -189,6 +189,14 @@ class JevOnlyTests(unittest.TestCase):
         typed = self.plan(name, next="type", text=str(spans(name, 250).index("Nicholas Rebelloza")), run="s")
         self.assertEqual(typed[-1].brief(), "type_text('Nicholas Rebelloza')")
 
+    def test_copy_selects_the_boxed_text_and_paste_goes_where_the_focus_is(self):
+        copied = self.plan("copy the header", next="copy", target=BIG)
+        self.assertEqual([a.brief() for a in copied], ["skill(select {'x': 0.3, 'y': 0.3})", "hotkey(CTRL+C)"])
+        pasted = self.plan("paste it in", next="paste", run="s")
+        self.assertEqual([a.brief() for a in pasted], ["hotkey(CTRL+V)"])
+        unfocused = self.plan("paste it in", next="paste", focused=.2, target=BIG, run="t")
+        self.assertEqual([a.brief() for a in unfocused], ["click(300,300)", "hotkey(CTRL+V)"])
+
     def test_a_scroll_first_moves_the_pointer_over_what_it_scrolls(self):
         actions = self.plan("scroll down to the comments", next="scroll_down")
         self.assertEqual([a.brief() for a in actions], ["skill(hover {'x': 0.3, 'y': 0.3})", "scroll(5)"])
