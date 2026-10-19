@@ -9,7 +9,7 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest.mock import Mock
+from unittest.mock import Mock, call
 
 import cv2
 import numpy as np
@@ -199,7 +199,7 @@ class PageServerTests(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_PLAYWRIGHT, "playwright is only installed with the browser extra")
-class LiveViewTests(unittest.TestCase):
+class PageTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         from playwright.sync_api import Error, sync_playwright
@@ -228,6 +228,60 @@ class LiveViewTests(unittest.TestCase):
         reopened = agent.screen.call_count
         page.wait_for_timeout(1500)
         self.assertLessEqual(agent.screen.call_count - reopened, 8)  # one loop asks every 250 ms: about 6
+
+    def test_open_clauses_end_at_and_then_or_a_comma(self):
+        agent = Mock()
+        page = self.open_page(agent)
+        split = lambda text: page.evaluate("t => openers(t)", text)
+        self.assertEqual(split("open google chrome, open youtube, search horses"),
+                         [["open google chrome", "open youtube"], "search horses"])
+        self.assertEqual(split("Open up Google Chrome and then search up YouTube."),
+                         [["Open up Google Chrome"], "search up YouTube."])
+        self.assertEqual(split("go to youtube.com and"), [["go to youtube.com"], ""])
+        self.assertEqual(split("open google chrome."), [[], "open google chrome."])  # not ended: maybe more words
+        self.assertEqual(split("search horses and cats"), [[], "search horses and cats"])
+
+    def test_an_open_clause_is_sent_while_the_user_keeps_talking(self):
+        agent = Mock()
+        page = self.open_page(agent)
+        page.evaluate("press()")
+        page.wait_for_function("window.speech")
+
+        def heard(words, final=False, pause=False):
+            page.evaluate("m => speech.onmessage({data: JSON.stringify(m)})", {
+                "type": "Results", "is_final": final, "speech_final": pause,
+                "channel": {"alternatives": [{"transcript": words}]}})
+
+        def submitted(count):
+            deadline = time.monotonic() + 5
+            while agent.submit.call_count < count and time.monotonic() < deadline:
+                time.sleep(0.01)
+            return agent.submit.call_args_list
+
+        heard("open up google chrome")
+        heard("open up google chrome and")  # no pause after "chrome" in the Pi's recorded requests
+        self.assertEqual(submitted(1), [call("open up google chrome", False)])
+        heard("Open up Google Chrome and search up", final=True)
+        heard("YouTube.", final=True, pause=True)
+        self.assertEqual(submitted(2), [call("open up google chrome", False), call("search up YouTube.", True)])
+
+    def open_page(self, agent):
+        agent.screen.return_value = None  # no device connected
+        server = page_server(agent, 0, 8781, queue.Queue())
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        page = self.browser.new_page()
+        self.addCleanup(page.close)
+        page.add_init_script(FAKE_SPEECH)
+        page.goto(f"http://127.0.0.1:{server.server_address[1]}/")
+        return page
+
+
+# A silent mic and a speech-service socket the test answers for, as window.speech.
+FAKE_SPEECH = """
+navigator.mediaDevices.getUserMedia = async () => new AudioContext().createMediaStreamDestination().stream;
+window.WebSocket = class { constructor() { window.speech = this; this.readyState = 0; } send() {} close() {} };
+"""
 
 
 if __name__ == "__main__":

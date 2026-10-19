@@ -4,8 +4,8 @@ Run the agent with a display server, then this:
     .venv/bin/python -m brain --display 8770
     .venv/bin/python -m brain.voice.layer --agent http://127.0.0.1:8770
 
-Hold the button (or Space) and speak. Each pause sends what was said to the agent's
-POST /goal, so work starts while the user keeps talking; starting to speak while the
+Hold the button (or Space) and speak. Each pause, or the end of a leading "open ..." clause,
+sends what was said to the agent's POST /goal, so work starts while the user keeps talking; starting to speak while the
 agent is busy sends POST /stop first. Later segments of the same hold continue that
 request ("go to youtube" ... "and search lofi", "actually go back"): they join it at its
 next step without cancelling the step in progress. Narration comes from the
@@ -42,8 +42,8 @@ from brain.net import ipv4_only
 from brain.voice import button
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
-# A 200 ms pause ends a segment: the short break after "open chrome" in "open chrome and search cats" is
-# enough, so Chrome opens while the user is still talking.
+# A 200 ms pause ends a segment. Speech often has none after "open chrome" in "open chrome and search cats",
+# so the page sends a leading "open ..." clause as soon as "and" or a comma ends it (layer.html).
 DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=200&smart_format=true"
 KEEPALIVE_S = 15.0
 MAX_BODY = 4096
