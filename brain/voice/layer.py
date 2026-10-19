@@ -70,6 +70,9 @@ def narrate(event: dict[str, Any]) -> str | None:
     return "Sorry, I couldn't do that."
 
 
+FIXED_LINES = ["Done.", "On it.", "Still working on it.", "Sorry, I couldn't do that.", "Stopped.", "Can you clarify?"]
+
+
 def filler(quiet_s: float, spoken: bool) -> str | None:
     """What to say while a request runs silently: an acknowledgement, then progress."""
     if not spoken:
@@ -321,6 +324,8 @@ def main() -> int:
     describer = Describer(gemini, os.environ.get("DESCRIBE_MODEL") or DESCRIBE_MODEL) if gemini else None
     # VOICE_OUT=0 leaves speaking to the browser (silent on the Pi: Chromium there has no speech-dispatcher).
     speaker = Speaker(key) if os.environ.get("VOICE_OUT", "1") != "0" else None
+    if speaker is not None:  # the fixed replies play instantly from the first time
+        threading.Thread(target=speaker.prerender, args=(FIXED_LINES,), name="tts-prerender", daemon=True).start()
     serve(Agent(args.agent, describer, speaker), args.port, args.ws_port, key)
     return 0
 

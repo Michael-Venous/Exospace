@@ -39,3 +39,4 @@ firmware/pico/sd/
 .metadata_never_index
 System Volume Information/
 replay.json
+tts_cache/
