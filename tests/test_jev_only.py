@@ -185,10 +185,15 @@ class JevOnlyTests(unittest.TestCase):
     def test_the_request_itself_is_never_typed(self):
         goal = "write a short note about my day"
         self.assertEqual(self.step(goal, next="type", text=str(spans(goal, 250).index(goal))).type, "fail")
+        name = "Type Nicholas Rebelloza."  # the command's dictated words, one word short of the line
+        typed = self.plan(name, next="type", text=str(spans(name, 250).index("Nicholas Rebelloza")), run="s")
+        self.assertEqual(typed[-1].brief(), "type_text('Nicholas Rebelloza')")
 
-    def test_a_scroll_first_moves_the_pointer_over_the_page(self):
+    def test_a_scroll_first_moves_the_pointer_over_what_it_scrolls(self):
         actions = self.plan("scroll down to the comments", next="scroll_down")
-        self.assertEqual([a.brief() for a in actions], ["skill(hover {'x': 0.5, 'y': 0.5})", "scroll(5)"])
+        self.assertEqual([a.brief() for a in actions], ["skill(hover {'x': 0.3, 'y': 0.3})", "scroll(5)"])
+        unsure = self.plan("scroll down to the comments", next="scroll_down", present=.2, run="s")
+        self.assertEqual(unsure[0].brief(), "skill(hover {'x': 0.5, 'y': 0.5})")  # no box to go by: the middle
 
     def test_text_the_request_does_not_give_word_for_word_is_left_to_flash(self):
         self.assertEqual(self.step("work out 12 times 9", composed=.9, next="type").type, "fail")

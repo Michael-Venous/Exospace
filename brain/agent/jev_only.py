@@ -366,8 +366,13 @@ class JevOnlyPlanner:
         if step == "enter":
             actions.append(Action("hotkey", keys=("ENTER",)))
         if step in ("scroll_down", "scroll_up"):
-            if ctx.profile.input == "mouse":  # a Mac scrolls what is under the pointer: a toolbar scrolled nothing
-                actions.append(Action("skill", name="hover", args={"x": 0.5, "y": 0.5}))
+            if ctx.profile.input == "mouse":
+                # The wheel scrolls what is under the pointer: a toolbar scrolled nothing on a Mac, and the screen's
+                # middle was the desktop beside a half-screen Chrome, so its apps panel never scrolled (3 runs).
+                # Jev's box for a scroll is what it reveals or the panel holding it.
+                sure = probability(answers["present"].get("noul")) >= GATE
+                x, y = (box_center(answers["target"], size, padded) if sure else None) or (0.5, 0.5)
+                actions.append(Action("skill", name="hover", args={"x": round(x, 3), "y": round(y, 3)}))
             actions.append(Action("scroll", dy=5 if step == "scroll_down" else -5))
         if not actions:
             # Discord's update splash has nothing to act on for 4 s after its icon is clicked. A finished request
@@ -588,9 +593,11 @@ def _finished(answers: dict, steps: list[str], done: float, seen: bool) -> bool:
 
 
 def _is_the_request(text: str, line: str) -> bool:
-    """True when the text to type is (nearly) the whole request line: an instruction, not dictated words."""
+    """True when the text to type is the whole request line: an instruction, not dictated words. One word short of
+    it is the dictated words of a command ("type Nicholas Rebelloza" was refused so); text the request only
+    describes is Jev's composed answer to refuse."""
     request = _words(line)
-    return len(request) >= 3 and len(_words(text)) >= len(request) - 1
+    return len(request) >= 3 and len(_words(text)) >= len(request)
 
 
 _POINT = re.compile(r"^(click|double_click|right_click)\((\d+),(\d+)\)$")
