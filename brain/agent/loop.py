@@ -103,7 +103,7 @@ class Agent:
                         token.check()
                     before = thumbnail(frame)
                     times["t_capture"] = time.monotonic() - stamp
-                    if profile.input == "touch":  # a phone turns; a computer's screen was found at connect
+                    if profile.input != "mouse":  # a phone turns; a computer's screen was found at connect
                         profile = replace(profile, rect=active_rect(frame))
                     stamp = time.monotonic()
                     side = getattr(self.executor, "image_side", MAX_SIDE)

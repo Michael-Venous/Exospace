@@ -52,7 +52,7 @@ def run_skill(
             controller.wait_for_change()
         return
     if name == "hover":
-        if profile.input == "touch":
+        if profile.input != "mouse":
             raise SkillUnavailable("Hover is unavailable on touch targets")
         x, y = args.get("x"), args.get("y")
         if any(isinstance(v, bool) or not isinstance(v, (int, float))

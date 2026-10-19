@@ -17,7 +17,7 @@ from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.jev_only import FAILED, JevOnlyPlanner
 from brain.cancel import CancelToken
 from brain.config import Config
-from brain.types import OSName
+from brain.types import Action, OSName
 
 
 class JevFirstPlanner:
@@ -35,6 +35,11 @@ class JevFirstPlanner:
         why = ""
         if ctx.note and self.handoff and self._flash_run != ctx.run_id:  # a recovery note: Jev doesn't read it
             self._flash_run, why = ctx.run_id, f"recovery note: {ctx.note[:80]}"
+        if ctx.profile.input == "keyboard" and self._flash_run != ctx.run_id:
+            self._flash_run, why = ctx.run_id, "keyboard-only device: Jev's steps aim the pointer"
+            if not self.handoff:
+                return Plan(FAILED, [Action("fail", reason="This device takes only keyboard input, and Jev's own "
+                                                                  "steps need the pointer.")], [])
         if self._flash_run != ctx.run_id:
             plan = self.steps.next_actions(image, ctx)
             if plan.reasoning != FAILED or not self.handoff:

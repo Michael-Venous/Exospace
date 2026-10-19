@@ -117,14 +117,24 @@ def detect_os(model: GeminiJSON | ZaiJSON, image_jpeg: bytes) -> OSName:
     return cast(OSName, os)
 
 
+KEYBOARD_ONLY = (
+    "\nThis device takes keyboard input only: click, double_click, right_click, tap, swipe, scroll and hover do "
+    "nothing on it. Use hotkey and type_text. GUI+SPACE, then the app's name, then ENTER opens an app; GUI+H goes to "
+    "the home screen. In Messages, GUI+N starts a new message: type the contact's name, ENTER, then type the message "
+    "(ENTER sends it, so ask first). TAB and the arrow keys move between fields where the app allows it; ENTER or "
+    "SPACE activates the focused control."
+)
+
+
 def context_prompt(ctx: StepContext) -> str:
+    keyboard = KEYBOARD_ONLY if ctx.profile.input == "keyboard" else ""
     return USER_TEMPLATE.format(
         goal=ctx.goal, os=ctx.profile.os, input=ctx.profile.input,
         step=ctx.step, max_steps=ctx.max_steps,
         conversation=_lines(f"{t['role']}: {t['text']}" for t in ctx.memory.recent_turns()),
         facts=json.dumps(ctx.memory.facts) if ctx.memory.facts else "(none)",
         history=_lines(ctx.history[-12:]), note=ctx.note or "(none)",
-    ) + "\nPlanner guidance (use only when consistent with the current screen):\n" + (ctx.guidance or "(none)")
+    ) + keyboard + "\nPlanner guidance (use only when consistent with the current screen):\n" + (ctx.guidance or "(none)")
 
 
 def parse_plan(data: dict[str, Any]) -> Plan:

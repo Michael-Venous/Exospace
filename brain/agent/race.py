@@ -18,6 +18,7 @@ from brain.agent.jev_first import JevFirstPlanner
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.triage import GATE, answer_to_pending, pointed, triage
 from brain.cancel import Cancelled, CancelToken
+from brain.agent.shortcuts import shortcut_for
 from brain.skills import OPEN_APP_KEYS
 from brain.config import Config
 from brain.types import Action, OSName
@@ -64,6 +65,7 @@ class RaceExecutor:
         self._gesture = "click"
         self._scroll = 0
         self._launched = ""
+        self._keys: tuple[str, tuple[str, ...]] | None = None  # the shortcut pressed for a one-command request
         self._tries = 0
         self._aim: tuple[float, float] = (0.0, 0.0)  # Jev's point for a small target; hovers try around it
         self._clicked = False
@@ -96,6 +98,10 @@ class RaceExecutor:
             self.mode = "plan"  # nothing to scroll here (or not focused): the planner recovers
         if self.mode == "hover":
             return self._after_hover(image, ctx)
+        if self.mode == "keys":
+            if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):
+                return Plan("Keyboard shortcut done", [Action("done", summary="Done.")], [])
+            self.mode = "plan"  # the shortcut didn't do it here: plan on the current screen
         if self.mode == "launch":
             launched = "unchanged" not in (ctx.note or "") and self._launched_app(image, ctx)
             if launched and self._goal_met(image, ctx):
@@ -145,6 +151,10 @@ class RaceExecutor:
     def _route(self, image: bytes, ctx: StepContext, utterance: str, earlier: str = "", *, confirmed: bool,
                declined: bool = False) -> Plan:
         self._utterance, self._earlier, self._triage_step = utterance, earlier, ctx.step
+        shortcut = None if earlier or declined else shortcut_for(utterance, ctx.profile.os)
+        if shortcut is not None:  # "close this app": the OS's keys, not a model aiming at a close button
+            self.mode, self._keys = "keys", shortcut
+            return Plan(f"Keyboard shortcut: {shortcut[0]}", [Action("hotkey", keys=shortcut[1])], [])
         # The single planner worker queues this behind any discarded speculation, so triage
         # (the fast path) never waits for an old plan to finish.
         self._plan = self._pool.submit(self.planner.next_actions, image, self._planner_ctx(ctx))
@@ -153,7 +163,7 @@ class RaceExecutor:
         if result.irreversible and not confirmed:
             return self.hold(ctx)
         self.mode, self._point, self._gesture, self._scroll = result.mode, result.point, result.gesture, result.scroll
-        if self.mode == "act" and result.app and ctx.profile.input == "touch" and ctx.profile.os in OPEN_APP_KEYS:
+        if self.mode == "act" and result.app and ctx.profile.input != "mouse" and ctx.profile.os in OPEN_APP_KEYS:
             # Tapping an app's icon did nothing on the demo phone (its touch input doesn't register); the
             # keyboard launcher opens the app the request names.
             self.mode = "launch"
@@ -162,6 +172,8 @@ class RaceExecutor:
             # A phone has no launcher key: the launch was rejected and its note sent the whole request to
             # Flash (6 s a step on Android); Jev's own steps tap the app's icon instead.
             self.mode = "plan"
+        if self.mode in ("act", "scroll") and ctx.profile.input == "keyboard":
+            self.mode = "plan"  # an iPhone ignores USB clicks and scrolls: the planner takes a keyboard path
         if self.mode == "none" and declined:
             return Plan("Irreversible request declined", [Action("done", summary="Okay, I won't do that.")], [])
         if self.mode == "none":
@@ -202,7 +214,8 @@ class RaceExecutor:
         """One Jev completion call on the new screen: a changed screen alone is no proof
         (measured: "close the calculator" minimized it and reported done)."""
         executed = ([f"scroll {'down' if self._scroll > 0 else 'up'} {abs(self._scroll)} notches"]
-                    if self.mode == "scroll" else [f"open the app {self._launched}"]
+                    if self.mode == "scroll" else [f"press {'+'.join(self._keys[1])} to {self._keys[0]}"]
+                    if self.mode == "keys" and self._keys else [f"open the app {self._launched}"]
                     if self.mode == "launch" else [f"{self._gesture} on the control for: {self._utterance}"])
         score = self.cancel.run(lambda: self.jev.completion(image, ctx.goal, executed, run_id=ctx.run_id,
                                                             step=ctx.step))

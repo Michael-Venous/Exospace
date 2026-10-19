@@ -216,6 +216,13 @@ class JevFirstTests(unittest.TestCase):
             self.assertEqual(self.planner.next_actions(b"img", ctx).actions[0].type, "fail")
         self.planner.flash.next_actions.assert_not_called()
 
+    def test_a_keyboard_only_device_goes_straight_to_the_planner(self):
+        iphone = StepContext("send a text", DeviceProfile("ios", Rect(0, 0, 4, 3), "keyboard", 1), Mock(), [], 1,
+                             10, run_id="a")
+        self.planner.next_actions(b"img", iphone)
+        self.planner.steps.next_actions.assert_not_called()
+        self.planner.flash.next_actions.assert_called_once()
+
     def test_a_recovery_note_hands_the_run_to_flash(self):
         ctx = StepContext("open calculadora", DeviceProfile("linux", Rect(0, 0, 4, 3), "mouse", 1), Mock(), [], 2,
                           10, note="the launch landed elsewhere", run_id="a")

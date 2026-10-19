@@ -33,7 +33,8 @@ def detect_profile(capture: Capture, executor: Executor, override_os: OSName | N
             token.check()
             if os == "unknown" and press is not None:
                 os = _probe(capture, executor, rect, press, token)
-            mode = "touch" if os == "android" else "mouse"
+            # An iPhone takes USB keyboard input as is, but a mouse only with AssistiveTouch and touch never.
+            mode = "touch" if os == "android" else "keyboard" if os == "ios" else "mouse"
             if pointer is not None and mode == "mouse":
                 rect = pointer_rect(capture, pointer) or rect
             # "unknown" (BIOS, boot splash, full-screen app) still works as keyboard + mouse.

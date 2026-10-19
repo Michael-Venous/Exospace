@@ -1,6 +1,7 @@
 """Triage and the race executor: routing, zoom refinement, irreversible approval."""
 
 import tempfile
+from dataclasses import replace
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -114,6 +115,7 @@ class RaceTests(unittest.TestCase):
         race._gesture, race._utterance, race._triage_step, race._approved_goal = "click", "", 0, None
         race._scroll, race._launched, race._tries, race._aim = 0, "", 0, (0.0, 0.0)
         race._earlier, race._approved_connected_at = "", 0.0
+        race._keys = None
         self.addCleanup(race._pool.shutdown)
         race.planner.next_actions.return_value = Plan("planned", [Action("hotkey", keys=("ENTER",))], [])
         self.race = race
@@ -130,6 +132,29 @@ class RaceTests(unittest.TestCase):
         self.race.acknowledge(True)
         self.race.jev.completion.return_value = .9
         self.assertEqual(self.race.next_actions(b"img", self.ctx("open john's email")).actions[0].type, "done")
+
+    def test_a_one_command_request_is_pressed_as_the_shortcut(self):
+        mac = StepContext("Close this app.", DeviceProfile("macos", Rect(0, 0, 400, 300), "mouse", 1), self.memory,
+                          [], 1, 10, run_id="a")
+        with patch("brain.agent.race.triage") as tri:
+            first = self.race.next_actions(b"img", mac)
+        tri.assert_not_called()  # no model aims at the red close button
+        self.assertEqual((first.actions[0].type, first.actions[0].keys), ("hotkey", ("GUI", "Q")))
+        self.race.jev.completion.return_value = .9
+        self.assertEqual(self.race.next_actions(b"img", replace(mac, step=2)).actions[0].type, "done")
+
+    def test_a_shortcut_that_did_not_do_it_goes_to_the_planner(self):
+        ctx = self.ctx("go back")
+        self.race.next_actions(b"img", ctx)
+        self.race.jev.completion.return_value = .1
+        self.assertEqual(self.race.next_actions(b"img", replace(ctx, step=2)).reasoning, "planned")
+
+    def test_an_iphone_never_gets_a_click(self):
+        iphone = StepContext("open john's email", DeviceProfile("ios", Rect(0, 0, 400, 300), "keyboard", 1),
+                             self.memory, [], 1, 10, run_id="a")
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
+            plan = self.race.next_actions(b"img", iphone)
+        self.assertEqual(plan.reasoning, "planned")
 
     def test_a_click_that_misses_the_goal_falls_back_to_the_planner(self):
         with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
