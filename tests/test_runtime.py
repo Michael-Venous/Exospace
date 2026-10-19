@@ -198,6 +198,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([(c.kwargs["loading"], c.kwargs["react"]) for c in settle.call_args_list
                           if "loading" in c.kwargs], [(False, False), (True, True)])
 
+    def test_scroll_after_a_hover_skips_the_settle(self):
+        self.fast.next_actions.side_effect = [
+            Plan("scroll", [Action("skill", name="hover", args={"x": .5, "y": .5}), Action("scroll", dy=5)], []),
+            Plan("verified", [Action("done", summary="Scrolled")], []),
+        ]
+        with patch.object(self.controller, "wait_settled", wraps=self.controller.wait_settled) as settle:
+            self.agent().run("scroll down", self.profile)
+        self.assertEqual([(c.kwargs["loading"], c.kwargs["react"]) for c in settle.call_args_list
+                          if "loading" in c.kwargs], [(False, True)])
+
     def test_stalled_actions_replan_then_cancel(self):
         self.hid.change = False
         self.fast.next_actions.return_value = Plan("try", [Action("hotkey", keys=("ENTER",))], [])

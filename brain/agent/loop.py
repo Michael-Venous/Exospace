@@ -194,7 +194,11 @@ class Agent:
                             # suggestions under "horses" Enter ~0.5 s (v13-t1). The Pico runs each command before the
                             # next. A click may open what they go to (a menu), and a key too (a launcher).
                             keys_next = i + 1 < len(plan.actions) and plan.actions[i + 1].type in ("type_text", "hotkey")
-                            if not (keys_next and action.type == "type_text"):
+                            # A scroll goes where the pointer is, whatever the screen shows: waiting for the hover
+                            # to show held it ~0.5 s (v20-t1).
+                            scroll_next = (action.type, action.name) == ("skill", "hover") \
+                                and i + 1 < len(plan.actions) and plan.actions[i + 1].type == "scroll"
+                            if not (keys_next and action.type == "type_text") and not scroll_next:
                                 settled_s = ctl.wait_settled(loading=_may_load(action) and not keys_next,
                                                              react=not keys_next or action.type == "hotkey")
                                 times["t_settle"] += settled_s
