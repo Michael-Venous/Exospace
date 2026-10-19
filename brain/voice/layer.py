@@ -38,6 +38,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from brain.net import ipv4_only
 from brain.voice import button
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
@@ -304,6 +305,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8780)
     parser.add_argument("--ws-port", type=int, default=8781)
     args = parser.parse_args()
+    ipv4_only()
     load_dotenv()
     key = os.environ.get("DEEPGRAM_API_KEY", "")
     if not key:

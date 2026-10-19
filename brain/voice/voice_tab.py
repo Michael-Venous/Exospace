@@ -27,6 +27,7 @@ from gi.repository import Gdk, GdkPixbuf  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))  # python3 -I leaves the repo off the import path
 from brain.hid import HIDError, PicoHID  # noqa: E402
+from brain.net import ipv4_only  # noqa: E402
 
 ENV = REPO / ".env"
 PORT = 8766
@@ -468,6 +469,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    ipv4_only()
     print(f"Voice-to-tab demo on http://127.0.0.1:{PORT} (Deepgram relay on ws://127.0.0.1:{WS_PORT})", flush=True)
     threading.Thread(target=HTTPServer(("127.0.0.1", PORT), Handler).serve_forever, daemon=True).start()
     asyncio.run(serve_ws())

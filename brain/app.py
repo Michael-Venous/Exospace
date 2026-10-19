@@ -25,6 +25,7 @@ from brain.events import EventBus
 from brain.hid import HID, HIDError, LocalHID, PicoHID
 from brain.imaging import prepare
 from brain.monitor import ConnectionMonitor
+from brain.net import ipv4_only
 from brain.telemetry import Telemetry
 from brain.types import OS_NAMES, Action, ActionError, DeviceProfile, OSName
 
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.max_steps < 1:
         parser.error("--max-steps must be positive")
+    ipv4_only()
     cfg = Config.load()
     token = CancelToken()
     status = lambda message: print(message, flush=True)
