@@ -549,9 +549,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "cancelled")
         self.assertLess(executor.next_actions.call_count, 8)
 
-    def test_scroll_is_capped_at_wheel_notches(self):
+    def test_scroll_is_capped_and_sent_a_notch_at_a_time(self):
         self.controller.execute(Action("scroll", dy=800), self.profile)
-        self.assertEqual(self.hid.commands[-1], {"op": "scroll", "dy": 15})
+        self.controller.execute(Action("scroll", dy=-2), self.profile)
+        scrolls = [c for c in self.hid.commands if c["op"] == "scroll"]
+        self.assertEqual(scrolls, [{"op": "scroll", "dy": 1}] * 15 + [{"op": "scroll", "dy": -1}] * 2)
 
 
 class AwaitTargetTests(unittest.TestCase):

@@ -79,7 +79,11 @@ class Controller:
             x2, y2 = _hid_xy(action.x2, action.y2)
             self._send({"op": "swipe", "x1": x1, "y1": y1, "x2": x2, "y2": y2, "ms": action.ms})
         elif kind == "scroll":
-            self._send({"op": "scroll", "dy": max(-MAX_SCROLL, min(MAX_SCROLL, action.dy))})
+            # A notch per report, as a wheel turns: a browser just started took the first scroll event as its
+            # baseline, and 5 notches in one report scrolled nothing (4 of 5 went through one at a time, v19-t1).
+            dy = max(-MAX_SCROLL, min(MAX_SCROLL, action.dy))
+            for _ in range(abs(dy)):
+                self._send({"op": "scroll", "dy": 1 if dy > 0 else -1})
         elif kind == "type_text":
             self.type_text(action.text)
         elif kind == "hotkey":
