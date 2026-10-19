@@ -63,12 +63,25 @@ class JevOnlyTests(unittest.TestCase):
     def test_a_done_line_hands_the_screen_to_the_next_one_and_a_continued_request_skips_it(self):
         goal = "open up discord\nclose discord"
         self.assertEqual(self.step(goal, left=.1, next="close_app").brief(), "hotkey(ALT+F4)")
-        self.assertEqual(self.planner.jev.evaluate.call_count, 5)  # both lines asked at once: no extra look
+        # both lines asked at once: no extra look; each line's questions in one call, all in its one state so far
+        self.assertEqual(self.planner.jev.evaluate.call_count, 2)
         self.assertEqual(self.planner.line, 1)
         self.assertEqual(self.step(goal, left=.1, history=["hotkey(ALT+F4)"]).type, "done")
         more = goal + "\nopen a terminal"
         launch = self.step(more, run="s", fits=.1, app_name=str(spans("open a terminal").index("terminal")))
         self.assertEqual(launch.brief(), "skill(open_app {'name': 'terminal'})")  # not discord's lines again
+
+    def test_question_sets_on_one_image_in_one_state_share_a_call(self):
+        self.planner.jev.evaluate.side_effect = lambda image, questions, **_: ({k: image for k in questions}, 1, 2)
+        ctx = StepContext("g", DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1), Mock(), [], 1, 10)
+        screen, marked, one, two = b"screen", b"marked", {"goal": "a"}, {"goal": "b"}
+        replies = self.planner._evaluate_all(ctx, [
+            (screen, "jev", [({"a": {}}, one), ({"b": {}}, two)]), (screen, "typed", [({"c": {}}, one)]),
+            (marked, "line-done", [({"a": {}}, one)]), (screen, "other", [({"a": {"x": 1}}, one)])])
+        self.assertEqual(replies, [({"a": screen, "b": screen}, 1, 2), ({"c": screen}, 1, 2), ({"a": marked}, 1, 2),
+                                   ({"a": screen}, 1, 2)])
+        calls = sorted(c.kwargs["label"] for c in self.planner.jev.evaluate.call_args_list)
+        self.assertEqual(calls, ["jev", "jev+typed", "line-done", "other"])  # a different question: a call of its own
 
     def test_next_click_lands_on_the_target(self):
         action = self.step("open calculator, then click 7")

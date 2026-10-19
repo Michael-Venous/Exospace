@@ -162,6 +162,7 @@ CLICKS = ("click", "double_click", "right_click")
 CORRECTION = "User correction: "
 MAX_SPANS = 250  # Jev's choice budget (bench/interpreter_screen.py)
 FAILED = "Jev can't take the next step"
+Ask = tuple[bytes, str, list[tuple[dict, dict]]]  # an image, its trace label, and question sets with their state
 
 
 class JevOnlyPlanner:
@@ -209,15 +210,15 @@ class JevOnlyPlanner:
         if self.line + 1 < len(lines):
             asks.append((lines[self.line + 1], [], _seen(ctx.history, lines[self.line], self.since), True))
         typed = _typed_into_field(ctx.history[self.since:])
-        with ThreadPoolExecutor(len(asks) + 3) as pool:
-            done = [pool.submit(self._line_done, image, ctx, lines)]
-            if clicked:
-                done.append(pool.submit(self._line_done, mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED))
-            shown = pool.submit(self._shown, image, ctx, lines[self.line], typed) if typed else None
-            answered = list(pool.map(lambda ask: self._ask(image, ctx, *ask, guard, opened), asks))
-            missing = shown is not None and shown.result() < MISSING
-            finished = not missing and _finished(answered[0][0], ctx.history[self.since:],
-                                                 max(d.result() for d in done), self.seen)
+        looks = [self._line_done(image, ctx, lines)]
+        if clicked:
+            looks.append(self._line_done(mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED))
+        shown = [self._shown(image, ctx, lines[self.line], typed)] if typed else []
+        replies = self._evaluate_all(ctx, looks + shown + [self._ask(image, ctx, *ask, guard, opened) for ask in asks])
+        answered = replies[len(looks) + len(shown):]
+        missing = bool(shown) and probability(replies[len(looks)][0]["typed"].get("noul")) < MISSING
+        left = max(1 - probability(answers["left"].get("noul")) for answers, _, _ in replies[:len(looks)])
+        finished = not missing and _finished(answered[0][0], ctx.history[self.since:], left, self.seen)
         if finished and len(answered) > 1:
             self.line, self.prev, self.since, self.routed = self.line + 1, self.since, len(ctx.history), False
             answered, finished = answered[1:], False  # the next line's first step
@@ -387,7 +388,7 @@ class JevOnlyPlanner:
         return Plan(f"Jev next step: {step}", actions, [], blind=step in ("address", "new_tab"))
 
     def _ask(self, image: bytes, ctx: StepContext, line: str, steps: list[str], context: list[str], route: bool,
-             guard: bool, opened: bool) -> tuple[dict, tuple[int, int], tuple[int, int]]:
+             guard: bool, opened: bool) -> Ask:
         """Jev's batched questions on one line of the request: its next step, asked with the `context` of steps
         since the line before it began ("type in hello" on a just-opened blank document was a click with the line's
         own steps alone, 2/2), and with `route` the questions that find its app, asked apart with the line's own
@@ -427,31 +428,42 @@ class JevOnlyPlanner:
             "focused": {"type": "noul", "instructions": FOCUSED},
             "loading": {"type": "noul", "instructions": LOADING},
         }
+        return image, "jev", ([(routing, {"goal": line, "executed_steps": steps})] if routing else []) \
+            + [(stepping, {"goal": line, "executed_steps": context})]
 
-        def ask(questions: dict, done: list[str]) -> tuple[dict, tuple[int, int], tuple[int, int]]:
-            return self.jev.evaluate(image, questions, run_id=ctx.run_id, step=ctx.step,
-                                     state={"goal": line, "executed_steps": done})
-
-        with ThreadPoolExecutor(1) as pool:
-            found = pool.submit(ask, routing, steps) if routing else None
-            answers, size, padded = ask(stepping, context)
-            return (found.result()[0] if found else {}) | answers, size, padded
-
-    def _line_done(self, image: bytes, ctx: StepContext, lines: list[str], question: str = LINE_LEFT) -> float:
-        """How sure Jev is that the line it sees is done, asked with the line before it in view."""
+    def _line_done(self, image: bytes, ctx: StepContext, lines: list[str], question: str = LINE_LEFT) -> Ask:
+        """Whether the line Jev sees is left to do ("left"), asked with the line before it in view."""
         shown = "\n".join(lines[max(self.line - 1, 0):self.line + 1])
-        answers, _, _ = self.jev.evaluate(image, {"left": {"type": "noul", "instructions": question}},
-                                          run_id=ctx.run_id, step=ctx.step, label="line-done",
-                                          state={"goal": shown, "executed_steps": ctx.history[self.prev:]})
-        return 1 - probability(answers["left"].get("noul"))
+        return image, "line-done", [({"left": {"type": "noul", "instructions": question}},
+                                     {"goal": shown, "executed_steps": ctx.history[self.prev:]})]
 
-    def _shown(self, image: bytes, ctx: StepContext, line: str, text: str) -> float:
-        """How sure Jev is that the text the line typed shows where it was typed."""
+    def _shown(self, image: bytes, ctx: StepContext, line: str, text: str) -> Ask:
+        """Whether the text the line typed shows where it was typed ("typed")."""
         question = TYPED.format(text=json.dumps(text.removesuffix("…"), ensure_ascii=False))
-        answers, _, _ = self.jev.evaluate(image, {"typed": {"type": "noul", "instructions": question}},
-                                          run_id=ctx.run_id, step=ctx.step, label="typed",
-                                          state={"goal": line, "executed_steps": ctx.history[self.since:]})
-        return probability(answers["typed"].get("noul"))
+        return image, "typed", [({"typed": {"type": "noul", "instructions": question}},
+                                 {"goal": line, "executed_steps": ctx.history[self.since:]})]
+
+    def _evaluate_all(self, ctx: StepContext, asks: list[Ask]) -> list[tuple[dict, tuple[int, int], tuple[int, int]]]:
+        """Each ask's answers, its question sets asked in parallel, those on the same image in the same state in one
+        call: each call uploads the screen and a step's calls queue on those uploads (a 1080p screen sent at 1280 px
+        from the Pi: one call alone 0.30 s, 2 at once 0.35 s, 3 0.42 s, 5 0.58 s)."""
+        calls: list[tuple[bytes, dict, dict, list[str]]] = []  # image, questions, state, labels
+        parts: list[list[tuple[int, dict]]] = []  # each ask's question sets, by the call they went in
+        for image, label, sets in asks:
+            parts.append([])
+            for questions, state in sets:
+                i = next((i for i, (shot, asked, said, _) in enumerate(calls) if shot is image and said == state
+                          and all(asked.get(k, q) == q for k, q in questions.items())), len(calls))
+                if i == len(calls):
+                    calls.append((image, {}, state, []))
+                calls[i][1].update(questions)
+                calls[i][3].append(label)
+                parts[-1].append((i, questions))
+        with ThreadPoolExecutor(len(calls)) as pool:
+            replies = list(pool.map(lambda c: self.jev.evaluate(c[0], c[1], run_id=ctx.run_id, step=ctx.step, state=c[2],
+                                                                label="+".join(dict.fromkeys(c[3]))), calls))
+        return [({k: v for i, questions in part for k, v in replies[i][0].items() if k in questions},
+                 *replies[part[0][0]][1:]) for part in parts]
 
     def _next_line(self, image: bytes, ctx: StepContext, lines: list[str], why: str) -> Plan:
         """The line Jev sees is done: go on to the next one, or the request is done."""
