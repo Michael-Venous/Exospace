@@ -139,7 +139,7 @@ new EventSource("/narration").onmessage = e => {
   document.body.classList.add("done");
   clearTimeout(doneTimer); doneTimer = setTimeout(() => document.body.classList.remove("done"), 4000);
   says.textContent = line;
-  if (!m.say) return;
+  if (!m.say || m.voiced) return;  // voiced: the server's audio follows as pcm chunks
   if (stopListening) unspoken.push(line); else speak(line);
 };
 
@@ -148,6 +148,7 @@ new EventSource("/narration").onmessage = e => {
 let out, playAt = 0, playing = [];
 function play(b64, rate) {
   out ??= new AudioContext();
+  if (out.state === "suspended") out.resume();
   const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0)), pcm = new Int16Array(bytes.buffer);
   const buffer = out.createBuffer(1, pcm.length, rate);
   buffer.getChannelData(0).set(Float32Array.from(pcm, v => v / 32768));
@@ -157,6 +158,8 @@ function play(b64, rate) {
   source.start(playAt); playAt += buffer.duration;
   playing.push(source); source.onended = () => playing = playing.filter(s => s !== source);
 }
+// Chromium starts audio suspended until the first touch or key on the page (the GPIO button is neither).
+addEventListener("pointerdown", () => { out ??= new AudioContext(); out.resume(); }, {once: true});
 function stopAudio() { playing.forEach(s => s.stop()); playing = []; playAt = 0; }
 let describing = false; try { describing = localStorage.describe === "1"; } catch {}
 async function setDescribe(on) {

@@ -40,6 +40,7 @@ from dotenv import load_dotenv
 
 from brain.voice import button
 from brain.voice.describe import DESCRIBE_MODEL, Describer
+from brain.voice.speech import Speaker
 
 # A 200 ms pause ends a segment: the short break after "open chrome" in "open chrome and search cats" is
 # enough, so Chrome opens while the user is still talking.
@@ -83,9 +84,10 @@ def filler(quiet_s: float, spoken: bool) -> str | None:
 class Agent:
     """The agent's display server, reached as a local program (no Origin header)."""
 
-    def __init__(self, base_url: str, describer: Describer | None = None) -> None:
+    def __init__(self, base_url: str, describer: Describer | None = None, speaker: Speaker | None = None) -> None:
         self.base = base_url.rstrip("/")
         self.describer = describer
+        self.speaker = speaker  # reads lines aloud; None leaves speaking to the browser
         self.describe_on = False  # the page's Describe toggle
         self.busy = False
         self._goal = ""
@@ -152,7 +154,7 @@ class Agent:
         lines.put({"show": line})
         jpeg = self.screen()
         if not (jpeg and self.describer and self.describer.describe(jpeg, self._goal, line, lines.put)):
-            lines.put({"say": line})
+            self._voice(lines, line)
 
     def pace(self, lines: queue.Queue[dict[str, Any]]) -> None:
         """Fill silence while a request runs, forever."""
@@ -166,7 +168,15 @@ class Agent:
         self._said_at, self._spoken = time.monotonic(), True
         if line != self._last:
             self._last = line
+            self._voice(lines, line)
+
+    def _voice(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
+        """Show the line and say it: through the speaker when there is one, else by the browser."""
+        if self.speaker is None:
             lines.put({"say": line})
+            return
+        lines.put({"say": line, "voiced": True})
+        threading.Thread(target=self.speaker.say, args=(line, lines.put), name="speak", daemon=True).start()
 
 
 def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[str, Any]]) -> ThreadingHTTPServer:
@@ -206,6 +216,8 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[s
                 if self.path == "/talk":  # the user started speaking: barge in on running work
                     if agent.describer is not None:
                         agent.describer.cancel()
+                    if agent.speaker is not None:
+                        agent.speaker.cancel()
                     agent.interrupt()
                 elif self.path == "/describe":
                     agent.describe_on = body.get("on") is True and agent.describer is not None
@@ -311,7 +323,9 @@ def main() -> int:
         return 1
     gemini = os.environ.get("GEMINI_API_KEY", "")
     describer = Describer(gemini, os.environ.get("DESCRIBE_MODEL") or DESCRIBE_MODEL) if gemini else None
-    serve(Agent(args.agent, describer), args.port, args.ws_port, key)
+    # VOICE_OUT=0 leaves speaking to the browser (silent on the Pi: Chromium there has no speech-dispatcher).
+    speaker = Speaker(key) if os.environ.get("VOICE_OUT", "1") != "0" else None
+    serve(Agent(args.agent, describer, speaker), args.port, args.ws_port, key)
     return 0
 
 
