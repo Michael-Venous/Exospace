@@ -52,25 +52,21 @@ PROGRESS_S = 10.0  # then each this long of silence gets a progress line: a hard
 
 
 def narrate(event: dict[str, Any]) -> str | None:
-    """What to say for one agent event; None stays silent (fast actions need no commentary)."""
+    """What to say for one agent event; None stays silent. Spoken aloud, the planner's stage checks
+    ("Gmail page or login/inbox is loaded") and Jev's evidence for done ("The browser shows Gmail inbox
+    with the Gmail logo...") sounded robotic, so steps are silent and success is just "Done."."""
     kind = event.get("ev")
     if kind == "status":
         return str(event.get("message", "")).strip() or None
-    if kind == "plan":
-        reasoning = str(event.get("reasoning", ""))
-        if reasoning.startswith("Stage "):  # "Stage 1/3: <expected visible result>"
-            return reasoning.split(":", 1)[-1].strip() or None
-        return None
     if kind != "result":
         return None
     status, message = event.get("status"), str(event.get("message", "")).strip()
-    if status == "ask_user":
+    if status == "ask_user":  # questions and confirmations are always read word for word
         return message or "Can you clarify?"
     if status == "done":
-        message = message.removeprefix("Verified: ").strip()
-        return message if 0 < len(message) <= 120 else "Done."
-    if status == "cancelled":
-        return "Stopped."
+        return "Done."
+    if status == "cancelled":  # the user's own next command cancels the last one: no need to announce it
+        return None if message == "barge-in" else "Stopped."
     return "Sorry, I couldn't do that."
 
 

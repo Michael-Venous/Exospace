@@ -27,10 +27,10 @@ class NarrationTests(unittest.TestCase):
         self.assertEqual(line, "This can't be undone. Go ahead?")
 
     def test_results(self):
-        self.assertEqual(narrate({"ev": "result", "status": "done", "message": "Verified: Janet's email is open"}),
-                         "Janet's email is open")
-        self.assertEqual(narrate({"ev": "result", "status": "done", "message": "x" * 300}), "Done.")
-        self.assertEqual(narrate({"ev": "result", "status": "cancelled", "message": "barge-in"}), "Stopped.")
+        self.assertEqual(narrate({"ev": "result", "status": "done", "message": "Verified: The browser shows Gmail inbox"}),
+                         "Done.")
+        self.assertIsNone(narrate({"ev": "result", "status": "cancelled", "message": "barge-in"}))  # the user's next command
+        self.assertEqual(narrate({"ev": "result", "status": "cancelled", "message": "stop"}), "Stopped.")
         self.assertEqual(narrate({"ev": "result", "status": "fail", "message": "TimeoutError"}),
                          "Sorry, I couldn't do that.")
 
@@ -50,9 +50,8 @@ class NarrationTests(unittest.TestCase):
         agent._say(lines, "The calculator is open")
         self.assertEqual(lines.qsize(), 1)
 
-    def test_stages_are_brief_and_fast_actions_are_silent(self):
-        self.assertEqual(narrate({"ev": "plan", "reasoning": "Stage 1/2: The reply window is open"}),
-                         "The reply window is open")
+    def test_steps_are_silent(self):
+        self.assertIsNone(narrate({"ev": "plan", "reasoning": "Stage 1/1: Gmail page or login/inbox is loaded"}))
         self.assertIsNone(narrate({"ev": "plan", "reasoning": "Jev direct action"}))
         self.assertIsNone(narrate({"ev": "action", "action": "click(0.1,0.2)"}))
 
