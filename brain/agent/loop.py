@@ -90,7 +90,7 @@ class Agent:
                 times = dict(t_capture=0.0, t_upload=0.0, t_model=0.0, t_execute=0.0, t_settle=0.0)
                 try:
                     if settled_s is None:  # otherwise the previous step's last action already settled
-                        settled_s = ctl.wait_settled()
+                        settled_s = ctl.wait_settled(react=False)  # no input was just sent
                         times["t_settle"] += settled_s
                     # A screen still moving at the settle timeout (a live camera preview, a video) differs at
                     # every grab: judging it stale discarded nearly every plan (measured on Android's camera).
@@ -129,7 +129,10 @@ class Agent:
                     if plan.refresh_screen:
                         note = "Planner updated. Recheck the current screen before acting."
                         continue
-                    if plan.actions:
+                    # A plan that only says done aims at nothing: a Short playing on is no reason to doubt it, and
+                    # discarding each "done" Jev saw for "click the third video" left it scrolling (2026-10-19).
+                    # Nor does a blind one: Brave's restored page drawing in discarded "Ctrl+L, youtube" (v5-t1).
+                    if plan.actions and plan.actions[0].type != "done" and not plan.blind:
                         latest = ctl.capture.grab()
                         if latest is None or is_blank(latest):
                             token.cancel("video lost")
@@ -148,7 +151,7 @@ class Agent:
                     acted = sent_input = False
                     action_failed = bool(plan.rejected)
                     terminal = pending_done = None
-                    for action in plan.actions:
+                    for i, action in enumerate(plan.actions):
                         token.check()
                         if action.type == "remember":
                             self.memory.remember(action.key, action.value)
@@ -185,8 +188,16 @@ class Agent:
                             finally:
                                 times["t_execute"] += time.monotonic() - stamp
                             history.append(action.brief())  # before settling: a restart lands there
-                            settled_s = ctl.wait_settled(loading=_may_load(action))
-                            times["t_settle"] += settled_s
+                            # Keys sent next go where the click put the focus, whatever the screen shows: the
+                            # page-load wait after a click on YouTube's search box held the typing ~0.8 s (v5-t1),
+                            # and waiting for B1's click or "hello" to show held each next key ~0.3 s (v12-t3), YouTube's
+                            # suggestions under "horses" Enter ~0.5 s (v13-t1). The Pico runs each command before the
+                            # next. A click may open what they go to (a menu), and a key too (a launcher).
+                            keys_next = i + 1 < len(plan.actions) and plan.actions[i + 1].type in ("type_text", "hotkey")
+                            if not (keys_next and action.type == "type_text"):
+                                settled_s = ctl.wait_settled(loading=_may_load(action) and not keys_next,
+                                                             react=not keys_next or action.type == "hotkey")
+                                times["t_settle"] += settled_s
                     if pending_done is not None:
                         # Check the claim on the new screen now: replanning on a screen that looks unchanged
                         # (a camera shutter) repeated the action (measured: 20+ photos for one).

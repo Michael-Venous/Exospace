@@ -38,6 +38,20 @@ class ReconnectTests(unittest.TestCase):
         # Classified once per connection: not at each goal, and once more after the reconnect.
         self.assertEqual(seen, [("first", 1, 1), ("second", 1, 1), ("restart", 1, 1), 2, ("after", 2, 2)])
 
+    def test_the_target_is_detected_at_start_once_its_first_frames_arrive(self):
+        monitor = Mock(generation=0, connected=False)  # no frame seen yet when the app starts
+        monitor.wait_connected.return_value = 0
+        with patch.object(app.Config, "load", return_value=Mock(executor="direct", target_os="")), \
+                patch.object(app, "build_executor"), patch("brain.browser.BrowserTarget"), \
+                patch.object(app, "Controller") as controller, \
+                patch.object(app, "ConnectionMonitor", return_value=monitor), \
+                patch.object(app, "Memory"), patch.object(app, "Telemetry"), \
+                patch.object(app, "detect_profile") as detect, patch.object(app, "Agent"), \
+                patch("builtins.input", side_effect=EOFError), patch("builtins.print"):
+            controller.return_value.await_target.side_effect = lambda s: setattr(monitor, "connected", True) or True
+            self.assertEqual(app.main(["--backend", "browser", "--url", "about:blank"]), 0)
+        detect.assert_called_once()
+
 
 class DisplayGoalTests(unittest.TestCase):
     def run_goals(self, statuses, continues=False):

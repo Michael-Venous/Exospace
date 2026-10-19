@@ -170,18 +170,20 @@ setDescribe(describing);
 function speakHeld() { if (unspoken.length) { speak(unspoken.at(-1)); unspoken = []; } }
 
 // Later segments of one hold continue its request ("go to youtube" ... "and search lofi"). One at a time: an
-// early "open ..." clause and the words said right after it must reach the agent in order.
+// early clause and the words said right after it must reach the agent in order.
 let sending = Promise.resolve();
 function send(text, continues) {
   sending = sending.then(() => post("/segment", {text, continues})).then(r => { if (r.error) showError(r.error); });
 }
 
-// The leading "open ..." clauses of "open chrome, go to youtube and search cats", and what follows them. A clause
-// ends at "and", "then", or a comma or full stop with more words after it (a live transcript ends in one).
-const OPENER = /^\s*((?:open|launch|go to)\s.+?)(?:[,;.](?=\s+\S)|(?=\s+(?:and|then)\b))[\s,]*(?:(?:and|then)\b[\s,]*)*(.*)$/i;
-function openers(text) {
+// The ended clauses of "open chrome, go to youtube and search cats", and what follows them. A clause ends at
+// "and", "then", or a comma or full stop with more words after it (a live transcript ends in one).
+// shortcut: "and" inside one request ("search cats and dogs") ends it early and "dogs" arrives as a request of
+// its own; wait for the word after "and" to start a request if such phrases get said.
+const CLAUSE = /^\s*(\S.*?)(?:[,;.](?=\s+\S)|(?=\s+(?:and|then)\b))[\s,]*(?:(?:and|then)\b[\s,]*)*(.*)$/i;
+function clausesOf(text) {
   const clauses = [];
-  for (let m; (m = OPENER.exec(text)); text = m[2]) clauses.push(m[1].trim());
+  for (let m; (m = CLAUSE.exec(text)) && m[1].trim(); text = m[2]) clauses.push(m[1].trim());
   return [clauses, text.trim()];
 }
 
@@ -211,10 +213,10 @@ async function start() {
   // so the first words are neither delayed nor lost.
   const queued = [];
   let ended = false;
-  let done = "", sent = false, early = 0;  // early: this segment's "open ..." clauses already sent
+  let done = "", sent = false, early = 0;  // early: this segment's ended clauses already sent
   // shortcut: skips sent clauses by count; a final transcript that moves a clause boundary resends or drops one.
   const leftover = text => { if (!early) return text;
-    const [clauses, rest] = openers(text);
+    const [clauses, rest] = clausesOf(text);
     return [...clauses.slice(early), rest].filter(Boolean).join(", "); };
   const ctx = new AudioContext(), an = ctx.createAnalyser(), buf = new Uint8Array(512);
   an.fftSize = buf.length;
@@ -252,10 +254,10 @@ async function start() {
     const shown = (said.textContent + live.textContent).length;
     heard.classList.toggle("long", shown > 80);
     heard.classList.toggle("longer", shown > 120);
-    // Each pause ends a segment: send it now so execution starts while the user keeps talking. A leading
-    // "open ..." clause goes sooner, once the words after it end it: "Open up Google Chrome and search up
-    // YouTube." had no pause after "Chrome", so Chrome waited for the whole sentence.
-    const [clauses] = openers(m.is_final ? done : `${done} ${words}`);
+    // Each pause ends a segment: send it now so execution starts while the user keeps talking. A clause goes
+    // sooner, once the words after it end it: "Open up Google Chrome and search up YouTube." had no pause after
+    // "Chrome", so Chrome waited for the whole sentence.
+    const [clauses] = clausesOf(m.is_final ? done : `${done} ${words}`);
     if (m.speech_final) {
       const left = leftover(done);
       if (left) { send(left, sent); sent = true; }

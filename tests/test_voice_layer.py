@@ -229,19 +229,21 @@ class PageTests(unittest.TestCase):
         page.wait_for_timeout(1500)
         self.assertLessEqual(agent.screen.call_count - reopened, 8)  # one loop asks every 250 ms: about 6
 
-    def test_open_clauses_end_at_and_then_or_a_comma(self):
+    def test_clauses_end_at_and_then_or_a_comma(self):
         agent = Mock()
         page = self.open_page(agent)
-        split = lambda text: page.evaluate("t => openers(t)", text)
+        split = lambda text: page.evaluate("t => clausesOf(t)", text)
         self.assertEqual(split("open google chrome, open youtube, search horses"),
                          [["open google chrome", "open youtube"], "search horses"])
         self.assertEqual(split("Open up Google Chrome and then search up YouTube."),
                          [["Open up Google Chrome"], "search up YouTube."])
         self.assertEqual(split("go to youtube.com and"), [["go to youtube.com"], ""])
         self.assertEqual(split("open google chrome."), [[], "open google chrome."])  # not ended: maybe more words
-        self.assertEqual(split("search horses and cats"), [[], "search horses and cats"])
+        self.assertEqual(split("search for horses and click the third video"),
+                         [["search for horses"], "click the third video"])
+        self.assertEqual(split("type in hello, delete hello and"), [["type in hello", "delete hello"], ""])
 
-    def test_an_open_clause_is_sent_while_the_user_keeps_talking(self):
+    def test_a_clause_is_sent_while_the_user_keeps_talking(self):
         agent = Mock()
         page = self.open_page(agent)
         page.evaluate("press()")
@@ -262,8 +264,10 @@ class PageTests(unittest.TestCase):
         heard("open up google chrome and")  # no pause after "chrome" in the Pi's recorded requests
         self.assertEqual(submitted(1), [call("open up google chrome", False)])
         heard("Open up Google Chrome and search up", final=True)
-        heard("YouTube.", final=True, pause=True)
-        self.assertEqual(submitted(2), [call("open up google chrome", False), call("search up YouTube.", True)])
+        heard("YouTube and", final=True)
+        self.assertEqual(submitted(2), [call("open up google chrome", False), call("search up YouTube", True)])
+        heard("click the first video.", final=True, pause=True)
+        self.assertEqual(submitted(3)[2], call("click the first video.", True))
 
     def open_page(self, agent):
         agent.screen.return_value = None  # no device connected

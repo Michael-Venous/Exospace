@@ -113,7 +113,7 @@ class RaceTests(unittest.TestCase):
         race._plan, race._key, race.mode, race._point, race._clicked, race._pending = None, None, "", None, False, None
         race._gesture, race._utterance, race._triage_step, race._approved_goal = "click", "", 0, None
         race._scroll, race._launched, race._tries, race._aim = 0, "", 0, (0.0, 0.0)
-        race._earlier, race._approved_connected_at = "", 0.0
+        race._earlier, race._approved_connected_at, race.jev_steps = "", 0.0, False
         self.addCleanup(race._pool.shutdown)
         race.planner.next_actions.return_value = Plan("planned", [Action("hotkey", keys=("ENTER",))], [])
         self.race = race
@@ -156,6 +156,14 @@ class RaceTests(unittest.TestCase):
             result = self.race.next_actions(b"img", self.ctx("draft a reply"))
         self.assertEqual(result.reasoning, "planned")
         self.race.planner.next_actions.assert_called_once()
+
+    def test_executor_jev_takes_jevs_step_on_every_segment_without_triage(self):
+        self.race.jev_steps = True
+        with patch("brain.agent.race.triage") as tri:
+            for goal in ("open up youtube", "open up youtube\nsearch for horses"):
+                self.assertEqual(self.race.next_actions(b"img", self.ctx(goal)).reasoning, "planned")
+        tri.assert_not_called()
+        self.assertEqual(self.race.planner.next_actions.call_count, 2)
 
     def test_irreversible_request_waits_for_approval(self):
         with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), True)):

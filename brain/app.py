@@ -32,6 +32,7 @@ from brain.types import OS_NAMES, Action, ActionError, DeviceProfile, OSName
 
 LIVE_FPS = 4  # capture-card frames pushed to the display between steps
 RECONNECT_S = 180.0  # a restarting computer can take minutes to show video again
+FIRST_FRAME_S = 5.0  # for the capture card's first frames after start
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -145,7 +146,9 @@ def main(argv: list[str] | None = None) -> int:
             pointed: tuple[float, float] | None = None
 
             status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
-            if monitor.connected:  # detect now, not on the first request: it took ~8 s on the Pi (OS check, calibration)
+            # Detect now, not on the first request: it took ~8 s on the Pi (OS check, calibration). The capture card's
+            # first frames come a moment after start: checked at once, the target was never detected here (2026-10-19).
+            if controller.await_target(FIRST_FRAME_S) and monitor.connected:
                 try:
                     profile, generation = _connected_profile(
                         monitor, capture, executor, args.os, token, profile, generation, status, controller.hover, controller.hotkey)

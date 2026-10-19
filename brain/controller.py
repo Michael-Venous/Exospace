@@ -133,12 +133,13 @@ class Controller:
 
     # -- settling ----------------------------------------------------------
 
-    def wait_settled(self, loading: bool = False) -> float:
+    def wait_settled(self, loading: bool = False, react: bool = True) -> float:
         """Block until the screen stops changing. Returns seconds waited. `loading`: the last input may
-        have started a page load, so the screen must stay still longer."""
+        have started a page load, so the screen must stay still longer. `react`: input was just sent, so a
+        still screen may only be slow to react; False skips that wait (a run's first look)."""
         cfg = self.settle
         stable_s = cfg.load_stable_s if loading else cfg.stable_s
-        react_s = max(cfg.react_s, cfg.load_react_s) if loading else cfg.react_s
+        react_s = (max(cfg.react_s, cfg.load_react_s) if loading else cfg.react_s) if react else 0.0
         start = time.monotonic()
         prev = None
         still_since: float | None = None

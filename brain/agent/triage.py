@@ -118,7 +118,7 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
     refined = refine(jev, jpeg, utterance, point, run_id=run_id, step=step)
     gesture = answers["gesture"].get("choice")
     gesture = gesture if gesture in GESTURE_CRITERIA else "click"
-    small = box_width(answers["target"], size, padded) < SMALL_TARGET
+    small = box_size(answers["target"], size, padded)[0] < SMALL_TARGET
     named = names[int(app)] if app in {str(i) for i in range(len(names))} else ""
     return Triage("act", refined, irreversible, gesture, small=small, app=named) if refined \
         else Triage("plan", None, irreversible)
@@ -148,15 +148,16 @@ UTTERANCE_CONTROL = "the control the `utterance` asks to click, tap or open"
 
 
 def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float], *, run_id: str = "",
-           step: int = 0, state: dict | None = None, control: str = UTTERANCE_CONTROL) -> tuple[float, float] | None:
-    """Re-locate `target` in an enlarged crop around `point`, then in a tighter one around that;
+           step: int = 0, state: dict | None = None, control: str = UTTERANCE_CONTROL,
+           fine: bool = True, window: float = ZOOM_WINDOW) -> tuple[float, float] | None:
+    """Re-locate `target` in an enlarged crop (`window`) around `point`, then (`fine`) in a tighter one around that;
     None if Jev no longer sees it. On 49 OCR-labelled targets (Blender, Wikipedia, KCalc, GitHub)
     the point landed in the target 4 times from the full screen, 28 after one zoom and 35 after
     both (a median of three zooms: 27)."""
     state = state or {"utterance": target}
-    coarse = _look(jev, jpeg, state, control, point, ZOOM_WINDOW, run_id, step)
-    if coarse is None:
-        return None
+    coarse = _look(jev, jpeg, state, control, point, window, run_id, step)
+    if coarse is None or not fine:
+        return coarse
     return _look(jev, jpeg, state, control, coarse, FINE_WINDOW, run_id, step) or coarse
 
 
@@ -211,13 +212,14 @@ def box_contains(answer: dict, size: tuple[int, int], padded: tuple[int, int], p
     return left * pw / w <= point[0] <= right * pw / w and top * ph / h <= point[1] <= bottom * ph / h
 
 
-def box_width(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> float:
+def box_size(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float]:
+    """A box answer's width and height (0-1 of the image); a box Jev didn't give counts as the whole image."""
     box = answer.get("box") or {}
     try:
-        left, right = probability(box.get("left")), probability(box.get("right"))
+        left, right, top, bottom = (probability(box.get(k)) for k in ("left", "right", "top", "bottom"))
     except ValueError:
-        return 1.0
-    return max(0.0, right - left) * padded[0] / size[0]
+        return 1.0, 1.0
+    return max(0.0, right - left) * padded[0] / size[0], max(0.0, bottom - top) * padded[1] / size[1]
 
 
 def box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float] | None:
@@ -231,6 +233,17 @@ def box_center(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> 
     (w, h), (pw, ph) = size, padded
     x, y = (left + right) / 2 * pw / w, (top + bottom) / 2 * ph / h
     return (x, y) if 0 <= x <= 1 and 0 <= y <= 1 else None  # padding must never become a click
+
+
+def mark(jpeg: bytes, point: tuple[float, float]) -> bytes:
+    """`jpeg` with a red circle drawn around `point` (0-1 of its width and height)."""
+    image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
+    h, w = image.shape[:2]
+    cv2.circle(image, (int(point[0] * w), int(point[1] * h)), max(12, w // 60), (0, 0, 255), max(3, w // 400))
+    ok, buf = cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    if not ok:
+        raise ValueError("mark encoding failed")
+    return buf.tobytes()
 
 
 def _crop_around(jpeg: bytes, point: tuple[float, float],

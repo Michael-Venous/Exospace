@@ -9,7 +9,8 @@ from brain.agent.jev_only import FAILED, JevOnlyPlanner
 from brain.agent.triage import spans
 from brain.types import Action, DeviceProfile, Rect
 
-BOX = {"box": {"left": .2, "right": .4, "top": .2, "bottom": .4}, "confidence": .9}
+BOX = {"box": {"left": .28, "right": .32, "top": .28, "bottom": .32}, "confidence": .9}  # small: looked at closer
+BIG = {"box": {"left": .2, "right": .4, "top": .2, "bottom": .4}, "confidence": .9}
 ON, STRAY = (.3, .3), (.3, .95)  # a zoomed look on the first box's center, and one a row off
 
 
@@ -19,28 +20,55 @@ class JevOnlyTests(unittest.TestCase):
 
     def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
-             question=.05, composed=.05):
+             question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
+             target=BOX, run="r", drawing=.05, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
-                "target": BOX, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
+                "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
-                "app": {"box": {"left": .1, "right": .5, "top": .6, "bottom": .7}}}
+                "app": {"box": dict(zip(("left", "right", "top", "bottom"), app))}, "site": {"noul": site},
+                "submit": {"noul": submit}, "browser_named": {"noul": .05}, "left": {"noul": left},
+                "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
+                "drawing": {"noul": drawing}, "input": {"noul": input},
+                "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed}}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
         profile = DeviceProfile(os, Rect(0, 0, 400, 300), "mouse", 1)
-        ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id="r")
-        with patch("brain.agent.jev_only.refine", side_effect=list(looks)):
-            return self.planner.next_actions(b"img", ctx).actions
+        ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
+        with patch("brain.agent.jev_only.refine", side_effect=list(looks)) as self.refine:
+            self.last = self.planner.next_actions(b"img", ctx)
+            return self.last.actions
 
     def step(self, goal, **answers):
         return self.plan(goal, **answers)[0]
 
     def test_goal_jev_sees_done_is_done(self):
-        self.assertEqual(self.step("open calculator", complete=.9).type, "done")
+        self.assertEqual(self.step("open calculator", left=.1).type, "done")
+        self.assertEqual(self.step("open calculator", next="stuck", complete=.9).type, "done")  # nothing left to do
 
     def test_unfinished_goals_are_not_done(self):
         self.assertEqual(self.step("go to wikipedia", complete=.63).type, "click")
-        typed = self.plan("search for cats", complete=.9, next="enter", history=["type_text('cats')"])
-        self.assertEqual([a.brief() for a in typed], ["hotkey(ENTER)"])
-        self.assertEqual(self.step("search for cats", complete=.9, next="enter", history=["hotkey(ENTER)"]).type, "done")
+        typed = self.plan("search for cats", left=.1, next="enter", history=["type_text('cats')"])
+        self.assertEqual([a.brief() for a in typed], ["hotkey(ENTER)"])  # typed text isn't sent yet
+        self.assertEqual(self.step("search for cats", left=.1, next="enter", history=["hotkey(ENTER)"]).type, "done")
+
+    def test_text_typed_into_nothing_is_typed_again_into_the_field_clicked_first(self):
+        typed = ["type_text('horses')", "hotkey(ENTER)", "skill(wait {'s': 1.0})"]
+        again = self.plan("search for horses", left=.1, next="stuck", submit=.9, typed=.01, history=typed,
+                          looks=((.4, .1), (.4, .1)))  # though Jev sees the line done
+        self.assertEqual([a.brief() for a in again], ["click(400,100)", "type_text('horses')", "hotkey(ENTER)"])
+        self.assertEqual(self.refine.call_args.kwargs["state"]["executed_steps"], [])  # not told the text is in
+        self.assertEqual(self.step("search for horses", left=.1, typed=.6, history=typed, run="s").type, "done")
+        address = ["hotkey(CTRL+L)", "type_text('gmail')", "hotkey(CTRL+ENTER)"]  # the page it opened replaced it
+        self.assertEqual(self.step("go to gmail", left=.1, typed=.01, history=address, run="s").type, "done")
+
+    def test_a_done_line_hands_the_screen_to_the_next_one_and_a_continued_request_skips_it(self):
+        goal = "open up discord\nclose discord"
+        self.assertEqual(self.step(goal, left=.1, next="close_app").brief(), "hotkey(ALT+F4)")
+        self.assertEqual(self.planner.jev.evaluate.call_count, 5)  # both lines asked at once: no extra look
+        self.assertEqual(self.planner.line, 1)
+        self.assertEqual(self.step(goal, left=.1, history=["hotkey(ALT+F4)"]).type, "done")
+        more = goal + "\nopen a terminal"
+        launch = self.step(more, run="s", fits=.1, app_name=str(spans("open a terminal").index("terminal")))
+        self.assertEqual(launch.brief(), "skill(open_app {'name': 'terminal'})")  # not discord's lines again
 
     def test_next_click_lands_on_the_target(self):
         action = self.step("open calculator, then click 7")
@@ -62,15 +90,43 @@ class JevOnlyTests(unittest.TestCase):
             action = self.step("open calculator, then click 7", looks=looks)
             self.assertEqual((round(action.x, 2), round(action.y, 2)), (.3, .3))
 
-    def test_a_nearly_sure_target_is_clicked_only_where_both_zooms_confirm_it(self):
-        self.assertEqual(self.step("search for horse videos", present=.8).type, "click")
+    def test_a_nearly_sure_target_is_clicked_only_where_a_zoom_lands_in_its_box(self):
         for looks in ((ON, STRAY), (STRAY, ON), (ON, None)):
-            self.assertEqual(self.step("search for horse videos", present=.8, looks=looks).type, "fail")
-        self.assertEqual(self.step("search for horse videos", present=.7).type, "fail")
+            action = self.step("search for horse videos", present=.7, looks=looks)
+            self.assertEqual((action.type, round(action.y, 2)), ("click", .3))
+        self.assertEqual(self.step("search for horse videos", present=.7, looks=(STRAY, STRAY)).type, "fail")
 
-    def test_two_zooms_that_agree_move_a_nearly_sure_click(self):
-        action = self.step("open a new tab and search cats", present=.8, looks=(STRAY, STRAY))
+    def test_two_zooms_that_agree_move_a_sure_click(self):
+        action = self.step("open a new tab and search cats", looks=(STRAY, STRAY))
         self.assertEqual((action.type, action.y), ("click", .95))
+
+    def test_a_wide_target_is_zoomed_whole(self):
+        wide = {"box": {"left": .05, "right": .55, "top": .28, "bottom": .32}, "confidence": .9}  # a search box
+        self.step("search for cats", target=wide, looks=((.3, .3), (.3, .3)))
+        self.assertGreater(self.refine.call_args.kwargs["window"], .5)
+
+    def test_a_click_is_judged_done_on_the_screen_it_was_planned_on(self):
+        jev = self.planner.jev
+
+        def evaluate(image, questions, **_):  # Jev sees the line done only with the click marked on its screen
+            answers, size, padded = jev.evaluate.return_value
+            return answers | ({"left": {"noul": .2}} if image == b"marked" else {}), size, padded
+
+        goal = "click the third video"
+        with patch("brain.agent.jev_only.mark", return_value=b"marked") as marked:
+            jev.evaluate.side_effect = evaluate
+            click = self.step(goal, target=BIG).brief()
+            self.assertEqual(self.step(goal, target=BIG, history=[click]).type, "done")
+            self.assertEqual([round(v, 2) for v in marked.call_args.args[1]], [.3, .3])
+            for later in ({"history": [click, "hotkey(ENTER)"]},  # not the step just taken
+                          {"history": [click], "note": "Screen unchanged; try something different."}):
+                self.step(goal, target=BIG, run=str(later))
+                self.assertNotEqual(self.step(goal, target=BIG, run=str(later), **later).type, "done")
+            self.assertEqual(marked.call_count, 1)
+
+    def test_a_big_target_is_clicked_without_a_closer_look(self):
+        action = self.step("click the third video", target=BIG, looks=(STRAY, STRAY))
+        self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))
 
     def test_typed_text_is_a_run_of_the_goals_words(self):
         goal = 'type "hello world", then press enter'
@@ -97,7 +153,8 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("enter it in Name", next="fill", present=.3).type, "fail")
 
     def test_step_with_no_visible_effect_fails(self):
-        self.assertEqual(self.step("open it", note="Screen unchanged; try something different.").type, "fail")
+        self.assertEqual(self.step("open it", note="Screen unchanged; try something different.",
+                                   history=["click(600,300)"]).type, "fail")
 
     def test_a_question_or_nonsense_is_left_to_flash(self):
         self.assertEqual(self.step("what is this page about?", complete=.9, question=.9).type, "fail")
@@ -108,6 +165,9 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("open calculator, then click 7", history=["click(600,300)"]).type, "click")
         typed = self.plan("search for cats", next="enter", history=["type_text('cats')", "hotkey(ENTER)"])
         self.assertEqual(typed[0].type, "fail")
+
+    def test_a_new_lines_click_where_the_last_line_clicked_is_no_repeat(self):
+        self.assertEqual(self.step("go to google docs\ntype in hello", left=.1, history=["click(300,300)"]).type, "click")
 
     def test_the_request_itself_is_never_typed(self):
         goal = "write a short note about my day"
@@ -124,6 +184,12 @@ class JevOnlyTests(unittest.TestCase):
     def test_reasoning_fails_over(self):
         self.assertEqual(self.step("summarize this page", next="stuck").type, "fail")
 
+    def test_a_stuck_step_mid_request_looks_again_before_it_fails(self):
+        clicked = ["click(574,977)"]
+        self.assertEqual(self.step("open up youtube", next="stuck", history=clicked).brief(), "skill(wait {'s': 1.0})")
+        looked = clicked + ["skill(wait {'s': 1.0})"] * 2
+        self.assertEqual(self.step("open up youtube", next="stuck", history=looked).type, "fail")
+
     def test_app_in_front_that_fits_takes_the_step_and_ends_routing(self):
         self.assertEqual(self.step("find a video about horses").type, "click")
         self.assertEqual(self.step("find a video about horses", fits=.1).type, "click")  # routed once per run
@@ -133,13 +199,72 @@ class JevOnlyTests(unittest.TestCase):
         action = self.step(goal, fits=.1, app_present=.95, app_name=str(spans(goal, 250).index("video")))
         self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .65))
 
-    def test_no_suited_app_opens_the_launcher_waits_once_for_the_app_then_fails(self):
+    def test_a_small_app_icon_is_looked_at_closer_before_it_is_clicked(self):
+        goal = "open a terminal"
+        icon = dict(fits=.1, app_present=.95, app_name=str(spans(goal).index("terminal")), app=(.44, .46, .96, .99))
+        action = self.step(goal, **icon, looks=((.42, .98),))
+        self.assertEqual((action.type, action.x, action.y), ("click", .42, .98))  # the zoom's icon, not the box's
+        self.assertEqual(self.step(goal, **icon, looks=(None,)).brief(), "skill(open_app {'name': 'terminal'})")
+
+    def test_a_line_seen_not_done_is_not_done_without_input_of_its_own(self):
+        goal = "open up discord\nclose discord"
+        self.planner.line, self.planner.since, self.planner.run_id = 1, 1, "r"  # its look so far: a wait
+        self.planner.seen = True
+        waited = ["click(475,977)", "skill(wait {'s': 1.0})"]
+        self.assertEqual(self.step(goal, left=.1, next="close_app", history=waited).brief(), "hotkey(ALT+F4)")
+        self.assertEqual(self.step(goal, left=.1, history=waited + ["hotkey(ALT+F4)"]).type, "done")
+        self.planner.since = 2  # its one plan so far discarded unrun
+        self.assertEqual(self.step(goal, left=.1, next="close_app", history=waited).brief(), "hotkey(ALT+F4)")
+
+    def test_words_said_mid_run_are_shown_to_jev_as_requests(self):
+        self.step("open up libre office\nUser correction: add hello to b1", left=.1)
+        shown = [c.kwargs["state"]["goal"] for c in self.planner.jev.evaluate.call_args_list]
+        self.assertIn("add hello to b1", shown)
+        self.assertFalse(any("correction" in goal for goal in shown))
+
+    def test_jev_sees_which_line_took_the_steps_before_this_one(self):
+        self.planner.line, self.planner.since, self.planner.run_id, self.planner.seen = 1, 2, "r", True
+        goal, history = "open up youtube\nsearch for horses\nclick the third video", ["skill(wait {'s': 1.0})", "click(471,196)"]
+        self.step(goal, next="fill", text="1", input=.99, history=history + ["click(400,100)"])
+        seen = {c.kwargs["state"]["goal"]: c.kwargs["state"]["executed_steps"]
+                for c in self.planner.jev.evaluate.call_args_list if "next" in c.args[1]}
+        self.assertEqual(seen["search for horses"], ["skill(wait {'s': 1.0}) for \"open up youtube\"",
+                                                     "click(471,196) for \"open up youtube\"", "click(400,100)"])
+        self.assertEqual(seen["click the third video"], ["click(400,100) for \"search for horses\""])
+
+    def test_a_line_reached_already_done_is_done(self):
+        self.assertEqual(self.step("open up discord", left=.1, next="stuck").type, "done")
+
+    def test_the_app_icon_just_clicked_is_waited_for_not_clicked_again(self):
+        goal = "close discord"
+        # boxed a little off it: the closer look finds the icon just clicked
+        icon = dict(fits=.1, app_present=.95, app_name=str(spans(goal).index("discord")), app=(.42, .45, .96, .99))
+        clicked = ["click(475,977)"]
+        self.assertEqual(self.step(goal, **icon, looks=((.478, .968),), history=clicked).brief(),
+                         "skill(wait {'s': 1.0})")
+        looked = clicked + ["skill(wait {'s': 1.0})"] * 6
+        self.assertEqual(self.step(goal, **icon, looks=((.478, .968),), history=looked).type, "fail")
+        on = dict(icon, app=(.46, .49, .96, .99))  # boxed right on the click: no closer look, which found none
+        self.assertEqual(self.step(goal, **on, looks=(None,), history=clicked).brief(), "skill(wait {'s': 1.0})")
+
+    def test_the_suited_app_in_front_is_not_switched_to(self):
+        goal = "click the third video"
+        front = dict(fits=.1, app_present=.95, site=.9, app=(.01, .99, .04, .98),  # the browser, its results loading
+                     history=["hotkey(ENTER)"])
+        self.assertEqual(self.step(goal, **front, present=.1).brief(), "skill(wait {'s': 1.0})")
+        action = self.step(goal, **front)
+        self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))  # the step's own
+
+    def test_no_suited_app_is_opened_then_looked_for_in_the_launcher_waits_once_then_fails(self):
         goal = "find a video about horses"
         named = str(spans(goal, 250).index("video"))
-        self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), "hotkey(GUI)")
-        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)"]).brief(), "skill(wait {'s': 3.0})")
-        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)", "skill(wait {'s': 3.0})"]).type,
-                         "fail")
+        self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), "skill(open_app {'name': 'video'})")
+        opened = ["skill(open_app {'name': 'video'})"]
+        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=opened).brief(), "hotkey(GUI)")
+        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=opened + ["hotkey(GUI)"]).brief(),
+                         "skill(wait {'s': 3.0})")
+        self.assertEqual(self.step(goal, fits=.1, app_name=named,
+                                   history=opened + ["hotkey(GUI)", "skill(wait {'s': 3.0})"]).type, "fail")
 
     def test_launcher_is_searched_for_the_app_the_goal_names_before_an_icon_is_clicked(self):
         goal = "open up camera and take a picture"
@@ -149,6 +274,121 @@ class JevOnlyTests(unittest.TestCase):
         typed = ["hotkey(GUI)", "type_text('camera')"]
         self.assertEqual(self.step(goal, **search | {"history": typed}).type, "click")  # then the result
 
+    def test_a_website_goes_to_a_visible_browser_or_the_launchers_list_never_its_search(self):
+        goal = "open up youtube"
+        site = dict(fits=.1, site=.9, app_name=str(spans(goal).index("youtube")))
+        action = self.step(goal, **site, app_present=.95)
+        self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .65))
+        self.assertEqual(self.step(goal, **site).brief(), "skill(open_app {'name': 'web browser'})")  # not 'youtube'
+        opened = ["skill(open_app {'name': 'web browser'})", "hotkey(GUI)"]
+        self.assertEqual(self.step(goal, **site, launcher=.9, history=opened).brief(), "type_text('web browser')")
+
+    def test_each_line_routes_again(self):
+        first = "open up discord"
+        self.plan(first, app_name=str(spans(first).index("discord")))  # fits: routing ends
+        goal = first + "\nopen a terminal"
+        opened = ["skill(open_app {'name': 'discord'})"]
+        self.assertEqual(self.step(goal, left=.1, fits=.1, app_name=str(spans("open a terminal").index("terminal")),
+                                   history=opened).brief(), "skill(open_app {'name': 'terminal'})")
+
+    def test_a_line_naming_no_app_reopens_the_last_one_only_with_no_window_open(self):
+        goal = "open up chrome and close out the tab\nmake a new tab"
+        closed = ["skill(open_app {'name': 'chrome'})", "hotkey(CTRL+W)"]
+        self.assertEqual(self.step(goal, left=.1, fits=.1, window=.1, next="new_tab", history=closed).brief(),
+                         "skill(open_app {'name': 'chrome'})")
+        self.assertEqual(self.step(goal, left=.1, fits=.1, next="new_tab", history=closed, run="s").brief(),
+                         "hotkey(CTRL+T)")
+
+    def test_a_failed_request_continued_in_a_new_run_reopens_the_app_it_opened(self):
+        goal = "open up chrome and close out the tab"
+        self.plan(goal, history=["skill(open_app {'name': 'chrome'})", "hotkey(CTRL+W)"])
+        closed = dict(fits=.1, window=.1, next="new_tab")
+        self.assertEqual(self.step(goal + "\nmake a new tab", run="s", left=.1, **closed).brief(),
+                         "skill(open_app {'name': 'chrome'})")  # its history starts empty
+        self.assertEqual(self.step("make a new tab", run="t", **closed).brief(), "hotkey(CTRL+T)")  # a new request
+
+    def test_address_goes_to_the_site_in_the_browser_in_front(self):
+        goal = "open chrome and go to google docs"
+        actions = self.plan(goal, next="address", text=str(spans(goal).index("google docs")))
+        self.assertEqual([a.brief() for a in actions], ["hotkey(CTRL+L)", "type_text('google docs')", "hotkey(ENTER)"])
+        self.assertTrue(self.last.blind)  # the address bar takes it whatever the page draws meanwhile
+        self.assertEqual(self.step("go to email", next="address").type, "click")  # no words: the page's link
+
+    def test_a_site_named_by_its_dotcom_word_is_opened_without_a_search(self):
+        goal = "open up youtube"
+        youtube = str(spans(goal).index("youtube"))
+        self.assertEqual(self.plan(goal, next="address", text=youtube, dotcom=.9)[-1].brief(), "hotkey(CTRL+ENTER)")
+        for other in ({"dotcom": .1}, {"os": "macos"}):
+            self.assertEqual(self.plan(goal, **{"next": "address", "text": youtube, "dotcom": .9} | other)[-1].brief(),
+                             "hotkey(ENTER)")
+        goal = "go to google docs"  # no web address has a space
+        self.assertEqual(self.plan(goal, next="address", text=str(spans(goal).index("google docs")), dotcom=.9)[-1]
+                         .brief(), "hotkey(ENTER)")
+
+    def test_a_search_is_typed_and_sent_in_one_step(self):
+        goal = "search for horses"
+        actions = self.plan(goal, next="type", text=str(spans(goal).index("horses")), submit=.9,
+                            history=["click(300,300)"])
+        self.assertEqual([a.brief() for a in actions], ["type_text('horses')", "hotkey(ENTER)"])
+
+    def test_a_click_on_a_box_the_line_types_into_types_in_the_same_step(self):
+        goal = "search for horses"
+        horses = str(spans(goal).index("horses"))
+        actions = self.plan(goal, next="click", text=horses, input=.95, submit=.9)
+        self.assertEqual([a.type for a in actions], ["click", "type_text", "hotkey"])
+        for unsure in ({"input": .7}, {"text": "none"}):  # a tile that opens a document, or nothing to type
+            self.assertEqual([a.type for a in self.plan(goal, **{"next": "click", "text": horses} | unsure)], ["click"])
+
+    def test_text_typed_into_a_cell_is_entered_in_the_same_step(self):
+        goal = "add hello to b1"
+        hello = str(spans(goal).index("hello"))
+        actions = self.plan(goal, next="click", text=hello, input=.95, commit=.9)
+        self.assertEqual([a.type for a in actions], ["click", "type_text", "hotkey"])
+        self.assertEqual([a.type for a in self.plan(goal, next="click", text=hello, input=.95, commit=.6)],
+                         ["click", "type_text"])  # a terminal in front of a spreadsheet: Enter would run it
+
+    def test_typed_words_are_erased_word_by_word(self):
+        goal = "type in hello world, delete hello world"
+        actions = self.plan(goal, next="erase", text=str(spans(goal).index("hello world")),
+                            history=["type_text('hello world')"])
+        self.assertEqual([a.brief() for a in actions], ["hotkey(CTRL+BACKSPACE)"] * 2)
+        self.assertEqual(self.step(goal, next="erase", os="macos").type, "fail")  # no text: nothing to count
+        erased = self.plan("delete hello", next="erase", history=["type_text('hello')"])
+        self.assertEqual([a.brief() for a in erased], ["hotkey(CTRL+BACKSPACE)"])  # the text last typed
+
+    def test_tabs_and_apps_close_by_keyboard(self):
+        self.assertEqual(self.step("make a new tab", next="new_tab").brief(), "hotkey(CTRL+T)")
+        self.assertEqual(self.step("close out the tab", next="close_tab", os="macos").brief(), "hotkey(GUI+W)")
+        self.assertEqual(self.step("close discord", next="close_app").brief(), "hotkey(ALT+F4)")
+        self.assertEqual(self.step("close discord", next="close_app", os="macos").brief(), "hotkey(GUI+Q)")
+
+    def test_an_app_still_opening_is_waited_for_even_on_the_first_screen(self):
+        self.assertEqual(self.step("open up discord", next="stuck", loading=.9).brief(), "skill(wait {'s': 1.0})")
+        waited = ["skill(wait {'s': 1.0})"] * 6
+        self.assertEqual(self.step("open up discord", next="stuck", loading=.9, history=waited).type, "fail")
+
+    def test_an_app_just_opened_is_waited_for_while_it_draws(self):
+        evaluate = self.planner.jev.evaluate
+
+        def asked():
+            return any("drawing" in call.args[1] for call in evaluate.call_args_list)
+
+        opened = ["skill(open_app {'name': 'web browser'})", "skill(wait {'s': 1.0})"]
+        for still in ({"drawing": .9}, {"loading": .9}):
+            self.assertEqual(self.step("search for horses", history=opened, **still).brief(), "skill(wait {'s': 1.0})")
+        self.assertTrue(asked())
+        self.assertEqual(self.step("search for horses", history=opened).type, "click")
+        # after other steps the question isn't asked, and a page still loading is no reason to wait
+        evaluate.reset_mock()
+        self.assertEqual(self.step("search for horses", drawing=.9, loading=.9, history=["click(1,1)"]).type, "click")
+        self.assertFalse(asked())
+
+    def test_typing_where_nothing_takes_text_clicks_first(self):
+        goal = "type in hello"
+        action = self.step(goal, next="type", text=str(spans(goal).index("hello")), focused=.1,
+                           history=["click(600,300)"])
+        self.assertEqual(action.type, "click")
+
 
 class JevOnlyGuardTests(unittest.TestCase):
     def next_step(self, approved):
@@ -157,7 +397,10 @@ class JevOnlyGuardTests(unittest.TestCase):
                    "next": {"choice": "enter"},
                    "present": {"noul": .95}, "target": BOX, "text": {"choice": "none"}, "replace": {"noul": .1},
                    "fits": {"noul": .95}, "app_present": {"noul": .1}, "app_name": {"choice": "none"},
-                   "launcher": {"noul": .1}, "app": BOX, "composed": {"noul": .05}, "irreversible": {"noul": .95}}
+                   "launcher": {"noul": .1}, "app": BOX, "composed": {"noul": .05}, "irreversible": {"noul": .95},
+                   "site": {"noul": .05}, "submit": {"noul": .05}, "browser_named": {"noul": .05},
+                   "left": {"noul": .9}, "window": {"noul": .9}, "loading": {"noul": .05}, "focused": {"noul": .95},
+                   "typed": {"noul": .95}}
         planner.jev.evaluate.return_value = (answers, (400, 300), (400, 300))
         ctx = StepContext("reply saying six and send it", DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1),
                           Mock(), ["type_text('six')"], 2, 10, run_id="r")

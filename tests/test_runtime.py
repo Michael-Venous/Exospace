@@ -90,6 +90,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(rows[-1]["success"], "1")
         self.assertEqual(len(rows), 3)
 
+    def test_a_first_look_at_a_still_screen_waits_for_no_reaction(self):
+        controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(
+            min_s=0, react_s=.3, load_stable_s=0, load_react_s=0, stable_s=0, timeout_s=1, poll_s=.001))
+        self.assertLess(controller.wait_settled(react=False), .1)
+        self.assertGreaterEqual(controller.wait_settled(), .3)  # input just sent may be slow to show
+
     def test_words_said_mid_run_join_the_request_at_the_next_step(self):
         goals = []
         executor = Mock()
@@ -179,6 +185,18 @@ class RuntimeTests(unittest.TestCase):
         self.hid.change = False  # a click that leaves the screen alone keeps the batch going
         self.agent().run("Fill the form", self.profile)
         self.assertEqual([c["y"] for c in self.hid.commands if c["op"] == "click"], [16384, 16384, 29490])
+
+    def test_keys_after_a_click_in_one_batch_skip_the_page_load_wait(self):
+        self.fast.next_actions.side_effect = [
+            Plan("fill", [Action("click", x=.5, y=.5), Action("type_text", text="horses"),
+                          Action("hotkey", keys=["ENTER"])], []),
+            Plan("verified", [Action("done", summary="Searched")], []),
+        ]
+        with patch.object(self.controller, "wait_settled", wraps=self.controller.wait_settled) as settle:
+            self.agent().run("search for horses", self.profile)
+        # the click's focus is waited for without waiting for a reaction, the Enter after the text not at all
+        self.assertEqual([(c.kwargs["loading"], c.kwargs["react"]) for c in settle.call_args_list
+                          if "loading" in c.kwargs], [(False, False), (True, True)])
 
     def test_stalled_actions_replan_then_cancel(self):
         self.hid.change = False
@@ -278,6 +296,23 @@ class RuntimeTests(unittest.TestCase):
         result = self.agent().run("Click the field", self.profile)
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(self.hid.commands, [{"op": "release_all"}])
+
+    def test_a_screen_change_during_inference_keeps_a_done(self):
+        def next_actions(image, ctx):
+            self.capture.frame[:] = 210 if ctx.step % 2 else 60  # a video playing on
+            return Plan("done", [Action("done", summary="Playing")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.assertEqual(self.agent(self.fast).run("Play a video", self.profile).status, "done")
+
+    def test_a_screen_change_during_inference_keeps_a_blind_plan(self):
+        def next_actions(image, ctx):
+            if ctx.step == 1:
+                self.capture.frame[:] = 210  # the page draws in
+                return Plan("address", [Action("hotkey", keys=["CTRL", "L"])], [], blind=True)
+            return Plan("ask", [Action("ask_user", question="Next?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.assertEqual(self.agent(self.fast).run("Go to a site", self.profile).status, "ask_user")
+        self.assertIn("key", [command["op"] for command in self.hid.commands])
 
     def test_a_change_away_from_the_target_keeps_the_plan(self):
         def next_actions(image, ctx):
