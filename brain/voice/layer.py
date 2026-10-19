@@ -4,11 +4,16 @@ Run the agent with a display server, then this:
     .venv/bin/python -m brain --display 8770
     .venv/bin/python -m brain.voice.layer --agent http://127.0.0.1:8770
 
-Hold the button (or Space) and speak. Each finished utterance goes to the agent's
-POST /goal; starting to speak while the agent is busy sends POST /stop first, so the
-next utterance becomes a correction ("actually go back"). Narration comes from the
+Hold the button (or Space) and speak. Each pause sends what was said to the agent's
+POST /goal, so work starts while the user keeps talking; starting to speak while the
+agent is busy sends POST /stop first. Later segments of the same hold continue that
+request ("go to youtube" ... "and search lofi", "actually go back"): they join it at its
+next step without cancelling the step in progress. Narration comes from the
 agent's event stream: questions (including irreversible-action confirmations) are
-always spoken, plan stages briefly, then the result. The page can also show the
+always spoken, plan stages briefly, then the result; a request that runs silently gets
+"On it." and then a progress line every few seconds, so a hard task never leaves dead air.
+With the page's Describe toggle on, Gemini Live describes the screen after each request
+instead of the bare result line (brain/voice/describe.py). The page can also show the
 target's live screen, relayed from the agent's GET /screen.jpg. This process never
 writes HID.
 
@@ -26,44 +31,68 @@ import queue
 import threading
 import time
 import urllib.request
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
 from typing import Any
 
 from dotenv import load_dotenv
 
-DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=300&smart_format=true"
+from brain.voice import button
+from brain.voice.describe import DESCRIBE_MODEL, Describer
+from brain.voice.speech import Speaker
+
+# A 200 ms pause ends a segment: the short break after "open chrome" in "open chrome and search cats" is
+# enough, so Chrome opens while the user is still talking.
+DG_URL = "wss://api.deepgram.com/v1/listen?model=nova-3&interim_results=true&endpointing=200&smart_format=true"
 KEEPALIVE_S = 15.0
 MAX_BODY = 4096
+ACK_S = 2.5  # a request still running this long with nothing said gets "On it."
+PROGRESS_S = 10.0  # then each this long of silence gets a progress line: a hard task never leaves dead air
 
 
 def narrate(event: dict[str, Any]) -> str | None:
-    """What to say for one agent event; None stays silent (fast actions need no commentary)."""
+    """What to say for one agent event; None stays silent. Spoken aloud, the planner's stage checks
+    ("Gmail page or login/inbox is loaded") and Jev's evidence for done ("The browser shows Gmail inbox
+    with the Gmail logo...") sounded robotic, so steps are silent and success is just "Done."."""
     kind = event.get("ev")
-    if kind == "plan":
-        reasoning = str(event.get("reasoning", ""))
-        if reasoning.startswith("Stage "):  # "Stage 1/3: <expected visible result>"
-            return reasoning.split(":", 1)[-1].strip() or None
-        return None
+    if kind == "status":
+        return str(event.get("message", "")).strip() or None
     if kind != "result":
         return None
     status, message = event.get("status"), str(event.get("message", "")).strip()
-    if status == "ask_user":
+    if status == "ask_user":  # questions and confirmations are always read word for word
         return message or "Can you clarify?"
     if status == "done":
-        message = message.removeprefix("Verified: ").strip()
-        return message if 0 < len(message) <= 120 else "Done."
-    if status == "cancelled":
-        return "Stopped."
+        return "Done."
+    if status == "cancelled":  # the user's own next command cancels the last one: no need to announce it
+        return None if message == "barge-in" else "Stopped."
     return "Sorry, I couldn't do that."
+
+
+FIXED_LINES = ["Done.", "On it.", "Still working on it.", "Sorry, I couldn't do that.", "Stopped.", "Can you clarify?"]
+
+
+def filler(quiet_s: float, spoken: bool) -> str | None:
+    """What to say while a request runs silently: an acknowledgement, then progress."""
+    if not spoken:
+        return "On it." if quiet_s >= ACK_S else None
+    return "Still working on it." if quiet_s >= PROGRESS_S else None
 
 
 class Agent:
     """The agent's display server, reached as a local program (no Origin header)."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, describer: Describer | None = None, speaker: Speaker | None = None) -> None:
         self.base = base_url.rstrip("/")
+        self.describer = describer
+        self.speaker = speaker  # reads lines aloud; None leaves speaking to the browser
+        self.describe_on = False  # the page's Describe toggle
         self.busy = False
+        self._goal = ""
+        self._said_at = 0.0  # monotonic time of the last line for the running request
+        self._spoken = False  # anything said for it yet
+        self._last = ""  # its last line: a result that repeats the final stage is said once
 
     def post(self, path: str, body: dict[str, Any]) -> None:
         request = urllib.request.Request(self.base + path, data=json.dumps(body).encode(), method="POST",
@@ -71,22 +100,22 @@ class Agent:
         with urllib.request.urlopen(request, timeout=5) as response:
             response.read()
 
-    def submit(self, text: str) -> None:
-        self.post("/goal", {"text": text})
+    def submit(self, text: str, continues: bool = False) -> None:
+        self.post("/goal", {"text": text, "continues": continues})
 
     def screen(self) -> bytes | None:
         """The latest capture-card frame as JPEG, or None when the agent has none or is down."""
         try:
             with urllib.request.urlopen(self.base + "/screen.jpg", timeout=2) as response:
                 return response.read() or None  # 204: no frame yet
-        except OSError:
+        except (OSError, HTTPException):  # an agent that dies mid-frame raises IncompleteRead
             return None
 
     def interrupt(self) -> None:
         if self.busy:
             self.post("/stop", {})
 
-    def follow(self, lines: queue.Queue[str]) -> None:
+    def follow(self, lines: queue.Queue[dict[str, Any]]) -> None:
         """Track busy state and queue narration from the agent's server-sent events, forever."""
         while True:
             try:
@@ -98,18 +127,58 @@ class Agent:
                         if not raw.startswith(b"data: "):
                             continue
                         event = json.loads(raw[6:])
+                        fresh = event.get("t", since) >= since
                         if event.get("ev") == "run":
-                            self.busy = True
+                            self.busy, self._goal = True, str(event.get("goal", ""))
+                            self._said_at, self._spoken, self._last = time.monotonic(), False, ""
                         elif event.get("ev") == "result":
                             self.busy = False
                         line = narrate(event)
-                        if line and event.get("t", since) >= since:
-                            lines.put(line)
+                        if not (line and fresh):
+                            continue
+                        if self.describing(event):
+                            threading.Thread(target=self._describe, args=(lines, line), daemon=True).start()
+                        else:
+                            self._say(lines, line)
             except OSError:
                 threading.Event().wait(1.0)  # agent restarting; reconnect
 
 
-def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) -> ThreadingHTTPServer:
+    def describing(self, event: dict[str, Any]) -> bool:
+        """A finished request is described; questions are always read word for word."""
+        return self.describe_on and self.describer is not None and event.get("ev") == "result" \
+            and event.get("status") in ("done", "fail")
+
+    def _describe(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
+        lines.put({"show": line})
+        jpeg = self.screen()
+        if not (jpeg and self.describer and self.describer.describe(jpeg, self._goal, line, lines.put)):
+            self._voice(lines, line)
+
+    def pace(self, lines: queue.Queue[dict[str, Any]]) -> None:
+        """Fill silence while a request runs, forever."""
+        while True:
+            time.sleep(0.5)
+            line = filler(time.monotonic() - self._said_at, self._spoken) if self.busy else None
+            if line:
+                self._say(lines, line)
+
+    def _say(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
+        self._said_at, self._spoken = time.monotonic(), True
+        if line != self._last:
+            self._last = line
+            self._voice(lines, line)
+
+    def _voice(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
+        """Show the line and say it: through the speaker when there is one, else by the browser."""
+        if self.speaker is None:
+            lines.put({"say": line})
+            return
+        lines.put({"say": line, "voiced": True})
+        threading.Thread(target=self.speaker.say, args=(line, lines.put), name="speak", daemon=True).start()
+
+
+def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[str, Any]]) -> ThreadingHTTPServer:
     """The voice page, narration stream and agent forwarding (no audio). Port 0 picks a free port."""
     page = resources.files("brain.voice").joinpath("layer.html").read_text().replace("__WS_PORT__", str(ws_port))
     hosts: set[str] = set()
@@ -144,13 +213,22 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
             body = json.loads(self.rfile.read(length)) if 0 < length <= MAX_BODY else {}
             try:
                 if self.path == "/talk":  # the user started speaking: barge in on running work
+                    if agent.describer is not None:
+                        agent.describer.cancel()
+                    if agent.speaker is not None:
+                        agent.speaker.cancel()
                     agent.interrupt()
+                elif self.path == "/describe":
+                    agent.describe_on = body.get("on") is True and agent.describer is not None
+                    return self._reply(200, json.dumps({"ok": True, "on": agent.describe_on}).encode())
                 elif self.path == "/segment":
                     text = str(body.get("text", "")).strip()
                     if not 0 < len(text) <= 500:
                         return self._reply(400, b'{"error":"text must be 1-500 characters"}')
-                    agent.interrupt()  # speaking while it works ("stop", a correction) barges in
-                    agent.submit(text)
+                    continues = body.get("continues") is True
+                    if not continues:  # a new request barges in; more words of this one join it at the next step
+                        agent.interrupt()
+                    agent.submit(text, continues)
                 else:
                     return self._reply(404, b'{"error":"not found"}')
             except OSError as exc:
@@ -165,8 +243,8 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
             try:
                 while True:
                     try:
-                        line = lines.get(timeout=KEEPALIVE_S)
-                        self.wfile.write(b"data: " + json.dumps({"say": line}).encode() + b"\n\n")
+                        message = lines.get(timeout=KEEPALIVE_S)
+                        self.wfile.write(b"data: " + json.dumps(message).encode() + b"\n\n")
                     except queue.Empty:
                         self.wfile.write(b": keepalive\n\n")
                     self.wfile.flush()
@@ -190,8 +268,12 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[str]) 
 
 
 def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
-    lines: queue.Queue[str] = queue.Queue()
+    lines: queue.Queue[dict[str, Any]] = queue.Queue()
     threading.Thread(target=agent.follow, args=(lines,), name="agent-events", daemon=True).start()
+    threading.Thread(target=agent.pace, args=(lines,), name="agent-pace", daemon=True).start()
+    if button.available():  # the Pi's push-to-talk button: the page holds and lets go of its orb
+        threading.Thread(target=button.watch, args=(lambda down: lines.put({"button": "down" if down else "up"}),),
+                         name="ptt-button", daemon=True).start()
     page_server(agent, port, ws_port, lines)
     print(f"Voice layer on http://127.0.0.1:{port} -> agent {agent.base}", flush=True)
     asyncio.run(_relay_forever(port, ws_port, deepgram_key))
@@ -238,7 +320,13 @@ def main() -> int:
     if not key:
         print("Set DEEPGRAM_API_KEY in the project .env (see .env.example).", flush=True)
         return 1
-    serve(Agent(args.agent), args.port, args.ws_port, key)
+    gemini = os.environ.get("GEMINI_API_KEY", "")
+    describer = Describer(gemini, os.environ.get("DESCRIBE_MODEL") or DESCRIBE_MODEL) if gemini else None
+    # VOICE_OUT=0 leaves speaking to the browser (silent on the Pi: Chromium there has no speech-dispatcher).
+    speaker = Speaker(key) if os.environ.get("VOICE_OUT", "1") != "0" else None
+    if speaker is not None:  # the fixed replies play instantly from the first time
+        threading.Thread(target=speaker.prerender, args=(FIXED_LINES,), name="tts-prerender", daemon=True).start()
+    serve(Agent(args.agent, describer, speaker), args.port, args.ws_port, key)
     return 0
 
 

@@ -55,7 +55,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     try:
         with ExitStack() as cleanup:
-            executor = build_executor(cfg, token, cleanup, status)
+            bus = EventBus() if args.display else None
+
+            def notify(message: str) -> None:  # executor news ("switching to deep mode") is spoken too
+                status(message)
+                if bus is not None:
+                    bus.publish("status", message=message)
+
+            executor = build_executor(cfg, token, cleanup, notify)
             if args.backend == "pi":
                 capture = V4L2Capture(cfg.capture_device, cfg.capture_width, cfg.capture_height)
                 cleanup.callback(capture.close)
@@ -77,7 +84,6 @@ def main(argv: list[str] | None = None) -> int:
             cleanup.callback(controller.release_all)
             monitor = ConnectionMonitor(capture, hid, token.cancel)
             cleanup.callback(monitor.close)
-            bus = EventBus() if args.display else None
             commands: queue.Queue[Command] = queue.Queue()
             if bus is not None:
                 server = DisplayServer(bus, commands, token.cancel, args.display_host, args.display)
@@ -104,7 +110,8 @@ def main(argv: list[str] | None = None) -> int:
                     if current == generation:
                         return None
                     try:
-                        found = detect_profile(capture, executor, args.os, cancel=token)
+                        found = detect_profile(capture, executor, args.os, cancel=token, pointer=controller.hover,
+                                               press=controller.hotkey)
                     except Cancelled as exc:
                         if exc.reason not in RESUMABLE:
                             raise
@@ -114,17 +121,23 @@ def main(argv: list[str] | None = None) -> int:
                     generation = current
                     if found is not None:
                         profile = found
-                        status(f"Target: {profile.os} ({profile.input})")
+                        status(f"Target: {profile.os} ({profile.input}), screen {profile.rect.as_list()} of the frame")
                     return found
 
             agent = Agent(executor, controller, Memory.load(cfg.session_path),
                           Telemetry(cfg.bench_csv, args.config_name or cfg.executor), args.max_steps, status,
-                          bus, reconnect)
+                          bus, reconnect, more_words=lambda: _more_words(commands))
             previous_goal = ""
             correction = False
             pointed: tuple[float, float] | None = None
 
             status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
+            if monitor.connected:  # detect now, not on the first request: it took ~8 s on the Pi (OS check, calibration)
+                try:
+                    profile, generation = _connected_profile(
+                        monitor, capture, executor, args.os, token, profile, generation, status, controller.hover, controller.hotkey)
+                except (Cancelled, RuntimeError, HIDError):
+                    pass  # detected again on the first request
             while True:
                 try:
                     if bus is None:
@@ -140,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
                 if command.kind == "click":
                     try:
                         profile, generation = _connected_profile(
-                            monitor, capture, executor, args.os, token, profile, generation, status)
+                            monitor, capture, executor, args.os, token, profile, generation, status, controller.hover, controller.hotkey)
                         controller.execute(Action("click", x=command.x, y=command.y), profile)
                         controller.wait_settled()
                         if bus is not None:
@@ -164,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
                     pointed = None
                 if line.startswith("/new "):
                     goal = line[5:].strip()
-                elif correction:
+                elif correction or (command.continues and previous_goal):
                     goal = previous_goal + "\nUser correction: " + line
                 else:
                     goal = line
@@ -172,14 +185,14 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 try:
                     profile, generation = _connected_profile(
-                        monitor, capture, executor, args.os, token, profile, generation, status)
+                        monitor, capture, executor, args.os, token, profile, generation, status, controller.hover, controller.hotkey)
                     # Goals from the page, the voice layer or a pipe need no window switch first.
                     if args.backend == "local" and bus is None and sys.stdin.isatty():
                         status("Focus the target window; starting in 2 seconds.")
                         token.sleep(2)
                     result = agent.run(goal, profile, args.task_id)
                     status(f"{result.status}: {result.message}")
-                    previous_goal = goal
+                    previous_goal = agent.goal or goal
                     # Spoken or page requests after an interruption are new ones (the voice layer interrupts
                     # whenever the user talks); only an answer to the agent's question continues a goal.
                     correction = result.status == "ask_user" or (bus is None and result.status == "cancelled")
@@ -201,6 +214,14 @@ def _report_failure(status: Callable[[str], None], bus: EventBus | None, message
     status(f"fail: {message}")
     if bus is not None:
         bus.publish("result", status="fail", message=message, steps=0, total_s=0)
+
+
+def _more_words(commands: queue.Queue[Command]) -> str | None:
+    """The user's next words if they continue the running request (same push-to-talk hold), else None."""
+    with commands.mutex:
+        if commands.queue and commands.queue[0].kind == "goal" and commands.queue[0].continues:
+            return commands.queue.popleft().text
+    return None
 
 
 def _next_command(commands: queue.Queue[Command]) -> Command:
@@ -241,7 +262,9 @@ def _pump_live_frames(capture: Capture, bus: EventBus) -> None:
 def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: Executor,
                        os_override: OSName | None, token: CancelToken,
                        profile: DeviceProfile | None,
-                       generation: int, status: Callable[[str], None]) -> tuple[DeviceProfile, int]:
+                       generation: int, status: Callable[[str], None],
+                       pointer: Callable[[float, float], None] | None = None,
+                       press: Callable[[list[str]], None] | None = None) -> tuple[DeviceProfile, int]:
     """Wait for a target and re-detect it if it changed. A disconnect during
     detection retries instead of dropping the user's pending goal."""
     while True:
@@ -252,13 +275,14 @@ def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: E
         if profile is not None and current == generation:
             return profile, generation
         try:
-            detected = detect_profile(capture, executor, os_override, cancel=token)
+            detected = detect_profile(capture, executor, os_override, cancel=token, pointer=pointer,
+                                      press=None if pointer is None else press)
         except Cancelled:
             if monitor.connected:
                 raise  # a real interruption, not an unplug
             continue
         if monitor.connected and monitor.generation == current:
-            status(f"Target: {detected.os} ({detected.input})")
+            status(f"Target: {detected.os} ({detected.input}), screen {detected.rect.as_list()} of the frame")
             return detected, current
         status("Target changed during detection; retrying.")
 

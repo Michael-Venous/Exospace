@@ -62,7 +62,7 @@ class RuntimeTests(unittest.TestCase):
         self.hid = HID(self.capture)
         self.cancel = CancelToken()
         self.controller = Controller(self.hid, self.capture, self.cancel,
-                                     SettleConfig(min_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
+                                     SettleConfig(min_s=0, react_s=0, load_stable_s=0, load_react_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
         self.memory = Memory(self.root / "nested/session.json")
         self.telemetry = Telemetry(self.root / "results.csv", "test")
         self.profile = DeviceProfile("macos", Rect(0, 0, 160, 100), "mouse", 1)
@@ -89,6 +89,20 @@ class RuntimeTests(unittest.TestCase):
             rows = list(csv.DictReader(stream))
         self.assertEqual(rows[-1]["success"], "1")
         self.assertEqual(len(rows), 3)
+
+    def test_words_said_mid_run_join_the_request_at_the_next_step(self):
+        goals = []
+        executor = Mock()
+        executor.next_actions.side_effect = lambda image, ctx: goals.append(ctx.goal) or (
+            Plan("type", [Action("type_text", text="x")], []) if len(goals) == 1 else
+            Plan("verified", [Action("done", summary="Searched")], []))
+        words = iter(["", "and search for cats"])
+        agent = Agent(executor, self.controller, self.memory, self.telemetry, max_steps=8,
+                      more_words=lambda: next(words, None))
+        self.assertEqual(agent.run("open chrome", self.profile).status, "done")
+        self.assertEqual(goals, ["open chrome", "open chrome\nUser correction: and search for cats"])
+        self.assertEqual(agent.goal, "open chrome\nUser correction: and search for cats")
+        self.assertEqual(self.hid.commands[0], {"op": "type", "text": "x"})  # the first step was not cancelled
 
     def test_complex_goal_acknowledges_before_planning_and_refreshes_screen(self):
         self.fast.next_actions.side_effect = [

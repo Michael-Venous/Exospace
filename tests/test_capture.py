@@ -44,6 +44,13 @@ class ActiveRectTests(unittest.TestCase):
         rect = active_rect(frame)
         self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (700, 0, 1220, 1080))
 
+    def test_a_16_10_laptop_mirrored_into_a_16_9_capture_is_cropped(self):
+        from brain.capture import active_rect
+        frame = np.zeros((720, 1280, 3), np.uint8)
+        frame[:, 62:1216] = 200  # measured on the Pi: bars of 62 and 64 px (4.8% and 5.0%)
+        rect = active_rect(frame)
+        self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (62, 0, 1216, 720))
+
     def test_a_window_on_a_black_wallpaper_is_not_the_screen(self):
         from brain.capture import active_rect
         frame = np.zeros((1800, 2880, 3), np.uint8)
@@ -58,10 +65,6 @@ class ActiveRectTests(unittest.TestCase):
         frame[900:930, 1435:1445] = 255  # the cursor
         rect = active_rect(frame)
         self.assertEqual((rect.x0, rect.y0, rect.x1, rect.y1), (0, 0, 2880, 1800))
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class CaptureReadLoopTests(unittest.TestCase):
@@ -88,3 +91,7 @@ class CaptureReadLoopTests(unittest.TestCase):
         capture._running = False
         thread.join(timeout=1)
         self.assertIsNotNone(capture.grab())
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,6 +1,7 @@
 """Cached semantic plans: Flash reasons, Jev gates/grounds, controller executes."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import replace
 import json
@@ -10,8 +11,9 @@ from brain.agent.executor import Plan, StepContext, context_prompt, detect_os, p
 from brain.agent.jev import JevVision
 from brain.agent.model import language_model
 from brain.agent.prompts import PLAN_SCHEMA
-from brain.agent.triage import GATE as ZOOM_GATE, refine
+from brain.agent.triage import GATE, GATE as ZOOM_GATE, refine
 from brain.imaging import shrink
+from brain.skills import OPEN_APP_KEYS
 from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
 from brain.types import Action, OSName
@@ -65,9 +67,13 @@ then click the newly visible submenu item in a separate stage. Drag holds the
 button while moving to destination. These are different actions.
 Other actions: type_text(text), hotkey(keys), scroll(dy: mouse-wheel notches,
 positive down, about 5 per screenful; never pixels),
-skill(name=open_app,text=app), skill(name=wait) as its own stage ONLY when the
+skill(name=open_app,text=app: the app's full name as the user said it, in the screen's
+language, e.g. "system settings" not "settings"), skill(name=wait) as its own stage ONLY when the
 screenshot shows a spinner, progress bar or blank page that is still loading (a
 loaded page never needs it), remember(key,text), ask_user(message), fail(message).
+To search a website you know, in a browser already open, go straight to its search
+results: click the address bar and type the site's search URL with the words, then Enter,
+in one stage (e.g. youtube.com/results?search_query=lofi+hip+hop).
 To start an app that is not already open, use skill(open_app); never hunt
 for it in taskbars, docks or launcher menus.
 No done action is needed: completion is checked after the last stage.
@@ -101,7 +107,7 @@ COMPLETION_GATE=0.5  # steps-aware check: finished tasks scored >= 0.55, traps <
 
 
 def validate_steps(data, allow_visual_fallback=False):
-    steps=data.get('steps')
+    steps=deepcopy(data.get('steps'))  # cleaned below; the caller's reply stays as sent
     if not isinstance(steps,list) or not 0<=len(steps)<=12:
         raise ValueError('Plan requires 0-12 stages (empty only for completion verification)')
     if not isinstance(data.get('completion'),str) or not data['completion'].strip():
@@ -116,6 +122,10 @@ def validate_steps(data, allow_visual_fallback=False):
             if not isinstance(item,dict) or any(k in item for k in ('x','y','x2','y2')):
                 raise ValueError('Semantic actions cannot contain coordinates')
             kind=item.get('type')
+            if not allow_visual_fallback:
+                # The schema always offers these and Flash fills them anyway (on open_app too): rejecting
+                # the plan cost two extra calls, 5-12 s, on 3 of 7 app launches. Jev grounds instead.
+                item.pop('fallback_x',None); item.pop('fallback_y',None)
             if 'fallback_x' in item or 'fallback_y' in item:
                 import math
                 coords=[item.get(k) for k in ('fallback_x','fallback_y')]
@@ -129,6 +139,8 @@ def validate_steps(data, allow_visual_fallback=False):
                 if kind=='drag' and not item.get('destination'): raise ValueError('Drag needs a destination')
             elif kind in {'done','swipe'}:
                 raise ValueError('Use completion criterion or semantic drag')
+            elif kind=='skill' and item.get('name')=='open_app' and not str(item.get('text') or item.get('target') or '').strip():
+                raise ValueError('open_app needs the app name as text')  # an empty one relaunched a visible app
             elif kind=='type_text' and '\t' in str(item.get('text','')):
                 raise ValueError('Use TAB hotkey actions, not tabs in text')
             elif kind=='hotkey':
@@ -160,9 +172,11 @@ class JevFlashExecutor:
     check_window=True  # Jev maximizes a small app window once per request
     image_side=FULL_SIDE
     verifies_stages=True
+    approved_run:Callable[[StepContext],bool]|None=None
 
-    def __init__(self,cfg:Config,cancel:CancelToken):
+    def __init__(self,cfg:Config,cancel:CancelToken,approved_run:Callable[[StepContext],bool]|None=None):
         self.cancel=cancel
+        self.approved_run=approved_run
         self.model=language_model(cfg,cancel)
         # A plan Jev rejected is replanned with more thinking on the same model: the fast first
         # plan stays fast, and only the hard cases pay for deeper reasoning.
@@ -189,6 +203,10 @@ class JevFlashExecutor:
         self._fallback_image=None
         self._plan_image=None  # the screenshot the current plan was made from
 
+    def forget_plan(self):
+        """Plan afresh on the next screen (the screen changed under the current plan)."""
+        self._key=None
+
     def acknowledge(self,executed:bool):
         # Called only by the single-writer agent after actual execution. A stale
         # screenshot/cancel/rejected action cannot advance a cached plan.
@@ -210,6 +228,10 @@ class JevFlashExecutor:
             previous = {'stage':self.stages[self.cursor], 'executed':self.pending}
         self._reset()
         prompt=context_prompt(ctx)+'\nReplanning reason: '+(reason or 'new task')
+        if ctx.profile.os not in OPEN_APP_KEYS:
+            # Phones have no launcher key: Flash planned open_app with no name on Android, every run.
+            prompt+=('\nThis device has no app-launcher shortcut: never use open_app. Tap the app\'s icon; if it '
+                     'is not visible, go to the home screen and swipe up to open the app list.')
         if previous:
             prompt+='\nPrevious semantic stage and execution acknowledgement: '+json.dumps(previous)
             prompt+='\nIf executed but unverified, reveal or inspect the result before repeating the action. Repeated clicks may not change the screen.'
@@ -308,6 +330,12 @@ class JevFlashExecutor:
             if first['type'] in {'ask_user','fail'}:
                 return parse_plan({'reasoning':self.last_reason,'actions':[first]})
             if 'fallback_x' in first:
+                if self._unapproved(ctx):
+                    values,_=self.jev.assess(image,{},{},run_id=ctx.run_id,step=ctx.step,request=ctx.goal,
+                                             proposal=stage['actions'],irreversible=True)
+                    self.cancel.check()
+                    if values['irreversible']>=GATE:
+                        return _held(stage)
                 self.pending=False
                 self.cursor=next_cursor
                 return Plan('Flash visual fallback: '+stage['expected'],self._ground(stage,{}),[])
@@ -333,8 +361,9 @@ class JevFlashExecutor:
                 checks['small_window']=SMALL_WINDOW
                 targets['maximize']=MAXIMIZE
             values,points=self.jev.assess(image,checks,targets,run_id=ctx.run_id,step=ctx.step,
-                                          request=ctx.goal,proposal=stage['actions'])
+                                          request=ctx.goal,proposal=stage['actions'],irreversible=self._unapproved(ctx))
             self.cancel.check()
+            risk=values.pop('irreversible',0.0)
             if check_window:
                 # Small windows scored 0.83-0.87 (the presence gate missed half), maximized ones 0.02-0.04.
                 small=values.pop('small_window',0.0)>=ZOOM_GATE
@@ -360,6 +389,8 @@ class JevFlashExecutor:
                 values.pop('route_execute',None)  # (it vetoed 3 fresh plans in a row and cancelled a run)
             mismatch=[name for name,value in values.items() if value<self.jev.min_presence]
             if not mismatch and all(p is not None for p in points.values()):
+                if risk>=GATE:
+                    return _held(stage)
                 self.pending=False
                 self.cursor=next_cursor
                 actions=self._ground(stage,points)
@@ -376,6 +407,9 @@ class JevFlashExecutor:
                 self._reset()
                 return Plan('Plan could not be grounded',[],[reason])
         raise AssertionError('unreachable')
+
+    def _unapproved(self,ctx:StepContext)->bool:
+        return self.approved_run is not None and not self.approved_run(ctx)
 
     def _generate(self,image,prompt,ctx,replan):
         """Replans think more (medium: 4.1 s median vs 2.9 s; high took 15-37 s and hit the server's
@@ -419,6 +453,10 @@ class JevFlashExecutor:
         self.model.close()
         if self.replanner is not self.model:
             self.replanner.close()
+
+
+def _held(stage)->Plan:
+    return Plan('Irreversible step needs approval',[],[],held='; '.join(_describe(a) for a in stage['actions']))
 
 
 def _describe(action:dict)->str:

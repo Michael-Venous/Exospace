@@ -48,6 +48,7 @@ class Config:
     deep_timeout_s: float = 25.0  # Argon low took 4-24 s a step; a 44 s call ended in a 504
     deep_after: int = 3  # unproductive race steps (of the last 6) before deep mode
     replay_path: Path | None = None  # successful runs replayed without model calls (brain/agent/replay.py)
+    jev_first: bool = True  # race plans each step with Jev first, Flash only when Jev can't (jev_first.py)
 
     @property
     def uses_zai(self) -> bool:
@@ -79,6 +80,7 @@ class Config:
             deep_thinking=env("DEEP_THINKING", "low") or None,
             deep_timeout_s=float(env("DEEP_TIMEOUT_S", "25")),
             deep_after=int(env("DEEP_AFTER", "3")),
+            jev_first=env("JEV_FIRST", "1") == "1",
             replay_path=Path(env("REPLAY_PATH", "replay.json")) if env("REPLAY_PATH", "replay.json") else None,
             bench_csv=Path(env("BENCH_CSV", "bench/results.csv")),
             fallback_model=env("FALLBACK_MODEL", "gemini-3.5-flash-lite"),

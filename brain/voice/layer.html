@@ -2,17 +2,18 @@
 <title>Exospace Voice</title>
 <style>
 :root{--ink:#f5f5f7;--dim:#8e8e93;--tone:#1c1c1e;--edge:clamp(32px,7vw,140px)}
-body{margin:0;min-height:100dvh;display:grid;grid-template-rows:1fr auto;gap:48px;box-sizing:border-box;
+body{margin:0;height:100dvh;display:grid;grid-template-rows:minmax(0,1fr) auto;gap:48px;box-sizing:border-box;
   padding:clamp(32px,6vmin,96px) var(--edge);overflow:hidden;background:#000;color:var(--ink);
   font:500 16px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;-webkit-tap-highlight-color:transparent}
 button{font:inherit;color:inherit;border:0;cursor:pointer}
 /* What you say is the headline. */
-main{align-self:center}
+main{align-self:center;max-height:100%;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end}
 #heard{margin:0;max-width:11ch;font-size:clamp(56px,5.8vw,112px);line-height:1;letter-spacing:-.035em;text-wrap:balance}
 #heard.long{max-width:16ch;font-size:clamp(40px,3.8vw,72px)}
+#heard.longer{max-width:30ch;font-size:clamp(24px,2.4vw,44px)}
 body:not(.on,.wait) #said:empty~#live:empty::before{content:"What are we doing today?";color:var(--ink)}
 #live,#says{color:var(--dim)}
-#says{margin-top:.9em;max-width:40ch;min-height:1.3em;font-size:clamp(24px,2vw,36px);letter-spacing:-.01em}
+#says{flex:none;margin-top:.9em;max-width:40ch;min-height:1.3em;font-size:clamp(24px,2vw,36px);letter-spacing:-.01em}
 .err{color:#ff6961}
 footer{display:flex;align-items:center;gap:28px}
 /* The control: a white dot; the dark disc behind it swells with the voice (--lvl, eased in the script). */
@@ -28,6 +29,8 @@ footer{display:flex;align-items:center;gap:28px}
 #hint::after{content:"Hold to talk"}
 .on #hint::after{content:"Listening"}
 .wait #hint::after{content:"Working on it"}
+#describe{padding:8px 16px;border-radius:999px;background:var(--tone);color:var(--dim)}
+#describe[aria-pressed=true]{background:#fff;color:#000}
 #mics{max-width:30vw;font:inherit;font-size:16px;color:var(--dim);background:var(--tone);border:0;border-radius:999px;
   padding:8px 16px;cursor:pointer}
 /* The connected device: its icon follows the live picture's shape (portrait means a phone). */
@@ -36,9 +39,9 @@ footer{display:flex;align-items:center;gap:28px}
 #device .phone,#device.phone .computer{display:none}
 #device.phone .phone{display:block}
 #device.none svg{stroke:var(--dim)}
-#view{position:fixed;inset:0;z-index:2;display:grid;place-items:center;background:#000}
+#view{position:fixed;inset:0;z-index:2;display:grid;grid-template-rows:100%;place-items:center;background:#000}
 #view[hidden]{display:none}
-#frame{max-width:100%;max-height:100%;object-fit:contain}
+#frame{width:100%;height:100%;object-fit:contain}
 #view.empty #frame{display:none}
 #view:not(.empty) #nodevice{display:none}
 #nodevice{font-size:clamp(32px,3vw,56px);letter-spacing:-.02em;color:var(--dim)}
@@ -79,6 +82,7 @@ body:not(.on,.wait,.done) #orbi [data-mood=idle],.on #orbi [data-mood=listen],
 <footer>
   <button id=talk aria-label="Hold to talk" aria-pressed=false></button>
   <span id=hint></span>
+  <button id=describe aria-pressed=false>Describe</button>
   <select id=mics aria-label=Microphone></select>
   <button id=device class=none aria-label="Show the connected screen" aria-expanded=false>
     <svg class=computer viewBox="0 0 24 24" aria-hidden=true><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>
@@ -113,7 +117,11 @@ async function listMics() {
     ...found.map((d, i) => new Option(d.label || `Microphone ${i + 1}`, d.deviceId)));
   mics.value = found.some(d => d.deviceId === saved) ? saved : "";
 }
-mics.onchange = () => { try { localStorage.mic = mics.value; } catch {} if (stopListening) stopListening(); };
+mics.onchange = () => {
+  try { localStorage.mic = mics.value; } catch {}
+  if (stopListening) stopListening();
+  if (liveMic) { liveMic.getTracks().forEach(t => t.stop()); liveMic = null; }  // the next press opens the new one
+};
 navigator.mediaDevices.ondevicechange = listMics;
 listMics();
 
@@ -123,18 +131,59 @@ listMics();
 let unspoken = [], doneTimer;
 const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
 new EventSource("/narration").onmessage = e => {
-  const {say} = JSON.parse(e.data);
+  const m = JSON.parse(e.data);
+  if (m.button) return m.button === "down" ? press() : release();  // the Pi's push-to-talk button
+  if (m.pcm) return stopListening || play(m.pcm, m.rate);  // never over the user
+  const line = m.say || m.show;
   waiting(false);
   document.body.classList.add("done");
   clearTimeout(doneTimer); doneTimer = setTimeout(() => document.body.classList.remove("done"), 4000);
-  says.textContent = say;
-  if (stopListening) unspoken.push(say); else speak(say);
+  says.textContent = line;
+  if (!m.say || m.voiced) return;  // voiced: the server's audio follows as pcm chunks
+  if (stopListening) unspoken.push(line); else speak(line);
 };
+
+// Describe mode: after each request, Gemini Live's spoken description of the screen streams in as
+// PCM chunks, queued back to back. Talking cuts it off.
+let out, playAt = 0, playing = [];
+function play(b64, rate) {
+  out ??= new AudioContext();
+  if (out.state === "suspended") out.resume();
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0)), pcm = new Int16Array(bytes.buffer);
+  const buffer = out.createBuffer(1, pcm.length, rate);
+  buffer.getChannelData(0).set(Float32Array.from(pcm, v => v / 32768));
+  const source = out.createBufferSource();
+  source.buffer = buffer; source.connect(out.destination);
+  playAt = Math.max(playAt, out.currentTime);
+  source.start(playAt); playAt += buffer.duration;
+  playing.push(source); source.onended = () => playing = playing.filter(s => s !== source);
+}
+// Chromium starts audio suspended until the first touch or key on the page (the GPIO button is neither).
+addEventListener("pointerdown", () => { out ??= new AudioContext(); out.resume(); }, {once: true});
+function stopAudio() { playing.forEach(s => s.stop()); playing = []; playAt = 0; }
+let describing = false; try { describing = localStorage.describe === "1"; } catch {}
+async function setDescribe(on) {
+  const r = await post("/describe", {on});
+  describing = !!r.on;
+  describe.setAttribute("aria-pressed", describing);
+  try { localStorage.describe = describing ? "1" : ""; } catch {}
+}
+describe.onclick = () => setDescribe(!describing);
+setDescribe(describing);
 function speakHeld() { if (unspoken.length) { speak(unspoken.at(-1)); unspoken = []; } }
 
-async function send(text) {
-  const r = await post("/segment", {text});
+// Later segments of one hold continue its request ("go to youtube" ... "and search lofi").
+async function send(text, continues) {
+  const r = await post("/segment", {text, continues});
   if (r.error) showError(r.error);
+}
+
+// The mic stays open between presses: opening it took most of the delay before listening.
+let liveMic = null;
+async function openMic() {
+  if (liveMic && liveMic.getTracks().every(t => t.readyState === "live")) return liveMic;
+  liveMic = await navigator.mediaDevices.getUserMedia({audio: mics.value ? {deviceId: {exact: mics.value}} : true});
+  return liveMic;
 }
 
 let starting = false;
@@ -143,13 +192,18 @@ async function start() {
   starting = true;
   waiting(true);
   speechSynthesis.cancel();  // the user is talking: stop speaking at once
+  stopAudio();
   post("/talk");             // barge in on whatever the agent is doing
   let mic;
-  try { mic = await navigator.mediaDevices.getUserMedia({audio: mics.value ? {deviceId: {exact: mics.value}} : true}); }
+  try { mic = await openMic(); }
   catch (err) { starting = false; return showError("Microphone blocked: " + err.message); }
-  if (!held) { starting = false; waiting(false); return mic.getTracks().forEach(t => t.stop()); }  // let go before the mic opened
+  if (!held) { starting = false; waiting(false); return; }  // let go before the mic opened
   listMics();
   const rec = new MediaRecorder(mic), sock = new WebSocket(`ws://${location.hostname}:__WS_PORT__`);
+  // Record from the press, not from when the speech service answers: audio waits here until it does,
+  // so the first words are neither delayed nor lost.
+  const queued = [];
+  let ended = false;
   let done = "", sent = false;
   const ctx = new AudioContext(), an = ctx.createAnalyser(), buf = new Uint8Array(512);
   an.fftSize = buf.length;
@@ -164,14 +218,19 @@ async function start() {
     requestAnimationFrame(tick);
   })();
   stopListening = () => rec.state === "recording" ? rec.stop() : sock.close();
-  rec.ondataavailable = e => { if (e.data.size && sock.readyState === 1) sock.send(e.data); };
-  rec.onstop = () => { if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
+  rec.ondataavailable = e => {
+    if (!e.data.size) return;
+    if (sock.readyState === 1) sock.send(e.data); else queued.push(e.data);
+  };
+  rec.onstop = () => { ended = true; if (sock.readyState === 1) sock.send(JSON.stringify({type: "CloseStream"})); };
+  rec.start(100);
+  starting = false;
+  waiting(false);
+  document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Listening";
+  said.className = ""; said.textContent = ""; live.textContent = "";
   sock.onopen = () => {
-    starting = false;
-    waiting(false);
-    rec.start(100);
-    document.body.classList.add("on"); talk.setAttribute("aria-pressed", true); talk.ariaLabel = "Listening";
-    said.className = ""; said.textContent = ""; live.textContent = "";
+    queued.splice(0).forEach(chunk => sock.send(chunk));
+    if (ended) sock.send(JSON.stringify({type: "CloseStream"}));
   };
   sock.onmessage = e => {
     const m = JSON.parse(e.data);
@@ -179,22 +238,26 @@ async function start() {
     const words = m.channel.alternatives[0].transcript;
     if (m.is_final && words) done = (done + " " + words).trim();
     if (words) { said.className = ""; said.textContent = done; live.textContent = m.is_final ? "" : words; }
-    heard.classList.toggle("long", (said.textContent + live.textContent).length > 80);
+    const shown = (said.textContent + live.textContent).length;
+    heard.classList.toggle("long", shown > 80);
+    heard.classList.toggle("longer", shown > 120);
     // Each pause ends a segment: send it now so execution starts while the user keeps talking.
-    if (m.speech_final && done) { send(done); done = ""; sent = true; }
+    if (m.speech_final && done) { send(done, sent); done = ""; sent = true; }
   };
   sock.onclose = e => {
     stopListening = null;
     starting = false;
     if (rec.state !== "inactive") rec.stop();
-    mic.getTracks().forEach(t => t.stop());
     ctx.close();
     document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Hold to talk";
     live.textContent = "";
     speakHeld();
-    if (done) send(done);
+    if (done) send(done, sent);
     waiting(sent || !!done);
-    if (e.code !== 1000) showError(`Speech service closed (${e.code}). Check the voice server log.`);
+    // A close after letting go, or once words came back, lost nothing. Still holding: listen again at once.
+    if (e.code === 1000 || ended || sent || done) return;
+    if (held) return start();
+    showError(`Speech service closed (${e.code}). Try again.`);
   };
 }
 // Push to talk: listen only while the orb or Space is held, so speech meant for someone else is never acted on.
@@ -210,7 +273,7 @@ addEventListener("blur", release);  // the keyup goes to another window
 // Live view of the connected device: the agent's capture-card frame (/screen.jpg, relayed by this server).
 // While closed, a probe every 5 s keeps the device icon current (dim when nothing is connected).
 const FRAME_MS = 250;
-let viewing = false;
+let viewing = false, loops = 0;  // loops numbers each open; a loop from an earlier open stops
 const loadFrame = img => new Promise(done => {
   img.onload = () => done(true); img.onerror = () => done(false);
   img.src = `/screen.jpg?t=${Date.now()}`;
@@ -219,8 +282,8 @@ function showDevice(ok, img) {
   device.classList.toggle("none", !ok);
   if (ok) device.classList.toggle("phone", img.naturalHeight > img.naturalWidth);
 }
-async function streamFrames() {
-  while (viewing) {
+async function streamFrames(mine) {
+  while (viewing && mine === loops) {
     const ok = await loadFrame(frame);
     showDevice(ok, frame);
     view.classList.toggle("empty", !ok);
@@ -230,7 +293,7 @@ async function streamFrames() {
 function openView(on) {
   if (viewing === on) return;
   viewing = on; view.hidden = !on; device.setAttribute("aria-expanded", on);
-  if (on) streamFrames();
+  if (on) streamFrames(++loops);
 }
 device.onclick = () => openView(true);
 back.onclick = () => openView(false);

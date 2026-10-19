@@ -39,9 +39,11 @@ class Agent:
                  on_status: Callable[[str], None] = lambda message: None,
                  events: EventBus | None = None,
                  reconnect: Callable[[str], DeviceProfile | None] | None = None,
-                 stall_s: float = STALL_S) -> None:
+                 stall_s: float = STALL_S, more_words: Callable[[], str | None] = lambda: None) -> None:
         """`reconnect(reason)` waits for the target to return and gives its new profile
-        (None if unchanged), or raises Cancelled; without it a disconnect ends the run."""
+        (None if unchanged), or raises Cancelled; without it a disconnect ends the run.
+        `more_words()` gives what the user said since, in the same breath, or None: it joins the
+        running request at the next step instead of cancelling it ("open chrome" ... "and search cats")."""
         if max_steps < 1:
             raise ValueError("max_steps must be positive")
         self.executor, self.controller, self.memory = executor, controller, memory
@@ -50,6 +52,8 @@ class Agent:
         self._shown_scores: object = None
         self.reconnect = reconnect
         self.stall_s = stall_s
+        self.more_words = more_words
+        self.goal = ""  # the running request, with any words that joined it
 
     def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
@@ -71,6 +75,12 @@ class Agent:
         try:
             progress_at = time.monotonic()
             for step in range(1, self.max_steps + 1):
+                extra = self.more_words()
+                if extra:
+                    goal = f"{goal}\nUser correction: {extra}"
+                    self.memory.add_turn("user", extra)
+                    progress_at = time.monotonic()  # new words: the request itself moved on
+                self.goal = goal
                 override = getattr(self.executor, "stall_s", None)  # deep mode allows slower steps
                 stall_s = override if isinstance(override, (int, float)) and override else self.stall_s
                 if stall_s and time.monotonic() - progress_at > stall_s:
@@ -93,7 +103,8 @@ class Agent:
                         token.check()
                     before = thumbnail(frame)
                     times["t_capture"] = time.monotonic() - stamp
-                    profile = replace(profile, rect=active_rect(frame))
+                    if profile.input != "mouse":  # a phone turns; a computer's screen was found at connect
+                        profile = replace(profile, rect=active_rect(frame))
                     stamp = time.monotonic()
                     side = getattr(self.executor, "image_side", MAX_SIDE)
                     jpeg = prepare(frame, profile.rect, grid=getattr(self.executor, "image_grid", True),
@@ -108,7 +119,8 @@ class Agent:
                     finally:
                         times["t_model"] += time.monotonic() - stamp
                     token.check()
-                    self.on_status(f"Step {step}: {plan.reasoning}")
+                    why = f" ({plan.rejected[0][:160]})" if plan.rejected and not plan.actions else ""
+                    self.on_status(f"Step {step}: {plan.reasoning}{why}")
                     self._emit("plan", step=step, reasoning=plan.reasoning,
                                actions=[a.brief() for a in plan.actions],
                                points=[[a.x, a.y] for a in plan.actions if a.type in POINTER_ACTIONS],
@@ -165,7 +177,7 @@ class Agent:
                             finally:
                                 times["t_execute"] += time.monotonic() - stamp
                             history.append(action.brief())  # before settling: a restart lands there
-                            settled_s = ctl.wait_settled()
+                            settled_s = ctl.wait_settled(loading=_may_load(action))
                             times["t_settle"] += settled_s
                     if pending_done is not None:
                         # Check the claim on the new screen now: replanning on a screen that looks unchanged
@@ -280,3 +292,10 @@ class Agent:
             return None
         self._shown_scores = scores
         return dict(scores)
+
+
+def _may_load(action: Action) -> bool:
+    """A click or Enter can start a page load, which needs a longer stillness to count as settled."""
+    if action.type in ("click", "tap", "double_click"):
+        return True
+    return action.type == "hotkey" and [k.upper() for k in action.keys] in (["ENTER"], ["RETURN"])

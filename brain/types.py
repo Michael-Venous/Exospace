@@ -12,7 +12,7 @@ Frame = NDArray[np.uint8]  # BGR image, shape (height, width, 3)
 # "unknown" covers boot and firmware screens and any classification failure.
 OSName = Literal["windows", "macos", "linux", "chromeos", "android", "ios", "unknown"]
 OS_NAMES: tuple[OSName, ...] = get_args(OSName)
-InputMode = Literal["mouse", "touch"]
+InputMode = Literal["mouse", "touch", "keyboard"]  # keyboard: iPhone, which ignores USB clicks and taps
 
 
 @dataclass(frozen=True)

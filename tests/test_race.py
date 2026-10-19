@@ -1,6 +1,7 @@
 """Triage and the race executor: routing, zoom refinement, irreversible approval."""
 
 import tempfile
+from dataclasses import replace
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -12,7 +13,8 @@ import numpy as np
 from brain.agent.executor import Plan, StepContext
 from brain.agent.memory import Memory
 from brain.agent.race import RaceExecutor
-from brain.agent.triage import Triage, triage
+import brain.agent.triage as triage_module
+from brain.agent.triage import Triage, answer_to_pending, spans, triage
 from brain.cancel import CancelToken
 from brain.types import Action, DeviceProfile, Rect
 
@@ -29,9 +31,21 @@ class TriageTests(unittest.TestCase):
         self.jev = Mock()
         self.size = ((400, 300), (400, 300))
 
-    def answer(self, choice, present=.95, unique=.95, irreversible=.02):
+    def answer(self, choice, present=.95, unique=.95, irreversible=.02, app="none"):
         return ({"intent": {"choice": choice, "confidence": .9}, "present": {"noul": present}, "gesture": {"choice": "click"},
-                 "unique": {"noul": unique}, "irreversible": {"noul": irreversible}, "target": BOX}, *self.size)
+                 "unique": {"noul": unique}, "irreversible": {"noul": irreversible}, "target": BOX,
+                 "app": {"choice": app}}, *self.size)
+
+    def test_an_app_to_open_is_named_by_the_utterance_itself(self):
+        words = spans("open the calculator and work out 12 times 9")
+        self.jev.evaluate.return_value = self.answer("launch", app=str(words.index("calculator")))
+        result = triage(self.jev, jpeg(), "open the calculator and work out 12 times 9", CancelToken())
+        self.assertEqual((result.mode, result.app), ("launch", "calculator"))
+        self.jev.evaluate.assert_called_once()  # no zoom: nothing to click
+
+    def test_a_launch_with_no_named_app_goes_to_the_planner(self):
+        self.jev.evaluate.return_value = self.answer("launch")
+        self.assertEqual(triage(self.jev, jpeg(), "open it", CancelToken()).mode, "plan")
 
     def test_remark_is_no_action_without_zoom(self):
         self.jev.evaluate.return_value = self.answer("no_action")
@@ -62,6 +76,33 @@ class TriageTests(unittest.TestCase):
         self.jev.evaluate.return_value = self.answer("plan", irreversible=.95)
         self.assertTrue(triage(self.jev, jpeg(), "delete the downloads folder", CancelToken()).irreversible)
 
+    def test_correction_is_judged_with_the_request_it_corrects(self):
+        self.jev.evaluate.return_value = self.answer("plan")
+        triage(self.jev, jpeg(), "User correction: actually make it six", CancelToken(), earlier="reply saying five")
+        questions, state = self.jev.evaluate.call_args.args[1], self.jev.evaluate.call_args.kwargs["state"]
+        self.assertEqual(state["earlier_request"], "reply saying five")
+        self.assertTrue(questions["irreversible"]["instructions"].endswith(triage_module.CORRECTION_SCOPE))
+
+    def test_plain_command_question_is_unchanged(self):
+        self.jev.evaluate.return_value = self.answer("no_action")
+        triage(self.jev, jpeg(), "open john's email", CancelToken())
+        questions, state = self.jev.evaluate.call_args.args[1], self.jev.evaluate.call_args.kwargs["state"]
+        self.assertEqual(state, {"utterance": "open john's email"})
+        self.assertEqual(questions["irreversible"]["instructions"], triage_module.IRREVERSIBLE)
+
+    def test_a_reply_is_judged_against_the_held_step(self):
+        self.jev.evaluate.return_value = ({"approve": {"noul": .9}, "decline": {"noul": .1}}, *self.size)
+        self.assertEqual(answer_to_pending(self.jev, jpeg(), "reply saying five", "yes", held="click Send button"),
+                         "approve")
+        questions, state = self.jev.evaluate.call_args.args[1], self.jev.evaluate.call_args.kwargs["state"]
+        self.assertEqual(state["held_step"], "click Send button")
+        self.assertTrue(questions["approve"]["instructions"].endswith(triage_module.NOT_APPROVAL))
+        answer_to_pending(self.jev, jpeg(), "delete this email", "yes")
+        questions, state = self.jev.evaluate.call_args.args[1], self.jev.evaluate.call_args.kwargs["state"]
+        self.assertEqual(state, {"pending_request": "delete this email", "reply": "yes"})
+        self.assertEqual(questions["approve"]["instructions"],
+                         "Does the user's `reply` clearly approve carrying out the `pending_request`?")
+
 
 class RaceTests(unittest.TestCase):
     def setUp(self):
@@ -72,7 +113,9 @@ class RaceTests(unittest.TestCase):
         race._pool = ThreadPoolExecutor(max_workers=1)
         race._plan, race._key, race.mode, race._point, race._clicked, race._pending = None, None, "", None, False, None
         race._gesture, race._utterance, race._triage_step, race._approved_goal = "click", "", 0, None
-        race._scroll = 0
+        race._scroll, race._launched, race._tries, race._aim = 0, "", 0, (0.0, 0.0)
+        race._earlier, race._approved_connected_at = "", 0.0
+        race._keys = None
         self.addCleanup(race._pool.shutdown)
         race.planner.next_actions.return_value = Plan("planned", [Action("hotkey", keys=("ENTER",))], [])
         self.race = race
@@ -89,6 +132,29 @@ class RaceTests(unittest.TestCase):
         self.race.acknowledge(True)
         self.race.jev.completion.return_value = .9
         self.assertEqual(self.race.next_actions(b"img", self.ctx("open john's email")).actions[0].type, "done")
+
+    def test_a_one_command_request_is_pressed_as_the_shortcut(self):
+        mac = StepContext("Close this app.", DeviceProfile("macos", Rect(0, 0, 400, 300), "mouse", 1), self.memory,
+                          [], 1, 10, run_id="a")
+        with patch("brain.agent.race.triage") as tri:
+            first = self.race.next_actions(b"img", mac)
+        tri.assert_not_called()  # no model aims at the red close button
+        self.assertEqual((first.actions[0].type, first.actions[0].keys), ("hotkey", ("GUI", "Q")))
+        self.race.jev.completion.return_value = .9
+        self.assertEqual(self.race.next_actions(b"img", replace(mac, step=2)).actions[0].type, "done")
+
+    def test_a_shortcut_that_did_not_do_it_goes_to_the_planner(self):
+        ctx = self.ctx("go back")
+        self.race.next_actions(b"img", ctx)
+        self.race.jev.completion.return_value = .1
+        self.assertEqual(self.race.next_actions(b"img", replace(ctx, step=2)).reasoning, "planned")
+
+    def test_an_iphone_never_gets_a_click(self):
+        iphone = StepContext("open john's email", DeviceProfile("ios", Rect(0, 0, 400, 300), "keyboard", 1),
+                             self.memory, [], 1, 10, run_id="a")
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
+            plan = self.race.next_actions(b"img", iphone)
+        self.assertEqual(plan.reasoning, "planned")
 
     def test_a_click_that_misses_the_goal_falls_back_to_the_planner(self):
         with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
@@ -174,6 +240,121 @@ class RaceTests(unittest.TestCase):
         self.assertNotIn("empty the trash", planned_goal)
         self.assertIn("delete this email", planned_goal)
 
+    def held_send(self):
+        def planner(image, ctx):
+            if self.race.approved_run(ctx):
+                return Plan("Stage 1/1", [Action("click", x=.5, y=.9)], [])
+            return Plan("Irreversible step needs approval", [], [], held="click Send button")
+
+        self.race.planner.next_actions.side_effect = planner
+        return "open john's email and reply saying five\nUser correction: actually make it six"
+
+    def test_the_planner_asks_race_whether_the_run_is_approved(self):
+        for jev_first, name in ((False, "JevFlashExecutor"), (True, "JevFirstPlanner")):
+            with patch(f"brain.agent.race.{name}") as planner:
+                race = RaceExecutor(Mock(jev_first=jev_first), CancelToken())
+            self.addCleanup(race.close)
+            approved, ctx = planner.call_args.kwargs["approved_run"], self.ctx("delete this email")
+            self.assertFalse(approved(ctx))
+            race._approved_goal, race._approved_connected_at = "delete this email\nThe user approved this request.", 1
+            self.assertTrue(approved(ctx))
+
+    def test_executor_jev_never_hands_off_to_flash(self):
+        with patch("brain.agent.race.JevFirstPlanner") as planner:
+            race = RaceExecutor(Mock(executor="jev", jev_first=True), CancelToken())
+        self.addCleanup(race.close)
+        self.assertFalse(planner.call_args.kwargs["handoff"])
+
+    def test_correction_carries_the_request_it_corrects(self):
+        goal = "reply to john and send it saying five\nUser correction: actually make it six"
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, True)) as tri:
+            asked = self.race.next_actions(b"img", self.ctx(goal))
+        self.assertEqual(tri.call_args.args[2], "User correction: actually make it six")
+        self.assertEqual(tri.call_args.kwargs["earlier"], "reply to john and send it saying five")
+        self.assertEqual(asked.actions[0].type, "ask_user")
+        self.assertEqual(self.race._pending.goal, goal)
+
+    def test_correction_after_a_draft_request_asks_before_the_send(self):
+        draft = self.held_send()
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, False)):
+            asked = self.race.next_actions(b"img", self.ctx(draft))
+        self.assertEqual(asked.actions[0].question, "This can't be undone: click Send button. Should I go ahead?")
+        with patch("brain.agent.race.answer_to_pending", return_value="approve") as answer, \
+             patch("brain.agent.race.triage") as tri:
+            sent = self.race.next_actions(b"img", self.ctx(draft + "\nUser correction: yes", run="b"))
+        self.assertEqual(answer.call_args.kwargs["held"], "click Send button")
+        tri.assert_not_called()
+        self.assertEqual(sent.actions[0].type, "click")
+
+    def test_a_stage_held_after_earlier_stages_asks(self):
+        self.race.planner.next_actions.side_effect = [
+            Plan("Stage 1/2", [Action("type_text", text="six")], []),
+            Plan("Irreversible step needs approval", [], [], held="click Send button")]
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, False)):
+            self.race.next_actions(b"img", self.ctx("reply saying six", step=1))
+        self.race.acknowledge(True)
+        asked = self.race.next_actions(b"typed", self.ctx("reply saying six", step=2))
+        self.assertEqual([a.type for a in asked.actions], ["ask_user"])
+        self.assertEqual(self.race._pending.step, "click Send button")
+
+    def test_held_step_approval_is_bound_to_the_device(self):
+        draft = self.held_send()
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, False)):
+            self.race.next_actions(b"img", self.ctx(draft))
+        with patch("brain.agent.race.answer_to_pending") as answer, \
+             patch("brain.agent.race.triage", return_value=Triage("plan", None, False)):
+            again = self.race.next_actions(b"img", self.ctx(draft + "\nUser correction: yes", run="b", connected_at=2))
+        answer.assert_not_called()
+        self.assertEqual(again.actions[0].type, "ask_user")
+
+    def test_a_correction_to_a_held_step_is_planned_again_not_approved(self):
+        draft = self.held_send()
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, False)):
+            self.race.next_actions(b"img", self.ctx(draft))
+        seven = draft + "\nUser correction: actually make it seven"
+        with patch("brain.agent.race.answer_to_pending", return_value="other"), \
+             patch("brain.agent.race.triage", return_value=Triage("plan", None, False)) as tri:
+            again = self.race.next_actions(b"img", self.ctx(seven, run="b"))
+        self.assertEqual(tri.call_args.kwargs["earlier"], draft)
+        self.assertFalse(self.race.approved_run(self.ctx(seven, run="b")))
+        self.assertEqual(again.actions[0].type, "ask_user")
+
+    def test_a_refusal_is_judged_without_the_request_it_refuses(self):
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, True)):
+            self.race.next_actions(b"img", self.ctx("delete this email"))
+        with patch("brain.agent.race.answer_to_pending", return_value="decline"), \
+             patch("brain.agent.race.triage", return_value=Triage("none", None, False)) as tri:
+            result = self.race.next_actions(b"img", self.ctx("delete this email\nUser correction: no", run="b"))
+        self.assertEqual(tri.call_args.kwargs["earlier"], "")
+        self.assertIn("won't", result.actions[0].summary)
+
+    def test_an_approval_ends_when_the_device_reconnects_mid_run(self):
+        draft = self.held_send()
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, False)):
+            self.race.next_actions(b"img", self.ctx(draft))
+        yes = draft + "\nUser correction: yes"
+        with patch("brain.agent.race.answer_to_pending", return_value="approve"), \
+             patch("brain.agent.race.triage", return_value=Triage("plan", None, True)):
+            self.assertEqual(self.race.next_actions(b"img", self.ctx(yes, run="b")).actions[0].type, "click")
+        self.race.acknowledge(False)
+        after = self.race.next_actions(b"img", self.ctx(yes, run="b", step=2, connected_at=2))
+        self.assertEqual(after.actions[0].type, "ask_user")
+        self.assertFalse(self.race.approved_run(self.ctx(yes, run="b", connected_at=2)))
+
+    def test_a_click_aimed_again_on_a_new_screen_is_checked_again(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
+            self.race.next_actions(b"img", self.ctx("click the blue button", step=1))
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.6, .7), True)):
+            again = self.race.next_actions(b"moved", self.ctx("click the blue button", step=2))
+        self.assertEqual(again.actions[0].type, "ask_user")
+
+    def test_send_it_after_a_correction_asks(self):
+        goal = "reply to john saying five\nUser correction: make it six\nUser correction: send it"
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.5, .9), True)) as tri:
+            asked = self.race.next_actions(b"img", self.ctx(goal))
+        self.assertEqual(asked.actions[0].type, "ask_user")
+        self.assertEqual(tri.call_args.kwargs["earlier"], "reply to john saying five\nUser correction: make it six")
+
     def test_discarded_click_is_aimed_again_on_the_new_screen(self):
         with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
             self.race.next_actions(b"img", self.ctx("open john's email", step=1))
@@ -189,6 +370,59 @@ class RaceTests(unittest.TestCase):
         self.assertEqual(result.actions[0].type, "double_click")
 
 
+    def test_a_borderline_completion_after_a_click_is_left_to_the_planner(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.98, .01), False)):
+            self.race.next_actions(b"img", self.ctx("close the calculator"))
+        self.race.acknowledge(True)
+        self.race.jev.completion.return_value = .54  # measured: a corner click scored this, calculator still open
+        self.assertEqual(self.race.next_actions(b"img", self.ctx("close the calculator")).reasoning, "planned")
+
+    def test_a_small_target_is_hovered_and_confirmed_before_the_click(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.98, .01), False, small=True)):
+            first = self.race.next_actions(b"img", self.ctx("close the calculator", step=1))
+        self.assertEqual((first.actions[0].name, first.actions[0].args), ("hover", {"x": .98, "y": .01}))
+        self.race.acknowledge(True)
+        with patch("brain.agent.race.pointed", return_value=True):
+            click = self.race.next_actions(b"img", self.ctx("close the calculator", step=2))
+        self.assertEqual((click.actions[0].type, click.actions[0].x), ("click", .98))
+
+    def test_a_hover_on_the_wrong_neighbour_tries_the_neighbours(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.98, .01), False, small=True)):
+            self.race.next_actions(b"img", self.ctx("close the calculator", step=1))
+        with patch("brain.agent.race.pointed", side_effect=[False, True]):
+            again = self.race.next_actions(b"img", self.ctx("close the calculator", step=2))
+            self.assertAlmostEqual(again.actions[0].args["x"], .99)  # the next button over
+            click = self.race.next_actions(b"img", self.ctx("close the calculator", step=3))
+        self.assertEqual((click.actions[0].type, round(click.actions[0].x, 2)), ("click", .99))
+
+    def test_a_small_target_no_hover_confirms_is_left_to_the_planner_with_a_note(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.5, .5), False, small=True)):
+            self.race.next_actions(b"img", self.ctx("close the calculator", step=1))
+        with patch("brain.agent.race.pointed", return_value=False):
+            for step in range(2, 8):
+                self.assertEqual(self.race.next_actions(b"img", self.ctx("close the calculator", step=step)).reasoning,
+                                 "Jev hover check")
+            last = self.race.next_actions(b"img", self.ctx("close the calculator", step=8))
+        self.assertEqual(last.reasoning, "planned")  # never a click Jev couldn't confirm
+        self.assertIn("another way", self.race.planner.next_actions.call_args.args[1].note)
+
+    def test_a_stage_held_after_an_unconfirmed_hover_asks(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.5, .5), False, small=True)):
+            self.race.next_actions(b"img", self.ctx("send it", step=1))
+        self.race.planner.next_actions.return_value = Plan("held", [], [], held="click Send button")
+        with patch("brain.agent.race.pointed", return_value=False):
+            for step in range(2, 8):
+                self.race.next_actions(b"img", self.ctx("send it", step=step))
+            last = self.race.next_actions(b"img", self.ctx("send it", step=8))
+        self.assertEqual(last.actions[0].type, "ask_user")
+
+    def test_touch_targets_are_tapped_without_a_hover(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.98, .01), False, small=True)):
+            ctx = self.ctx("close it")
+            ctx = StepContext(ctx.goal, DeviceProfile("android", Rect(0, 0, 400, 300), "touch", 1), self.memory,
+                              [], 1, 10, run_id="a")
+            self.assertEqual(self.race.next_actions(b"img", ctx).actions[0].type, "click")
+
     def test_scroll_needs_no_plan_and_ends_when_the_view_moves(self):
         with patch("brain.agent.race.triage", return_value=Triage("scroll", None, False, scroll=-5)):
             first = self.race.next_actions(b"img", self.ctx("scroll up"))
@@ -196,6 +430,42 @@ class RaceTests(unittest.TestCase):
         self.race.acknowledge(True)
         self.race.jev.completion.return_value = .9
         self.assertEqual(self.race.next_actions(b"img", self.ctx("scroll up")).actions[0].type, "done")
+
+    def test_a_launch_needs_no_plan_and_the_rest_is_planned_on_the_app(self):
+        goal = "open the calculator and work out 12 times 9"
+        with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="calculator")):
+            first = self.race.next_actions(b"img", self.ctx(goal))
+        self.assertEqual((first.actions[0].name, first.actions[0].args), ("open_app", {"name": "calculator"}))
+        self.race.acknowledge(True)
+        self.race.jev.evaluate.return_value = ({"launched": {"noul": .95}}, None, None)
+        self.race.jev.completion.return_value = .1  # open, but nothing worked out yet
+        self.assertEqual(self.race.next_actions(b"img", self.ctx(goal)).reasoning, "planned")
+        self.race.planner.forget_plan.assert_called_once()
+
+    def test_a_stage_held_after_a_launch_asks(self):
+        goal = "open mail and send john six"
+        with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="mail")):
+            self.race.next_actions(b"img", self.ctx(goal))
+        self.race.acknowledge(True)
+        self.race.jev.evaluate.return_value = ({"launched": {"noul": .95}}, None, None)
+        self.race.jev.completion.return_value = .1
+        self.race.planner.next_actions.return_value = Plan("held", [], [], held="click Send button")
+        self.assertEqual(self.race.next_actions(b"mail", self.ctx(goal)).actions[0].type, "ask_user")
+
+    def test_a_screen_with_no_launcher_has_the_planner_open_the_app(self):
+        with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="brave")):
+            ctx = StepContext("open brave", DeviceProfile("unknown", Rect(0, 0, 400, 300), "mouse", 1), self.memory,
+                              [], 1, 10, run_id="a")
+            self.assertEqual(self.race.next_actions(b"img", ctx).reasoning, "planned")
+
+    def test_a_launch_that_landed_elsewhere_goes_to_the_planner(self):
+        with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="calculadora")):
+            self.race.next_actions(b"img", self.ctx("abre la calculadora"))
+        self.race.acknowledge(True)
+        self.race.jev.evaluate.return_value = ({"launched": {"noul": .1}}, None, None)  # a web search instead
+        self.race.jev.completion.return_value = .9
+        self.assertEqual(self.race.next_actions(b"img", self.ctx("abre la calculadora")).reasoning, "planned")
+        self.assertIn("did not open", self.race.planner.next_actions.call_args.args[1].note)
 
     def test_a_scroll_with_no_effect_goes_to_the_planner(self):
         with patch("brain.agent.race.triage", return_value=Triage("scroll", None, False, scroll=5)):

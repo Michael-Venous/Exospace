@@ -18,8 +18,8 @@ from dataclasses import replace
 from typing import Any
 
 from brain.agent.executor import ModelExecutor, Plan, StepContext
-from brain.agent.jev import SIDE_EFFECT_GATE, SIDE_EFFECTS, probability
-from brain.agent.triage import GATE, IRREVERSIBLE_KINDS
+from brain.agent.jev import SIDE_EFFECT_GATE, SIDE_EFFECTS, STEP_IRREVERSIBLE, probability
+from brain.agent.triage import GATE
 from brain.cancel import CancelToken, Cancelled
 from brain.config import Config
 from brain.imaging import grid_copy
@@ -27,7 +27,6 @@ from brain.types import OSName
 
 UNPRODUCTIVE = ("unchanged", "Rejected action", "Recovery required")
 WINDOW = 6  # race steps looked at; deep mode once DEEP_AFTER of them were unproductive
-STEP_IRREVERSIBLE = "Would carrying out the proposed `actions` on this `screen` " + IRREVERSIBLE_KINDS
 DEEP_STALL_S = 60.0  # one Argon step can take 20 s+; race keeps the 20 s no-progress rule
 
 
@@ -68,7 +67,7 @@ class DeepFallback:
             if sum(self._recent) < self.after or any(a.type in ("done", "ask_user") for a in plan.actions):
                 return plan
             self.active = True
-            self.on_status("This one needs more thought; switching to deep mode…")
+            self.on_status("This one's harder. I'm thinking it through.")
         try:
             plan = self.deep.next_actions(grid_copy(image_jpeg), replace(ctx, note=ctx.note or "Deep mode: the fast "
                                                                          "planner was stuck; take any route that works."))
@@ -90,7 +89,7 @@ class DeepFallback:
         acting = [a for a in plan.actions if a.type not in ("done", "ask_user", "fail", "remember")]
         if not acting:
             return plan
-        approved = self.inner.approved_run()
+        approved = self.inner.approved_run(ctx)
         questions = {"side_effects": {"type": "noul", "instructions": SIDE_EFFECTS}}
         if not approved:
             questions["irreversible"] = {"type": "noul", "instructions": STEP_IRREVERSIBLE}

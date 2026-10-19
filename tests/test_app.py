@@ -15,8 +15,8 @@ class ReconnectTests(unittest.TestCase):
         monitor.wait_connected.side_effect = lambda: monitor.generation
 
         class FakeAgent:
-            def __init__(self, *args):
-                self.reconnect = args[-1]
+            def __init__(self, *args, **kwargs):
+                self.reconnect, self.goal = args[-1], ""
 
             def run(self, goal, profile, task_id):
                 seen.append((goal, profile.connected_at, detect.call_count))
@@ -40,18 +40,19 @@ class ReconnectTests(unittest.TestCase):
 
 
 class DisplayGoalTests(unittest.TestCase):
-    def run_goals(self, statuses):
+    def run_goals(self, statuses, continues=False):
         goals = []
 
         class FakeAgent:
-            def __init__(self, *args):
-                pass
+            def __init__(self, *args, **kwargs):
+                self.goal = ""
 
             def run(self, goal, profile, task_id):
                 goals.append(goal)
                 return Mock(status=statuses[len(goals) - 1], message="")
 
-        commands = [app.Command("goal", text=t) for t in ("select guest mode", "search Genghis Khan")]
+        commands = [app.Command("goal", text="select guest mode"),
+                    app.Command("goal", text="search Genghis Khan", continues=continues)]
         monitor = Mock(generation=0, connected=True)
         monitor.wait_connected.return_value = 0
         with patch.object(app.Config, "load", return_value=Mock(executor="direct", target_os="")), \
@@ -66,6 +67,10 @@ class DisplayGoalTests(unittest.TestCase):
 
     def test_a_request_after_an_interruption_is_new(self):
         self.assertEqual(self.run_goals(["cancelled", "done"]), ["select guest mode", "search Genghis Khan"])
+
+    def test_a_later_segment_of_one_utterance_continues_the_goal(self):
+        self.assertEqual(self.run_goals(["cancelled", "done"], continues=True)[1],
+                         "select guest mode\nUser correction: search Genghis Khan")
 
     def test_an_answer_to_a_question_continues_the_goal(self):
         self.assertEqual(self.run_goals(["ask_user", "done"])[1], "select guest mode\nUser correction: search Genghis Khan")
