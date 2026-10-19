@@ -12,7 +12,7 @@ import numpy as np
 from brain.agent.executor import Executor, StepContext
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled
-from brain.capture import active_rect, frame_change, is_blank, thumbnail
+from brain.capture import active_rect, area_change, frame_change, is_blank, thumbnail
 from brain.controller import Controller
 from brain.errors import describe
 from brain.events import EventBus
@@ -134,8 +134,15 @@ class Agent:
                         if latest is None or is_blank(latest):
                             token.cancel("video lost")
                             token.check()
-                        if not moving and frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                        # Only what the first action aims at must be where the plan saw it: Google's results
+                        # drawing in below the address bar a plan clicked discarded that plan (2026-10-18).
+                        first = plan.actions[0]
+                        changed = (area_change(frame, latest, profile.rect, first.x, first.y)
+                                   if first.x is not None and first.y is not None
+                                   else frame_change(before, thumbnail(latest)))
+                        if not moving and changed >= ctl.settle.threshold:
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
+                            progress_at += times["t_model"]  # a plan never tried: its thinking time isn't a stall
                             continue
                     notes = list(plan.rejected)
                     acted = sent_input = False

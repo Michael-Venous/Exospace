@@ -17,7 +17,9 @@ from brain.cancel import CancelToken
 from brain.config import Config
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
-OVERLOADED = frozenset({429, 503})  # high demand or quota: switch models instead of waiting
+# High demand, quota or a server deadline: switch models instead of waiting. Flash answers in 3.6 s (median of
+# 413 calls on the Pi); its one 504 came at 29 s and the retry on Flash took 22 s more (2026-10-18).
+OVERLOADED = frozenset({429, 503, 504})
 
 
 class GeminiJSON:

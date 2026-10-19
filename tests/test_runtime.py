@@ -279,6 +279,27 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(self.hid.commands, [{"op": "release_all"}])
 
+    def test_a_change_away_from_the_target_keeps_the_plan(self):
+        def next_actions(image, ctx):
+            self.capture.frame[80:] = 210  # results drawing in below the address bar the plan clicks
+            if ctx.step == 1:
+                return Plan("address bar", [Action("click", x=.5, y=.1)], [])
+            return Plan("ask", [Action("ask_user", question="Next?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.assertEqual(self.agent(self.fast).run("Go to a site", self.profile).status, "ask_user")
+        self.assertIn("click", [command["op"] for command in self.hid.commands])
+
+    def test_a_discarded_plan_does_not_count_toward_the_stall(self):
+        def next_actions(image, ctx):
+            if ctx.step == 1:
+                time.sleep(0.1)  # a planner slower than the stall limit
+                self.capture.frame[:] = 210
+                return Plan("old target", [Action("click", x=.5, y=.5)], [])
+            return Plan("clarify", [Action("ask_user", question="Which window?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        agent = Agent(self.fast, self.controller, self.memory, self.telemetry, max_steps=8, stall_s=0.05)
+        self.assertEqual(agent.run("Click the field", self.profile).status, "ask_user")
+
     def test_a_screen_that_never_settles_still_runs_the_plan(self):
         frames = iter(range(10**6))  # a live camera preview: every grab differs
         self.capture.grab = lambda: np.full((100, 160, 3), 60 + next(frames) % 2 * 40, dtype=np.uint8)

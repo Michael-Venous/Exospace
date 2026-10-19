@@ -27,6 +27,9 @@ BLANK_MAX = 12  # brightest pixel below this (0-255) = blank / no signal
 BAR_MIN_FRACTION = 0.02
 ASPECT_RANGE = (0.3, 3.4)  # width/height of any real screen; a tall phone is ~0.43
 THUMB_SIZE = (64, 36)
+# area_change looks this far, as a fraction of the screen, each side of a point: around Chrome's address bar it
+# read 0.0 while Google's results drew below it (39 on the page body).
+AREA = 0.05
 
 
 class CaptureError(RuntimeError):
@@ -166,6 +169,15 @@ def thumbnail(frame: Frame) -> np.ndarray:
 def frame_change(a: np.ndarray, b: np.ndarray) -> float:
     """Mean absolute difference between two thumbnails (0-255)."""
     return float(np.mean(cv2.absdiff(a, b)))
+
+
+def area_change(a: Frame, b: Frame, rect: Rect, x: float, y: float) -> float:
+    """frame_change of the area around point (x, y), in fractions of `rect`: whether what the point aims at moved."""
+    cx, cy = rect.x0 + x * rect.width, rect.y0 + y * rect.height
+    dx, dy = AREA * rect.width, AREA * rect.height
+    box = Rect(max(rect.x0, int(cx - dx)), max(rect.y0, int(cy - dy)),
+               min(rect.x1, int(cx + dx) + 1), min(rect.y1, int(cy + dy) + 1))
+    return frame_change(thumbnail(box.crop(a)), thumbnail(box.crop(b)))
 
 
 def active_rect(frame: Frame) -> Rect:

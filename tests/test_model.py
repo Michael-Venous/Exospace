@@ -226,10 +226,12 @@ class FallbackTests(unittest.TestCase):
         self.assertEqual(self.logged_models(), ["primary", "fallback"])
         self.assertEqual(self.sleeps, [0.0])
 
-    def test_quota_switches_to_fallback(self):
-        result = self.call(api_error(429), SimpleNamespace(text='{"ok": true}'))
-        self.assertEqual(result, {"ok": True})
-        self.assertEqual(self.models, ["primary", "fallback"])
+    def test_quota_and_server_deadline_switch_to_fallback(self):
+        for code in (429, 504):
+            with self.subTest(code=code):
+                result = self.call(api_error(code), SimpleNamespace(text='{"ok": true}'))
+                self.assertEqual(result, {"ok": True})
+                self.assertEqual(self.models, ["primary", "fallback"])
 
     def test_client_errors_do_not_fall_back(self):
         for code in (400, 401):
