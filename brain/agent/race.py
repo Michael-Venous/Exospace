@@ -150,6 +150,8 @@ class RaceExecutor:
         self._plan = self._pool.submit(self.planner.next_actions, image, self._planner_ctx(ctx))
         result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, earlier=earlier,
                                                 run_id=ctx.run_id))
+        self.jev.trace.append({"label": "route", "mode": result.mode, "gesture": result.gesture,
+                               "irreversible": result.irreversible, "approved": confirmed})
         if result.irreversible and not confirmed:
             return self.hold(ctx)
         self.mode, self._point, self._gesture, self._scroll = result.mode, result.point, result.gesture, result.scroll

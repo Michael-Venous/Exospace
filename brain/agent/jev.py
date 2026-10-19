@@ -6,6 +6,7 @@ import json
 import math
 import time
 import uuid
+from collections import deque
 from pathlib import Path
 
 import cv2
@@ -13,6 +14,8 @@ import httpx
 import numpy as np
 
 from brain.cancel import CancelToken
+
+TRACE = 100  # decisions kept until the agent loop hands them to the display
 
 
 ATTEMPTS = 2  # one retry: a single timeout ended 3 of 14 live runs
@@ -86,12 +89,17 @@ class JevVision:
         self.cancel, self.log_path, self.model = cancel, log_path, model
         self.min_presence = probability(min_presence)
         self.min_confidence = probability(min_confidence)
+        # Every answered call, plus the planner's plans and the race's routing, in order (display decision log).
+        self.trace: deque[dict] = deque(maxlen=TRACE)
         self.client = httpx.Client(timeout=timeout_s, headers={
             'Authorization': f'Bearer {key}', 'TypeSafe-Danger-Zone-Images': 'true'})
 
     def evaluate(self, jpeg: bytes, questions: dict, *, run_id: str = '', step: int = 0,
-                 state: dict | None = None):
-        """Ask questions about `screen`; `state` adds named context (e.g. the utterance)."""
+                 state: dict | None = None, label: str = 'jev', gates: dict[str, float] | None = None,
+                 region: tuple[float, float, float, float] = (0., 0., 1., 1.)):
+        """Ask questions about `screen`; `state` adds named context (e.g. the utterance).
+        `label`, `gates` (pass mark per answer) and `region` (where `jpeg` sits on the screen,
+        for a zoomed crop) only describe the call in the trace."""
         encoded, size, padded = prepare_image(jpeg)
         ref = str(uuid.uuid4())
         body = {'model': self.model, 'state': {'screen': ref, **(state or {})},
@@ -114,6 +122,9 @@ class JevVision:
                     if not isinstance(answers, dict) or any(k not in answers for k in questions):
                         raise JevError('Jev returned incomplete answers')
                     success = True
+                    self.trace.append({'label': label, 'elapsed_s': round(time.monotonic()-started, 3),
+                                       'state': state or {}, 'gates': gates or {},
+                                       'answers': {k: _on_screen(answers[k], size, padded, region) for k in questions}})
                     return answers, size, padded
             except httpx.TransportError as exc:  # a timeout or dropped connection: one retry
                 error = type(exc).__name__
@@ -143,7 +154,8 @@ class JevVision:
             'unique': {'type':'noul','instructions':f'Is there exactly one unambiguous visible target matching this description in `screen`? Target: {target}'},
             'location': {'type':'box','instructions':f'Locate the interactive target in `screen`: {target}'},
         }
-        answers, (w,h), (pw,ph) = self.evaluate(jpeg, questions, run_id=run_id, step=step)
+        answers, (w,h), (pw,ph) = self.evaluate(jpeg, questions, run_id=run_id, step=step, label='locate',
+            gates={'present': self.min_presence, 'unique': self.min_presence, 'location': self.min_confidence})
         present = probability(answers['present'].get('noul'))
         unique = probability(answers['unique'].get('noul'))
         confidence = probability(answers['location'].get('confidence'))
@@ -175,7 +187,8 @@ class JevVision:
                                      ' Ignore `expected_evidence` for this question.'}
             questions['hinted'] = {'type': 'noul', 'instructions': COMPLETION_HINTED}
             questions['sufficient'] = {'type': 'noul', 'instructions': EVIDENCE_SUFFICIENT}
-        answers, _, _ = self.evaluate(jpeg, questions, run_id=run_id, step=step, state=state)
+        answers, _, _ = self.evaluate(jpeg, questions, run_id=run_id, step=step, state=state,
+                                      label='completion')
         if evidence and probability(answers['sufficient'].get('noul')) >= 0.5:
             return probability(answers['hinted'].get('noul'))
         return probability(answers['complete'].get('noul'))
@@ -207,7 +220,12 @@ class JevVision:
                 f'{key}_box': {'type':'box','instructions':f'The exact described target in `screen`. For an input field, locate the editable box itself, excluding its label. Target: {target}'},
             })
         state={'request':request,'actions':json.dumps(proposal)} if proposal else None
-        answers, (w,h), (pw,ph) = self.evaluate(jpeg,questions,run_id=run_id,step=step,state=state)
+        gates={f'check_{key}':self.min_presence for key in checks}
+        for key in targets:
+            gates.update({f'{key}_present':self.min_presence,f'{key}_unique':self.min_presence,
+                          f'{key}_box':self.min_confidence})
+        answers, (w,h), (pw,ph) = self.evaluate(jpeg,questions,run_id=run_id,step=step,state=state,
+                                              label='stage check',gates=gates)
         values={key:probability(answers[f'check_{key}'].get('noul')) for key in checks}
         route=answers['route']
         # Choice confidence and Box confidence have different semantics. Honor
@@ -246,3 +264,19 @@ class JevVision:
             self.last_points[key]=center
             points[key]=None if gated else center
         return values,points
+
+
+def _on_screen(answer: object, size: tuple[int, int], padded: tuple[int, int],
+               region: tuple[float, float, float, float]) -> object:
+    """A box answer as [left, top, right, bottom] in 0-1 screen coordinates (None if malformed)."""
+    if not isinstance(answer, dict) or 'box' not in answer:
+        return answer
+    box = answer['box'] if isinstance(answer['box'], dict) else {}
+    try:
+        left, right, top, bottom = (probability(box.get(k)) for k in ('left', 'right', 'top', 'bottom'))
+    except ValueError:
+        return {**answer, 'box': None}
+    (w, h), (pw, ph), (x0, y0, x1, y1) = size, padded, region
+    sx, sy = pw / w * (x1 - x0), ph / h * (y1 - y0)
+    return {**answer, 'box': [round(x0 + left * sx, 4), round(y0 + top * sy, 4),
+                              round(x0 + right * sx, 4), round(y0 + bottom * sy, 4)]}

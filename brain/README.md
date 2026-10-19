@@ -85,8 +85,11 @@ or blank screen: it waits up to 180 s for video, re-detects the device and conti
 in Chromium kiosk mode on the Touch Display 2; on the projector it is the demo view.
 
 - **Main view:** live screen with the click marker, history (actions, Flash/Jev reasoning, model time), STOP
-  (same cancel path as barge-in), saved-task buttons and a typed-goal box. **Details:** the last Jev scores
-  against the `.env` pass marks.
+  (same cancel path as barge-in), saved-task buttons and a typed-goal box. **Details:** a decision log per step.
+  Tap a ⚙ row to see the screen that step was decided on, with Jev's boxes (dashed = under its pass mark) and the
+  click points, then every decision in order: triage, route (act / plan / none), Flash's plan and why it replanned,
+  and each Jev check's answers against the pass marks the code used. Each `plan` event carries this as `trace`, and
+  its screen is kept at `GET /frame/N.jpg` for the last 60 steps.
 - **Taps:** "Tap = click" clicks that spot through the normal controller. "Tap = this" marks a point for the
   next goal ("delete this").
 - **API:** `POST /goal {"text": "..."}`, `POST /tap`, `POST /stop` (barge-in; also drops queued goals),

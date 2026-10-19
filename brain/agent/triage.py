@@ -97,7 +97,8 @@ def triage(jev: JevVision, jpeg: bytes, utterance: str, cancel: CancelToken, *,
                    "right now. For an item in a list or grid, locate the whole item."},
     }
     state = {"utterance": utterance, **({"earlier_request": earlier} if earlier else {})}
-    answers, size, padded = jev.evaluate(jpeg, questions, run_id=run_id, step=step, state=state)
+    answers, size, padded = jev.evaluate(jpeg, questions, run_id=run_id, step=step, state=state,
+                                         label="triage", gates={"present": GATE, "unique": GATE, "irreversible": GATE})
     irreversible = probability(answers["irreversible"].get("noul")) >= GATE
     choice = answers["intent"].get("choice")
     if choice == "no_action":
@@ -168,7 +169,8 @@ def _look(jev: JevVision, jpeg: bytes, state: dict, control: str, point: tuple[f
         "target": {"type": "box", "instructions":
                    f"This is a zoomed-in part of a screen. Locate exactly {control}."},
     }
-    answers, size, padded = jev.evaluate(crop, questions, run_id=run_id, step=step, state=state)
+    answers, size, padded = jev.evaluate(crop, questions, run_id=run_id, step=step, state=state,
+                                         label="zoom", gates={"present": GATE}, region=(x0, y0, x1, y1))
     local = box_center(answers["target"], size, padded)
     if local is None or probability(answers["present"].get("noul")) < GATE:
         return None
@@ -190,7 +192,7 @@ def answer_to_pending(jev: JevVision, jpeg: bytes, pending: str, reply: str, *, 
                     "`pending_request`?" + scope + (NOT_APPROVAL if held else "")},
         "decline": {"type": "noul", "instructions":
                     "Does the user's `reply` refuse, cancel or say no to the `pending_request`?" + scope},
-    }, run_id=run_id, step=step, state=state)
+    }, run_id=run_id, step=step, state=state, label="approval", gates={"approve": GATE, "decline": GATE})
     if probability(answers["approve"].get("noul")) >= GATE:
         return "approve"
     if probability(answers["decline"].get("noul")) >= GATE:

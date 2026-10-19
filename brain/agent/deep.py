@@ -95,7 +95,8 @@ class DeepFallback:
             questions["irreversible"] = {"type": "noul", "instructions": STEP_IRREVERSIBLE}
         briefs = [a.brief() for a in acting]
         answers, _, _ = self.inner.jev.evaluate(image_jpeg, questions, run_id=ctx.run_id, step=ctx.step,
-                                                state={"request": ctx.goal, "actions": json.dumps(briefs)})
+                                                state={"request": ctx.goal, "actions": json.dumps(briefs)},
+                                                label="deep check")
         if probability(answers["side_effects"].get("noul")) >= SIDE_EFFECT_GATE:
             return replace(plan, actions=[], rejected=["Blocked: those actions would close or discard something "
                                                        "the request did not ask for. Find another way."])

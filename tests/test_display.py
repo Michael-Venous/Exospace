@@ -5,6 +5,7 @@ import json
 import queue
 import tempfile
 import unittest
+from collections import deque
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -14,7 +15,7 @@ from brain.agent.memory import Memory
 from brain.cancel import CancelToken
 from brain.controller import Controller, SettleConfig
 from brain.display.server import Command, DisplayServer
-from brain.events import CLIENT_BUFFER, EventBus
+from brain.events import CLIENT_BUFFER, KEPT_FRAMES, EventBus
 from brain.telemetry import Telemetry
 from brain.types import Action, DeviceProfile, Rect
 from test_runtime import HID, Capture
@@ -36,6 +37,15 @@ class EventBusTests(unittest.TestCase):
         self.assertEqual(events[0]["ev"], "run")
         self.assertEqual(events[1:], [{"ev": "frame", "id": 1}])  # current frame only, not every frame
         self.assertEqual(bus.frame(), (1, b"jpeg"))
+
+    def test_only_the_last_step_frames_are_kept(self):
+        bus = EventBus()
+        bus.set_frame(b"live")
+        first = bus.set_frame(b"step 1", keep=True)
+        for i in range(KEPT_FRAMES):
+            last = bus.set_frame(b"step %d" % (i + 2), keep=True)
+        self.assertEqual((bus.kept_frame(1), bus.kept_frame(first)), (b"", b""))
+        self.assertEqual(bus.kept_frame(last), b"step %d" % (KEPT_FRAMES + 1))
 
     def test_slow_client_drops_events_instead_of_blocking(self):
         bus = EventBus()
@@ -112,6 +122,14 @@ class DisplayServerTests(unittest.TestCase):
         self.bus.set_frame(b"\xff\xd8jpeg")
         self.assertEqual(self.request("GET", "/screen.jpg"), (200, b"\xff\xd8jpeg"))
 
+    def test_kept_step_frames_are_served_by_id(self):
+        live = self.bus.set_frame(b"live")
+        step = self.bus.set_frame(b"\xff\xd8step", keep=True)
+        self.assertEqual(self.request("GET", f"/frame/{step}.jpg"), (200, b"\xff\xd8step"))
+        for path in (f"/frame/{live}.jpg", "/frame/99.jpg", "/frame/x.jpg", "/frame/%C2%B2.jpg"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request("GET", path)[0], 404)
+
     def test_event_stream_replays_history(self):
         self.bus.publish("run", goal="open mail")
         conn = http.client.HTTPConnection(self.host, int(self.port), timeout=2)
@@ -148,12 +166,38 @@ class AgentEventTests(unittest.TestCase):
         self.assertEqual(names, ["run", "plan", "action", "plan", "result"])
         plan = next(e for e in events if e["ev"] == "plan")
         self.assertEqual(plan["points"], [[0.5, 0.25]])
-        self.assertIsNone(plan["scores"])  # this executor has no Jev
+        self.assertEqual(plan["trace"], [])  # this executor has no Jev
+        self.assertTrue(bus.kept_frame(plan["frame"]).startswith(b"\xff\xd8"))  # the screen it decided on
         action = next(e for e in events if e["ev"] == "action")
         self.assertEqual((action["point"], action["ok"]), ([0.5, 0.25], True))
         self.assertGreater(bus.frame()[0], 0)
         self.assertTrue(bus.frame()[1].startswith(b"\xff\xd8"))  # JPEG
 
+
+    def test_each_event_carries_the_decisions_made_since_the_last(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        capture = Capture()
+        controller = Controller(HID(capture), capture, CancelToken(),
+                                SettleConfig(min_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
+        executor = Mock(spec=["next_actions", "missing", "jev"])
+        executor.jev.trace = deque()
+        plans = iter([Plan("Click Send", [Action("click", x=0.5, y=0.25), Action("done", summary="Sent")], [])])
+
+        def decide(image, ctx):
+            executor.jev.trace.append({"label": "triage", "step": ctx.step})
+            return next(plans)
+        executor.next_actions.side_effect = decide
+        executor.missing.side_effect = lambda *args: executor.jev.trace.append({"label": "completion"}) or ""
+        bus = EventBus()
+        client = bus.subscribe()
+        agent = Agent(executor, controller, Memory(root / "session.json"),
+                      Telemetry(root / "results.csv", "test"), max_steps=4, events=bus)
+        agent.run("send it", DeviceProfile("macos", Rect(0, 0, 160, 100), "mouse", 1))
+        traces = [(e["ev"], e["trace"]) for e in drain(client) if "trace" in e]
+        self.assertEqual(traces, [("plan", [{"label": "triage", "step": 1}]),
+                                  ("result", [{"label": "completion"}])])  # the done check after the click
 
     def test_batch_skipped_mid_way_reports_only_sent_actions(self):
         temp = tempfile.TemporaryDirectory()

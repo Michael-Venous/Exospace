@@ -91,7 +91,6 @@ def main(argv: list[str] | None = None) -> int:
                 server = DisplayServer(bus, commands, token.cancel, args.display_host, args.display)
                 server.start()
                 cleanup.callback(server.close)
-                bus.publish("config", min_presence=cfg.jev_min_presence, min_confidence=cfg.jev_min_confidence)
                 if args.backend == "pi":
                     _pump_live_frames(capture, bus)
                 else:
