@@ -257,7 +257,7 @@ class JevFlashExecutor:
         self.completion=data['completion']
         self.last_reason=str(data.get('reasoning',''))
         self._plan_image=image
-        self.jev.trace.append({'label':'plan','elapsed_s':round(time.monotonic()-started,3),
+        self.jev.trace.append({'label':'plan','model':self.last_model,'elapsed_s':round(time.monotonic()-started,3),
             'reason':reason or 'new task','reasoning':self.last_reason,'completion':self.completion,
             'stages':[{'expected':s['expected'],'ready':s['ready'],'actions':[_describe(a) for a in s['actions']]}
                       for s in self.stages]})
@@ -422,11 +422,14 @@ class JevFlashExecutor:
         deadline). A failed replan falls back to the fast planner instead of ending the request."""
         if replan and self.replanner is not self.model:
             try:
-                return self.replanner.generate(image,prompt,PROMPT,SCHEMA,role='replan',run_id=ctx.run_id,step=ctx.step)
+                data=self.replanner.generate(image,prompt,PROMPT,SCHEMA,role='replan',run_id=ctx.run_id,step=ctx.step)
+                self.last_model=self.replanner.model
+                return data
             except Cancelled:
                 raise
             except Exception:  # noqa: BLE001 - e.g. 504 deadline exceeded
                 pass
+        self.last_model=self.model.model
         return self.model.generate(image,prompt,PROMPT,SCHEMA,role='flash',run_id=ctx.run_id,step=ctx.step)
 
     def _zoom(self,image,targets,points,ctx):

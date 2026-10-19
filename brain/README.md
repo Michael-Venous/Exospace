@@ -68,7 +68,7 @@ or blank screen: it waits up to 180 s for video, re-detects the device and conti
 | `device.py` | OS identification from the first frame, or `--os` |
 | `cancel.py` | The one cancellation token |
 | `keys.py`, `imaging.py`, `verification.py` | Key names; crops and JPEG prep; screen-change checks |
-| `events.py`, `display/` | Live event stream and the touch display server |
+| `events.py`, `display/` | Live event stream, the touch display server and the request recordings |
 | `arbiter.py` | Commit gate for pipelined voice segments (PLAN.md §11; not wired yet) |
 | `telemetry.py`, `errors.py`, `doctor.py` | Benchmark CSV (§5.7); readable errors with a private log; hardware check |
 | `agent/race.py`, `agent/triage.py` | Default executor; the triage call, zoom, gesture, irreversible and approval checks; corrections and planner stages ask too |
@@ -96,6 +96,15 @@ in Chromium kiosk mode on the Touch Display 2; on the projector it is the demo v
   `GET /events` (SSE). The server only queues work; the loop stays the single HID writer.
 - The `pi` backend streams frames at 4 fps; other backends update once per step and after taps.
   Restart the app after editing the page.
+
+## Recordings
+
+`--recordings PORT --recordings-host ADDR` (with `--display`) saves every request to `work/recordings/<time>-<run>/`
+(its events plus each screen frame; the newest 50 are kept) and serves a player for a phone at `http://ADDR:PORT`.
+Each request plays back as a video: the screen at 4 fps on the Pi (once per step elsewhere), pausing 2.5 s on each
+decision with Jev's boxes and the click points, the plan in force (with its model and the current stage), and that
+step's Jev checks and scores. The server is read-only (it lists and serves saved files, never queues work), so on
+the Pi it listens on the Tailscale address, e.g. `--recordings 8790 --recordings-host 100.76.219.77`.
 
 ## Logs and tests
 

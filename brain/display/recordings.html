@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Exospace Recordings</title>
+<style>
+:root{
+  --bg:#0e1013;--panel:#171a1f;--line:#262a31;--text:#eef0f3;--muted:#8b919b;
+  --ok:#34c759;--warn:#ffb020;--bad:#ff453a;--info:#5e9eff;--ask:#bf5af2;
+  --radius:14px;font:500 16px/1.4 -apple-system,"Ubuntu Sans",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:900px;padding:12px 16px calc(24px + env(safe-area-inset-bottom));
+  background:var(--bg);color:var(--text)}
+button{font:inherit;color:inherit;border:1px solid var(--line);background:var(--panel);border-radius:var(--radius);
+  padding:8px 14px;cursor:pointer;touch-action:manipulation}
+button:active{transform:scale(.97)}
+[hidden]{display:none!important}
+h1{margin:4px 0 12px;font-size:20px}
+.status{flex:none;align-self:start;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.04em;
+  text-transform:uppercase;background:var(--line)}
+.status[data-s=done]{background:var(--info);color:#04122b}
+.status[data-s=running]{background:var(--ok);color:#06210e}
+.status[data-s=ask_user]{background:var(--ask)}
+.status[data-s=cancelled],.status[data-s=fail]{background:var(--bad)}
+#runs{list-style:none;margin:0;padding:0;display:grid;gap:8px}
+#runs li{display:grid;grid-template-columns:1fr auto;gap:4px 10px;padding:12px 14px;background:var(--panel);
+  border:1px solid var(--line);border-radius:var(--radius);cursor:pointer}
+#runs .goal{overflow-wrap:anywhere}
+#runs .meta,#runs .msg{grid-column:1/3;color:var(--muted);font-size:14px}
+.top{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+#goal{flex:1;min-width:0;font-size:18px;overflow-wrap:anywhere}
+.shot{position:relative;line-height:0;background:#000;border-radius:var(--radius);overflow:hidden;min-height:120px}
+.shot img{width:100%;user-select:none;-webkit-user-drag:none}
+.box{position:absolute;border:2px solid var(--c);border-radius:3px;pointer-events:none}
+.box.miss{border-style:dashed}
+.box span{position:absolute;bottom:100%;left:-2px;padding:1px 4px;border-radius:3px;background:var(--c);color:#000;
+  font-size:10px;line-height:1.3;white-space:nowrap}
+.box.low span{bottom:auto;top:100%}
+.box.miss span{display:none}  /* scores under the pass mark are listed below the video */
+.dot{position:absolute;width:14px;height:14px;margin:-7px 0 0 -7px;border-radius:50%;border:2px solid #000;background:var(--warn)}
+.dot.ok{background:var(--ok)}
+.dot.bad{background:var(--bad)}
+#caption{margin:8px 0 0;min-height:2.7em;font-size:15px}
+.controls{display:flex;align-items:center;gap:8px;margin:10px 0}
+#seek{flex:1;min-width:0;accent-color:var(--info)}
+#clock{flex:none;color:var(--muted);font-size:13px;font-variant-numeric:tabular-nums}
+#steps{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
+#steps button{flex:none;min-width:40px;padding:4px 10px;font-size:14px}
+#steps button.cur{background:var(--info);color:#04122b}
+#steps button.bad{border-color:var(--bad)}
+section{margin-top:12px;padding:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:var(--radius)}
+section h2{margin:0 0 4px;font-size:13px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.call{margin-top:10px;padding-top:8px;border-top:1px solid var(--line)}
+.call h3{margin:0 0 4px;font-size:13px;letter-spacing:.05em;text-transform:uppercase;color:var(--c)}
+.call ol{margin:4px 0;padding-left:22px;font-size:15px}
+.call li.now{color:var(--warn)}
+.kv{margin:4px 0;font-size:14px;color:var(--muted);overflow-wrap:anywhere}
+.kv b{color:var(--text);font-weight:600}
+.score{display:grid;grid-template-columns:minmax(0,130px) 1fr 46px;align-items:center;gap:10px;margin:8px 0;font-size:15px}
+.score span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar{position:relative;height:10px;border-radius:5px;background:var(--line)}
+.bar i{position:absolute;inset:0 auto 0 0;border-radius:5px;background:var(--ok)}
+.bar i.low{background:var(--bad)}
+.bar b{position:absolute;top:-4px;bottom:-4px;width:2px;background:var(--text)}
+.note{color:var(--muted);font-size:14px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
+</style>
+</head>
+<body>
+<div id="list">
+  <div class="top"><h1 style="flex:1">Recordings</h1><button id="refresh">Refresh</button></div>
+  <ul id="runs"></ul>
+  <p id="none" class="note" hidden>No requests recorded yet.</p>
+</div>
+<div id="player" hidden>
+  <div class="top">
+    <button id="back" aria-label="All recordings">‹</button>
+    <span id="goal"></span>
+    <span id="status" class="status"></span>
+  </div>
+  <div class="shot" id="video"><img id="frame" alt="Target screen"></div>
+  <p id="caption"></p>
+  <div class="controls">
+    <button id="prev" aria-label="Previous step">⏮</button>
+    <button id="play" aria-label="Play">▶</button>
+    <button id="next" aria-label="Next step">⏭</button>
+    <input id="seek" type="range" min="0" step="0.05" value="0" aria-label="Position">
+    <span id="clock"></span>
+    <button id="speed">1×</button>
+  </div>
+  <div id="steps"></div>
+  <section id="plan" hidden></section>
+  <section id="step"></section>
+</div>
+<script>
+const $ = id => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+};
+const fmt = v => typeof v === "number" ? v.toFixed(2) : "—";
+function kv(key, value) { const p = el("p", "kv"); p.append(el("b", "", key + ": "), String(value ?? "—")); return p; }
+// `risky` answers (irreversible, decline) are the ones where crossing the pass mark stops the action.
+function scoreRow(label, value, pass, risky) {
+  const v = typeof value === "number" ? value : null;
+  const row = el("div", "score");
+  row.innerHTML = `<span></span><span class="bar"><i></i></span><span></span>`;
+  row.children[0].textContent = label; row.children[0].title = label;
+  row.children[2].textContent = fmt(v);
+  const fill = row.querySelector("i"); fill.style.width = ((v || 0) * 100) + "%";
+  if (pass != null) {
+    const tick = document.createElement("b"); tick.style.left = (pass * 100) + "%"; row.querySelector(".bar").append(tick);
+    if (v !== null && (v < pass) !== !!risky) fill.className = "low";
+  }
+  return row;
+}
+
+function badge(e, s) { e.className = "status"; e.textContent = s; e.dataset.s = s; return e; }
+
+const COLORS = {triage: "var(--ok)", zoom: "var(--info)", "stage check": "var(--warn)", locate: "var(--ask)",
+                route: "var(--text)", plan: "var(--info)", "deep plan": "var(--ask)"};
+const PLANS = ["plan", "deep plan"];
+const HOLD = 2.5;  // seconds of video each decision stays on screen with Jev's boxes
+const SPEEDS = [1, 2, 4];
+
+let name = "", items = [], steps = [], total = 0, now = 0, playing = 0, speed = 1, tick = 0;  // playing: loop id, 0 = paused
+let shown = {frame: -1, item: null, step: undefined};
+
+// ---- list
+async function showList() {
+  pause(); $("player").hidden = true; $("list").hidden = false;
+  const runs = await (await fetch("runs.json")).json();
+  $("runs").replaceChildren(...runs.map((r, i) => {
+    const li = el("li"), s = r.status === "running" && i ? "unfinished" : r.status;  // only the newest can still be running
+    li.append(el("span", "goal", r.goal || "(no goal)"), badge(el("span"), s));
+    const when = r.t ? new Date(r.t * 1000).toLocaleString([], {dateStyle: "short", timeStyle: "short"}) : "";
+    li.append(el("span", "meta", [when, `${r.steps} steps`, r.total_s != null ? r.total_s.toFixed(1) + " s" : ""]
+      .filter(Boolean).join(" · ")));
+    if (r.message) li.append(el("span", "msg", r.message));
+    li.onclick = () => { location.hash = r.name; };
+    return li;
+  }));
+  $("none").hidden = runs.length > 0;
+}
+$("refresh").onclick = showList;
+$("back").onclick = () => { location.hash = ""; };
+
+// ---- player: the log becomes a timeline of frames, with a HOLD-second pause on each decision
+async function showRun(run) {
+  pause(); name = run; $("list").hidden = true; $("player").hidden = false;
+  const events = await (await fetch(`runs/${run}/log.json`)).json();
+  events.sort((a, b) => a.t - b.t);  // a step's screen is logged when its plan arrives, stamped when it was taken
+  const t0 = events.length ? events[0].t : 0;
+  let shift = 0, frame = 0, step = null, result = null;
+  items = []; steps = [];
+  for (const e of events) {
+    const at = e.t - t0 + shift;
+    if (e.ev === "run") $("goal").textContent = "“" + e.goal + "”";
+    else if (e.ev === "frame") { frame = e.id; items.push({at, frame, step}); }
+    else if (e.ev === "plan") {
+      step = {...e, at, sent: [], frame: e.frame || frame};
+      steps.push(step);
+      items.push({at, frame: step.frame, step, hold: true});
+      shift += HOLD;
+    } else if (e.ev === "action" && step) step.sent.push({...e, at});
+    else if (e.ev === "result") {
+      result = e;
+      if (e.trace?.length && step) step.trace.push(...e.trace);  // decisions after the last plan, e.g. a final check
+      items.push({at, frame, step, result: e});
+    }
+  }
+  badge($("status"), result ? result.status : "running");
+  total = items.length ? items.at(-1).at + HOLD : 0;
+  $("seek").max = total;
+  $("steps").replaceChildren(...steps.map(st => {
+    const b = el("button", st.rejected.length ? "bad" : "", String(st.step));
+    b.onclick = () => seek(st.at);
+    return b;
+  }));
+  shown = {frame: -1, item: null, step: undefined};
+  if (!items.length) { $("caption").textContent = "Nothing was recorded for this request."; return; }
+  seek(0); play();
+}
+
+function itemAt(t) {
+  let lo = 0, hi = items.length - 1;
+  while (lo < hi) { const mid = (lo + hi + 1) >> 1; if (items[mid].at <= t) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+const src = id => `runs/${name}/${id}.jpg`;
+
+function render() {
+  const i = itemAt(now), item = items[i];
+  if (!item) return;
+  if (item.frame !== shown.frame && item.frame) {
+    $("frame").src = src(item.frame); shown.frame = item.frame;
+    for (const next of items.slice(i + 1, i + 12)) if (next.frame) new Image().src = src(next.frame);  // preload
+  }
+  if (item !== shown.item) { overlay(item); shown.item = item; }
+  if (item.step !== shown.step) { details(item.step); shown.step = item.step; }
+  $("seek").value = now;
+  $("clock").textContent = `${now.toFixed(1)} / ${total.toFixed(1)} s`;
+}
+
+function overlay(item) {
+  const video = $("video");
+  video.querySelectorAll(".box,.dot").forEach(d => d.remove());
+  const s = item.step;
+  $("caption").textContent = item.result ? `${item.result.status}: ${item.result.message}`
+    : s ? `Step ${s.step}: ${s.reasoning}` : "Deciding the first step…";
+  if (!s) return;
+  if (item.hold) {  // the screen the step was decided on: Jev's boxes and the planned points
+    for (const c of s.trace) for (const [key, a] of Object.entries(c.answers || {})) {
+      if (!Array.isArray(a?.box)) continue;
+      const [l, t, r, b] = a.box, gate = c.gates?.[key];
+      const d = el("div", "box" + (gate != null && !(a.confidence >= gate) ? " miss" : "") + (t < 0.08 ? " low" : ""));
+      Object.assign(d.style, {left: l * 100 + "%", top: t * 100 + "%", width: (r - l) * 100 + "%", height: (b - t) * 100 + "%"});
+      d.style.setProperty("--c", COLORS[c.label] || "var(--text)");
+      d.append(el("span", "", `${c.label} ${key.replace(/_box$/, "")} ${fmt(a.confidence)}`));
+      video.append(d);
+    }
+    for (const p of s.points) video.append(dot(p, ""));
+  } else {
+    for (const a of s.sent) if (a.point && a.at <= item.at) video.append(dot(a.point, a.ok ? "ok" : "bad"));
+  }
+}
+function dot(point, cls) {
+  const d = el("div", "dot " + cls);
+  d.style.left = point[0] * 100 + "%"; d.style.top = point[1] * 100 + "%";
+  return d;
+}
+
+function callView(c, stageNow) {
+  const box = el("div", "call");
+  box.style.setProperty("--c", COLORS[c.label] || "var(--muted)");
+  const ms = typeof c.elapsed_s === "number" ? ` · ${Math.round(c.elapsed_s * 1000)} ms` : "";
+  const model = c.model ? ` · ${c.model}` : "";
+  if (c.label === "route") {
+    box.append(el("h3", "", `Route → ${c.mode}` + (c.mode === "act" ? ` (${c.gesture})` : "")));
+    if (c.irreversible) box.append(el("p", "kv", c.approved ? "Irreversible; the user approved it." : "Irreversible: asks first."));
+  } else if (c.label === "plan") {
+    const ol = el("ol");
+    c.stages.forEach((st, n) => {
+      const li = el("li", n + 1 === stageNow ? "now" : "", `${st.expected} — ${st.actions.join(", ")}`);
+      li.append(el("div", "note", "ready when: " + st.ready));
+      ol.append(li);
+    });
+    box.append(el("h3", "", "Plan" + model + ms), kv("why", c.reason), kv("thinking", c.reasoning), ol, kv("done when", c.completion));
+  } else if (c.label === "deep plan") {
+    box.append(el("h3", "", "Deep mode" + model), kv("thinking", c.reasoning));
+  } else {
+    box.append(el("h3", "", "Jev " + c.label + ms));
+    for (const [k, v] of Object.entries(c.state || {})) box.append(kv(k, Array.isArray(v) ? v.join("; ") || "nothing yet" : v));
+    for (const [k, a] of Object.entries(c.answers || {})) {
+      if (!a) continue;
+      if ("choice" in a) box.append(kv(k, `${a.choice} (${fmt(a.confidence)})`));
+      else if ("box" in a) box.append(scoreRow(k, a.confidence, c.gates?.[k]));
+      else if ("noul" in a) box.append(scoreRow(k, a.noul, c.gates?.[k], /irreversible|decline/.test(k)));
+    }
+  }
+  return box;
+}
+
+// The plan in force (the newest one up to this step), then this step's Jev decisions.
+function details(s) {
+  document.querySelectorAll("#steps button").forEach((b, n) => b.classList.toggle("cur", steps[n] === s));
+  document.querySelector("#steps .cur")?.scrollIntoView({block: "nearest", inline: "center"});
+  const upto = s ? steps.slice(0, steps.indexOf(s) + 1) : [];
+  const plan = upto.flatMap(st => st.trace).filter(c => PLANS.includes(c.label)).at(-1);
+  const stageNow = Number(/^Stage (\d+)\//.exec(s?.reasoning || "")?.[1]);
+  $("plan").hidden = !plan;
+  $("plan").replaceChildren(el("h2", "", "Plan"), ...(plan ? [callView(plan, stageNow)] : []));
+  const box = $("step");
+  box.replaceChildren(el("h2", "", s ? `Step ${s.step} · ${fmt(s.t_model)} s deciding` : "Before the first step"));
+  if (!s) return;
+  box.append(kv("decided", s.reasoning), kv("planned", s.actions.join(", ") || "no action"));
+  if (s.sent.length) box.append(kv("sent", s.sent.map(a => (a.ok ? "✓ " : "✗ ") + a.action).join(", ")));
+  for (const r of s.rejected) box.append(kv("rejected", r));
+  const calls = s.trace.filter(c => !PLANS.includes(c.label));
+  if (!calls.length) box.append(el("p", "note", "No Jev call this step."));
+  for (const c of calls) box.append(callView(c));
+}
+
+// ---- playback
+function frameLoop(id, stamp) {
+  if (id !== playing) return;  // paused, or replaced by a newer play()
+  now = Math.min(total, now + (stamp - tick) / 1000 * speed); tick = stamp;
+  render();
+  if (now >= total) pause();
+  else requestAnimationFrame(t => frameLoop(id, t));
+}
+function play() {
+  if (!items.length) return;
+  if (now >= total) now = 0;
+  const id = playing = performance.now();
+  $("play").textContent = "⏸"; $("play").setAttribute("aria-label", "Pause");
+  requestAnimationFrame(t => { tick = t; frameLoop(id, t); });
+}
+function pause() { playing = 0; $("play").textContent = "▶"; $("play").setAttribute("aria-label", "Play"); }
+function seek(t) { now = Math.max(0, Math.min(total, t)); render(); }
+const stepIndex = () => steps.indexOf(items[itemAt(now)]?.step);
+$("play").onclick = () => playing ? pause() : play();
+$("video").onclick = () => playing ? pause() : play();
+$("seek").oninput = e => seek(Number(e.target.value));
+$("prev").onclick = () => { const i = stepIndex(), st = steps[now > (steps[i]?.at ?? 0) + 0.3 ? i : i - 1]; seek(st ? st.at : 0); };
+$("next").onclick = () => { const st = steps[stepIndex() + 1]; if (st) seek(st.at); };
+$("speed").onclick = () => { speed = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length]; $("speed").textContent = speed + "×"; };
+
+const route = () => location.hash.length > 1 ? showRun(location.hash.slice(1)) : showList();
+window.addEventListener("hashchange", route);
+route();
+</script>
+</body>
+</html>

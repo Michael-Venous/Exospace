@@ -77,6 +77,7 @@ class DeepFallback:
             self._race_step = True
             return self.inner.next_actions(image_jpeg, ctx)
         self._race_step = False
+        self.inner.jev.trace.append({"label": "deep plan", "model": self.deep.model.model, "reasoning": plan.reasoning})
         return self._guard(image_jpeg, plan, ctx)
 
     def acknowledge(self, executed: bool) -> None:

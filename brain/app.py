@@ -20,6 +20,7 @@ from brain.config import Config
 from brain.controller import Controller
 from brain.device import detect_profile
 from brain.errors import describe
+from brain.display.recordings import RECORDINGS, Recorder, RecordingsServer
 from brain.display.server import Command, DisplayServer
 from brain.events import EventBus
 from brain.hid import HID, HIDError, LocalHID, PicoHID
@@ -45,9 +46,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--display", type=int, metavar="PORT",
                         help="Serve the touch display page on this port (e.g. 8770)")
     parser.add_argument("--display-host", default="127.0.0.1")
+    parser.add_argument("--recordings", type=int, metavar="PORT",
+                        help="Record each request and serve the phone player on this port (e.g. 8790); needs --display")
+    parser.add_argument("--recordings-host", default="127.0.0.1", help="e.g. the Pi's Tailscale address")
     args = parser.parse_args(argv)
     if args.max_steps < 1:
         parser.error("--max-steps must be positive")
+    if args.recordings and not args.display:
+        parser.error("--recordings needs --display (it records the display's events)")
     ipv4_only()
     cfg = Config.load()
     token = CancelToken()
@@ -97,6 +103,12 @@ def main(argv: list[str] | None = None) -> int:
                     _show_screen(capture, bus)
                 threading.Thread(target=_read_stdin, args=(commands,), name="stdin", daemon=True).start()
                 status(f"Display: {server.url}  (goals from the page or typed here)")
+                if args.recordings:
+                    Recorder(bus, RECORDINGS).start()
+                    player = RecordingsServer(RECORDINGS, args.recordings_host, args.recordings)
+                    player.start()
+                    cleanup.callback(player.close)
+                    status(f"Recordings: {player.url}")
             profile: DeviceProfile | None = None
             generation = -1
 

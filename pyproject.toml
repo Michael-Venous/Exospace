@@ -23,5 +23,5 @@ voice = ["websockets>=13"]
 packages = ["brain", "brain.agent", "brain.display", "brain.skills", "brain.voice"]
 
 [tool.setuptools.package-data]
-"brain.display" = ["page.html"]
+"brain.display" = ["page.html", "recordings.html"]
 "brain.voice" = ["layer.html"]
