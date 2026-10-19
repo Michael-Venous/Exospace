@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import math
 import time
@@ -21,6 +22,10 @@ TRACE = 100  # decisions kept until the agent loop hands them to the display
 ATTEMPTS = 2  # one retry: a single timeout ended 3 of 14 live runs
 RETRY_STATUS = {429, 500, 502, 503, 504}
 RETRY_DELAY_S = 0.5
+MAX_SIDE = 1568  # Jev rejects a longer side ("Invalid image dimensions")
+# A whole screen goes at this size, a zoomed crop at its own: 5 parallel asks on a 1080p screen sent at 1568 px
+# (238 KB each) took 0.72-0.78 s, at 1280 px 0.46-0.51 s (one alone 0.35 s, 0.23 s); the planner was tuned at 1280.
+SCREEN_SIDE = 1280
 
 
 class JevError(RuntimeError):
@@ -35,12 +40,12 @@ def probability(value: object) -> float:
     return float(value)
 
 
-def prepare_image(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
+def prepare_image(jpeg: bytes, max_side: int = MAX_SIDE) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
     image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError('Invalid image')
     h, w = image.shape[:2]
-    scale = min(1.0, 1568 / max(h, w))
+    scale = min(1.0, max_side / max(h, w))
     w, h = max(1, round(w * scale)), max(1, round(h * scale))
     image = cv2.resize(image, (w, h), interpolation=cv2.INTER_AREA)
     pw, ph = max(w, 280), max(h, 280)
@@ -100,18 +105,22 @@ class JevVision:
         """Ask questions about `screen`; `state` adds named context (e.g. the utterance).
         `label`, `gates` (pass mark per answer) and `region` (where `jpeg` sits on the screen,
         for a zoomed crop) only describe the call in the trace."""
-        encoded, size, padded = prepare_image(jpeg)
+        encoded, size, padded = prepare_image(jpeg, SCREEN_SIDE if region == (0., 0., 1., 1.) else MAX_SIDE)
         ref = str(uuid.uuid4())
         body = {'model': self.model, 'state': {'screen': ref, **(state or {})},
                 'assets': {ref: {'type':'image','format':'jpg',
                                  'data_base64':base64.b64encode(encoded).decode()}},
                 'questions': questions}
+        # Gzipped, the image's base64 shrinks by a quarter. A step's parallel calls each upload the screen, and
+        # those uploads are what they queue on: 6 at once took 0.59 s plain, 0.46 s gzipped (one alone 0.20, 0.16).
+        payload = gzip.compress(json.dumps(body).encode(), 1)
         for attempt in range(1, ATTEMPTS + 1):
             started, success, error = time.monotonic(), False, ''
             try:
                 self.cancel.check()
                 response = self.cancel.run(lambda: self.client.post(
-                    'https://api.typesafe.ai/v1/systemone', json=body))
+                    'https://api.typesafe.ai/v1/systemone', content=payload,
+                    headers={'Content-Type': 'application/json', 'Content-Encoding': 'gzip'}))
                 self.cancel.check()
                 if response.status_code != 200:
                     error = f'HTTP {response.status_code}'

@@ -1,3 +1,5 @@
+import base64
+import gzip
 import json
 import tempfile
 import unittest
@@ -28,7 +30,8 @@ class JevTests(unittest.TestCase):
         self.status = 200
 
     def respond(self, request):
-        self.body = json.loads(request.content)
+        self.assertEqual(request.headers['content-encoding'], 'gzip')
+        self.body = json.loads(gzip.decompress(request.content))
         return httpx.Response(self.status,json={'answers':self.answers})
 
     def test_grounding_and_private_logs(self):
@@ -115,6 +118,16 @@ class JevTests(unittest.TestCase):
         im=cv2.imdecode(np.frombuffer(encoded,np.uint8),cv2.IMREAD_COLOR)
         self.assertEqual(im.shape[:2],(280,1568))
         self.assertEqual(size,(1568,105))
+
+    def test_whole_screen_is_sent_smaller_than_a_crop(self):
+        self.answers={'present':{'noul':.99}}
+        screen=cv2.imencode('.jpg',np.ones((1080,1920,3),np.uint8))[1].tobytes()
+        sides=[]
+        for region in ((0.,0.,1.,1.),(.1,.1,.9,.9)):
+            self.jev.evaluate(screen,{'present':{}},region=region)
+            data=next(iter(self.body['assets'].values()))['data_base64']
+            sides.append(max(cv2.imdecode(np.frombuffer(base64.b64decode(data),np.uint8),cv2.IMREAD_COLOR).shape))
+        self.assertEqual(sides,[1280,1568])
 
     def test_explicit_route_is_independent_of_box_confidence(self):
         self.answers={
