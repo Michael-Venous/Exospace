@@ -20,8 +20,8 @@ class SkillTests(unittest.TestCase):
         return DeviceProfile(os, Rect(0, 0, 100, 100), "mouse", 0)
 
     def test_platform_shortcuts(self):
-        for os, keys in (("macos", ["GUI", "SPACE"]), ("windows", ["GUI"]), ("linux", ["GUI"]),
-                         ("chromeos", ["GUI"])):
+        for os, keys in (("macos", ["GUI", "SPACE"]), ("ios", ["GUI", "SPACE"]), ("windows", ["GUI"]),
+                         ("linux", ["GUI"]), ("chromeos", ["GUI"])):
             with self.subTest(os=os):
                 self.controller.reset_mock()
                 run_skill("open_app", {"name": " Notes "}, self.profile(os), self.controller)
@@ -54,7 +54,7 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(self.controller.method_calls, [unittest.mock.call.wait_for_change()])
 
     def test_unsupported_has_no_input(self):
-        for os in ("ios", "unknown"):
+        for os in ("unknown",):
             with self.assertRaises(SkillUnavailable):
                 run_skill("open_app", {"name": "Notes"}, self.profile(os), self.controller)
         with self.assertRaises(SkillUnavailable):

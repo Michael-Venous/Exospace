@@ -21,6 +21,9 @@ LAUNCHER_S = 2.0  # longest wait for the launcher to appear after its key
 # The desktop launcher search; on phones and other targets the model uses the screen instead.
 OPEN_APP_KEYS: dict[str, list[str]] = {
     "macos": ["GUI", "SPACE"], "windows": ["GUI"], "linux": ["GUI"], "chromeos": ["GUI"], "android": ["GUI"],
+    # iPhone: Cmd+Space opens Spotlight from an external keyboard with no setting turned on, unlike the
+    # mouse (AssistiveTouch only) and touch (never), so apps open on anyone's iPhone. Not yet tried on one.
+    "ios": ["GUI", "SPACE"],
 }
 # A launcher that needs a second key before its search takes typing: Android's app drawer (measured on a
 # Samsung through the Pico: Meta opens the drawer, Ctrl+F its search; touch input didn't register there).
