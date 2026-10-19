@@ -1,9 +1,12 @@
 import gzip
 import json
 import tempfile
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import cv2
 import httpx
@@ -104,6 +107,27 @@ class JevTests(unittest.TestCase):
             lambda request: calls.append(request) or httpx.Response(503)))
         with self.assertRaisesRegex(JevError, '503'): self.jev.evaluate(self.image, {'present': {}})
         self.assertEqual(len(calls), 4)
+
+    def test_a_slow_call_is_raced_by_a_second_copy(self):
+        release, calls = threading.Event(), []
+        def slow_first(request):
+            calls.append(request)
+            if len(calls) == 1:
+                release.wait(5)
+            return httpx.Response(200, json={'answers': self.answers})
+        self.jev.client = httpx.Client(transport=httpx.MockTransport(slow_first))
+        self.addCleanup(release.set)
+        started = time.monotonic()
+        with patch('brain.agent.jev.HEDGE_S', .05):
+            self.assertIn('present', self.jev.evaluate(self.image, {'present': {}})[0])
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(len(calls), 2)
+
+    def test_parallel_calls_prepare_their_screen_once(self):
+        image = cv2.imencode('.jpg', np.full((600, 900, 3), 7, np.uint8))[1].tobytes()
+        with patch('brain.agent.jev.prepare_image', wraps=prepare_image) as prepare, ThreadPoolExecutor(5) as pool:
+            list(pool.map(lambda _: self.jev.evaluate(image, {'present': {}}), range(5)))
+        self.assertEqual(prepare.call_count, 1)
 
     def test_cancelled_request_does_not_hit_api(self):
         self.token.cancel('test')

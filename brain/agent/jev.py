@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import base64
+import functools
 import gzip
 import json
 import math
+import threading
 import time
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
 import cv2
@@ -22,6 +25,10 @@ TRACE = 100  # decisions kept until the agent loop hands them to the display
 ATTEMPTS = 2  # one retry: a single timeout ended 3 of 14 live runs
 RETRY_STATUS = {429, 500, 502, 503, 504}
 RETRY_DELAY_S = 0.5
+# A call still out after this gets a second copy; the first answer wins. Of 4000 calls p95 was 0.81 s and p99 1.74 s,
+# and 24 of 1521 steps waited over 2 s, mostly on one slow call while the step's other calls came back fast.
+HEDGE_S = 1.0
+_calls = ThreadPoolExecutor(max_workers=16, thread_name_prefix='jev-call')
 
 
 class JevError(RuntimeError):
@@ -52,6 +59,21 @@ def prepare_image(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]
     if not ok:
         raise ValueError('Image encoding failed')
     return encoded.tobytes(), (w, h), (pw, ph)
+
+
+_prepare_lock = threading.Lock()
+
+
+@functools.lru_cache(maxsize=4)
+def _prepare_cached(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
+    return prepare_image(jpeg)
+
+
+def _prepared(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
+    # A step's parallel calls send the same screen: prepared once, 5 calls were ready to upload after 52 ms, not
+    # 115 ms (Pi 5). The lock makes the others wait for that one rather than each preparing it again.
+    with _prepare_lock:
+        return _prepare_cached(jpeg)
 
 
 COMPLETION_QUESTION = (
@@ -103,7 +125,7 @@ class JevVision:
         """Ask questions about `screen`; `state` adds named context (e.g. the utterance).
         `label`, `gates` (pass mark per answer) and `region` (where `jpeg` sits on the screen,
         for a zoomed crop) only describe the call in the trace."""
-        encoded, size, padded = prepare_image(jpeg)
+        encoded, size, padded = _prepared(jpeg)
         ref = str(uuid.uuid4())
         body = {'model': self.model, 'state': {'screen': ref, **(state or {})},
                 'assets': {ref: {'type':'image','format':'jpg',
@@ -116,9 +138,7 @@ class JevVision:
             started, success, error = time.monotonic(), False, ''
             try:
                 self.cancel.check()
-                response = self.cancel.run(lambda: self.client.post(
-                    'https://api.typesafe.ai/v1/systemone', content=payload,
-                    headers={'Content-Type': 'application/json', 'Content-Encoding': 'gzip'}))
+                response = self.cancel.run(lambda: self._post(payload))
                 self.cancel.check()
                 if response.status_code != 200:
                     error = f'HTTP {response.status_code}'
@@ -147,6 +167,19 @@ class JevVision:
                 self._log(run_id, step, attempt, started, success, error)
             self.cancel.sleep(RETRY_DELAY_S)
         raise AssertionError('unreachable')
+
+    def _post(self, payload: bytes) -> httpx.Response:
+        """Post, and post again if the answer is slow: the first copy to come back without an error wins."""
+        def post() -> httpx.Response:
+            return self.client.post('https://api.typesafe.ai/v1/systemone', content=payload,
+                                    headers={'Content-Type': 'application/json', 'Content-Encoding': 'gzip'})
+        copies = [_calls.submit(post)]
+        if wait(copies, HEDGE_S).not_done:
+            copies.append(_calls.submit(post))
+        for copy in as_completed(copies):
+            if copy.exception() is None:
+                return copy.result()
+        return copies[-1].result()  # every copy failed: raises
 
     def _log(self, run_id: str, step: int, attempt: int, started: float, success: bool, error: str) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
