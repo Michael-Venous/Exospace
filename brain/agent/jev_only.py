@@ -28,7 +28,7 @@ import numpy as np
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import COMPLETION_QUESTION, IRREVERSIBLE_KINDS, JevVision, probability
-from brain.agent.triage import (GATE, ZOOM_WINDOW, Box, beside, box_center, box_contains, box_size, encloses, mark, refine,
+from brain.agent.triage import (APPROVED, GATE, ZOOM_WINDOW, Box, beside, box_center, box_contains, box_size, encloses, mark, refine,
                                 spans, zoom)
 from brain.skills import OPEN_APP_KEYS
 from brain.types import Action
@@ -285,7 +285,9 @@ class JevOnlyPlanner:
 
     def _lines(self, goal: str) -> list[str]:
         """The goal's lines, each joined on the line before it is the rest of, its own line left empty."""
-        lines = [line.removeprefix(CORRECTION) for line in goal.splitlines()]
+        # The approval is no line to act on: read as one, "close the spreadsheet without saving" failed stuck on
+        # the desktop its approved Don't Save left (2026-10-20).
+        lines = ["" if line == APPROVED else line.removeprefix(CORRECTION) for line in goal.splitlines()]
         for i in sorted(self.joined):
             j = max((k for k in range(i) if lines[k]), default=0)
             lines[j], lines[i] = f"{lines[j]} {lines[i]}", ""

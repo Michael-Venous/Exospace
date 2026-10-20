@@ -202,6 +202,9 @@ def encloses(outer: Box | None, inner: Box | None) -> bool:
 Reply = Literal["approve", "decline", "other"]
 
 
+APPROVED = "The user approved this request."  # the line an approved request's goal gains
+
+
 def answer_to_pending(jev: JevVision, jpeg: bytes, pending: str, reply: str, *, held: str = "",
                       run_id: str = "", step: int = 0) -> Reply:
     """How the user's reply answers a pending irreversible request, or the `held` step of it the

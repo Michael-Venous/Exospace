@@ -16,7 +16,7 @@ from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import probability
 from brain.agent.jev_first import JevFirstPlanner
 from brain.agent.jev_flash import JevFlashExecutor
-from brain.agent.triage import GATE, answer_to_pending, pointed, triage
+from brain.agent.triage import APPROVED, GATE, answer_to_pending, pointed, triage
 from brain.cancel import Cancelled, CancelToken
 from brain.skills import OPEN_APP_KEYS
 from brain.config import Config
@@ -137,7 +137,7 @@ class RaceExecutor:
                 self._approved_goal = None
                 return self._route(image, ctx, utterance, earlier="", confirmed=False, declined=True)
             if answer == "approve":
-                self._approved_goal = pending.goal + "\nThe user approved this request."
+                self._approved_goal = f"{pending.goal}\n{APPROVED}"
                 self._approved_connected_at = pending.connected_at
                 if pending.step:
                     self.mode = "plan"

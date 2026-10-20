@@ -401,6 +401,11 @@ class JevOnlyTests(unittest.TestCase):
                          "skill(open_app {'name': 'terminal'})")
         self.assertEqual(self.step("open a terminal", fits=.53, app_name=terminal, run="s").type, "click")
 
+    def test_the_approval_line_is_no_line_to_act_on(self):
+        goal = "close the spreadsheet without saving\nThe user approved this request."
+        self.planner.run_id, self.planner.line, self.planner.since = "r", 1, 1
+        self.assertEqual(self.step(goal, next="stuck", history=["click(1,1)"]).type, "done")
+
     def test_a_line_begun_on_enter_looks_again_before_it_scrolls(self):
         goal = "search for horses\nUser correction: click the third video"
         self.planner.run_id, self.planner.line, self.planner.since = "r", 1, 1
