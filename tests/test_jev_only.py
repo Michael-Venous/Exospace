@@ -29,10 +29,10 @@ class JevOnlyTests(unittest.TestCase):
     def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
-             target=BOX, run="r", drawing=.05, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
+             target=BOX, run="r", drawing=.05, text_odds=None, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
              lookup=.05, pending=.05, opens=.05, fresh=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
-                "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
+                "target": target, "text": {"choice": text, "probabilities": text_odds or {}}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
                 "app": {"box": dict(zip(("left", "right", "top", "bottom"), app))}, "site": {"noul": site},
                 "submit": {"noul": submit}, "browser_named": {"noul": .05}, "browser_front": {"noul": browser_front}, "opened_front": {"noul": opened_front}, "left": {"noul": left},
@@ -306,6 +306,9 @@ class JevOnlyTests(unittest.TestCase):
         self.zoom.assert_not_called()
         self.assertEqual(self.step("add hello to b1", target=doubtful, opens=.97, run="s",
                                    history=["hotkey(GUI)"] + [LOOK_AGAIN.brief()] * MAX_WAITS).type, "fail")
+        # with presence doubted too it is zoomed as any doubted target (a blank document's body, 0.11 sure)
+        self.assertEqual(self.step("type in hello", target=doubtful, present=.56, run="t").type, "click")
+        self.zoom.assert_called()
 
     def test_typed_text_is_a_run_of_the_goals_words(self):
         goal = 'type "hello world", then press enter'
@@ -633,6 +636,12 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual([a.brief() for a in actions], ["hotkey(CTRL+L)", "type_text('google docs')", "hotkey(ENTER)"])
         self.assertTrue(self.last.blind)  # the address bar takes it whatever the page draws meanwhile
         self.assertEqual(self.step("go to email", next="address").type, "click")  # no words: the page's link
+        # the whole line just ahead of the site's name (0.37 to 0.35): the site's name is typed
+        line, odds = "go to google docs", {"none": .13, "6": .35, "8": .06, "9": .37}
+        self.assertEqual(self.plan(line, next="address", text="9", text_odds=odds, run="s")[1].brief(),
+                         "type_text('google docs')")
+        self.assertEqual(self.step(line, next="address", text="9", text_odds=odds | {"none": .5}, run="t").type,
+                         "click")  # nothing named surer than no words
         goal = "open up a google doc template"  # describes a page: its words, typed or clicked, would search the web
         for text in (str(spans(goal).index("google doc template")), "none"):
             self.assertEqual(self.step(goal, next="address", text=text, lookup=.65).type, "fail")

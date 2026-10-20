@@ -179,9 +179,10 @@ COPY_CONTROL = "the text that the first line of the `goal` copies (a later line 
 # centre clicked a citation's link (2026-10-19).
 BIG_TARGET = 0.1  # of the screen's width and height
 # Nor when the box itself is doubtful: Jev's sureness can be that what the step works in isn't open yet. On
-# LibreOffice's Start Center "add hello to b1" boxed the recent documents 0.06-0.23 sure, opens 0.6-0.97, and the
-# clicks opened one of them (2026-10-20); big boxes that held their target were 0.37-0.66 (14 clicks). A look
-# again on that screen boxed Calc's small entry 5 times in 6.
+# LibreOffice's Start Center "add hello to b1" boxed the recent documents 0.06 sure, opens 0.97, and the click
+# opened one of them (2026-10-20); big boxes clicked unzoomed that held their target were 0.37-0.66 (14 clicks). A
+# look again on that screen boxed Calc's small entry 5 times in 6. Doubted presence still zooms: a blank document's
+# body, 0.11 sure, present 0.56.
 BIG_SURE = 0.3
 # A zoom shows the whole target with this margin: one cutting YouTube's search box to its last letter left Jev
 # 0.26 sure it was there (4/4), one holding all of it 0.75.
@@ -513,6 +514,13 @@ class JevOnlyPlanner:
         step = "copy" if recopy else answers["next"].get("choice")
         choice = answers["text"].get("choice")
         text = texts[int(choice)] if choice in named else None
+        if step == "address" and text is not None and _is_the_request(text, line):
+            # A site's name is part of the line: "go to google docs" on Chrome's Google page chose the whole line
+            # 0.37, "google docs" 0.35, and the bare click on the address bar it became cost 4 steps (2026-10-20).
+            odds = {k: probability(v) for k, v in (answers["text"].get("probabilities") or {}).items()}
+            site = max((k for k in named if not _is_the_request(texts[int(k)], line)), key=lambda k: odds.get(k, 0.0))
+            if odds.get(site, 0.0) > odds.get("none", 0.0):
+                text = texts[int(site)]
         if step == "erase" and text is None:
             text = _last_typed(ctx.history[self.prev:])  # "delete hello" right after typing it: Jev picked no words (2/2)
         if missing:
@@ -569,7 +577,8 @@ class JevOnlyPlanner:
                 point = self._copy_spot(image, ctx, lines, seen)
                 if point is None:
                     return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
-            elif min(width, height) >= BIG_TARGET and probability(answers["target"].get("confidence")) < BIG_SURE:
+            elif min(width, height) >= BIG_TARGET and sure >= self.jev.min_presence \
+                    and probability(answers["target"].get("confidence")) < BIG_SURE:
                 return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
             elif min(width, height) < BIG_TARGET or sure < self.jev.min_presence:
                 # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
