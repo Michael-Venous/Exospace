@@ -16,7 +16,9 @@ from dataclasses import replace
 from pathlib import Path
 
 from bench.arch.triage_executor import RaceExecutor, RaceLedgerExecutor, RaceRelaxedExecutor, TriageExecutor, TriageLedgerExecutor
-from bench.arch import correction, injection, studio, workstation
+from bench.arch import correction, injection, studio, vague, workstation
+from bench.arch.rewrite import ParallelRewriteExecutor, RewriteExecutor, RewriteOnStuckExecutor
+from bench.arch.router import routed
 from brain.agent.executor import ModelExecutor
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.race import RaceExecutor as RuntimeRaceExecutor
@@ -31,7 +33,8 @@ from brain.telemetry import Telemetry
 from brain.types import DeviceProfile
 
 OUT = Path("work/arch/e2e")
-SCENARIOS = {"workstation": workstation, "studio": studio, "injection": injection, "correction": correction}
+SCENARIOS = {"workstation": workstation, "studio": studio, "injection": injection, "correction": correction,
+             "vague": vague}
 
 
 def direct_gemini(cfg: Config, token: CancelToken) -> ModelExecutor:
@@ -45,19 +48,28 @@ def direct_zai(cfg: Config, token: CancelToken) -> ModelExecutor:
     return ModelExecutor(replace(cfg, executor="direct", model_timeout_s=12.0), token, routing=False)
 
 
+def runtime_as(executor: str):
+    """The runtime's race executor as EXECUTOR=`executor` builds it (brain/agent/factory.py)."""
+    return lambda cfg, token: RuntimeRaceExecutor(replace(cfg, executor=executor), token)
+
+
 EXECUTORS = {"jev-flash (current)": JevFlashExecutor, "triage-first": TriageExecutor,
              "triage+concrete-verify": TriageLedgerExecutor, "race+concrete-verify": RaceExecutor,
              "race+verify+relaxed-gate": RaceRelaxedExecutor,
              "race+ledger-verify": RaceLedgerExecutor,
              "race+ledger-verify-v2": RaceLedgerExecutor,
              "final-concrete": RaceExecutor, "final-steps-aware": RaceLedgerExecutor,
-             "runtime-race": RuntimeRaceExecutor,
+             "runtime-race": RuntimeRaceExecutor, "runtime-jev": runtime_as("jev"),
+             "runtime-jev-only": runtime_as("jev-only"),
+             "rewrite": RewriteExecutor, "rewrite-parallel": ParallelRewriteExecutor,
+             "rewrite-on-stuck": RewriteOnStuckExecutor,
              "runtime-direct-gemini": direct_gemini, "runtime-direct-zai": direct_zai}
 
 
 def run_segment(name: str, index: int, repeat: int, base: Config, scenario=workstation, out: Path = OUT,
                 model: str = "gemini-3.8-flash") -> dict:
     utterance, state, oracle, kind = scenario.SEGMENTS[index]
+    said = getattr(scenario, "spoken", str)
     folder = out / f"{name.split()[0].replace('+', '_')}-{index}-{repeat}"
     folder.mkdir(parents=True, exist_ok=True)
     cfg = replace(base, gemini_model=model, gemini_thinking="low",
@@ -72,8 +84,8 @@ def run_segment(name: str, index: int, repeat: int, base: Config, scenario=works
         executor = EXECUTORS[name](cfg, token)
         cleanup.callback(executor.close)
         memory = Memory(folder / "memory.json")
-        for previous, *_ in scenario.SEGMENTS[:index]:  # the conversation so far
-            memory.add_turn("user", previous)
+        for previous, *_ in scenario.SEGMENTS[:index] if getattr(scenario, "HISTORY", True) else ():
+            memory.add_turn("user", said(previous))  # the conversation so far
         send = target.send
         started = time.monotonic()
 
@@ -87,7 +99,7 @@ def run_segment(name: str, index: int, repeat: int, base: Config, scenario=works
         profile = DeviceProfile("linux", active_rect(target.grab()), "mouse", time.time())
         started = time.monotonic()
         try:
-            result = agent.run(utterance, profile, f"seg{index}")
+            result = agent.run(said(utterance), profile, f"seg{index}")
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"[:200]
         wall = time.monotonic() - started
@@ -111,6 +123,8 @@ def run_segment(name: str, index: int, repeat: int, base: Config, scenario=works
             "success": bool(ok), "unsafe": unsafe, "status": result.status if result else "error", "error": error,
             "first_input_s": events[0] if events else None, "wall_s": wall, "final_view": final.get("view") or f"{final.get('app')}:{final.get('product') or final.get('folder')}",
             "llm_calls": sum(c["role"] != "jev" for c in calls), "jev_calls": sum(c["role"] == "jev" for c in calls),
+            "llm_s": round(sum(c["elapsed_s"] for c in calls if c["role"] != "jev"), 2),
+            "llm_roles": sorted(c["role"] for c in calls if c["role"] != "jev"),
             "triage": getattr(executor, "triage_log", [])}
 
 
@@ -120,11 +134,16 @@ def main() -> None:
     parser.add_argument("--executors", nargs="+", default=list(EXECUTORS))
     parser.add_argument("--scenario", choices=list(SCENARIOS), default="workstation")
     parser.add_argument("--model", default="gemini-3.8-flash", help="planner model (3.8 Flash unless quota-limited)")
+    parser.add_argument("--router", default="", help="an OpenRouter model id for every language-model call")
+    parser.add_argument("--effort", default="", help="its reasoning effort; empty turns reasoning off")
     args = parser.parse_args()
     scenario = SCENARIOS[args.scenario]
     out = OUT if args.scenario == "workstation" else OUT.with_name(f"e2e_{args.scenario}")
-    out.mkdir(parents=True, exist_ok=True)
     base = Config.load()
+    if args.router:
+        base = routed(base, args.router, args.effort)
+        out = out.with_name(f"{out.name}-{args.router.replace('/', '_')}-{args.effort or 'off'}")
+    out.mkdir(parents=True, exist_ok=True)
     report_path = out / "report.json"
     rows = json.loads(report_path.read_text()) if report_path.exists() else []
     done = {(r["executor"], r["segment"], r["repeat"]) for r in rows}

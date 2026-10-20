@@ -194,6 +194,44 @@ GPT-6 Luna is not faster (planning slower) and acted unsafely twice (e.g. "no wa
 one"). The faster models are unsafe on messy speech. Flash 3.8 stays the planner; the two Flash
 rows differ only by sampling noise (21 vs 25 of 36). Direct commands don't wait on any LLM.
 
+### Vague speech and the Jev → Flash hand-off (study 9, 2026-10-20: built, not yet run)
+**Results: none yet.** Everything in this section is a hypothesis read from the code, to be confirmed or
+dropped by the runs below; measured numbers go in a results table here, kept apart from it.
+
+Reported live: Jev's own steps are fast on plain commands, but vague or composed requests fail there,
+and the Flash fallback takes 5-10 s. **Hypothesis (from `jev_first.py`, `jev_only.py`, `jev_flash.py`):**
+the request moves to Flash for good, and Flash starts only after Jev has failed, up to two 1 s looks
+again included, so the wait stacks up: Jev failing, then a Flash plan (2.5-4 s in studies 3 and 7), then
+Jev's grounding, and one more replan each time a stage's `ready` check misses on a screen that moved.
+Flash's stages and Jev's line state never meet, so Jev can't take the request back.
+
+- **Candidate (`rewrite.py`):** the language model doesn't plan stages; it rewrites the request into
+  lines Jev can carry out, with references resolved, text composed and quoted, and one action per line.
+  Every step stays Jev's. Stuck, it rewrites what is left from Jev's executed steps on the new screen
+  (at most 2 times), and only then does Flash's hand-off apply. Modes: `rewrite` (before Jev's first
+  step), `rewrite-parallel` (written while Jev starts on the request as said, taken up only if Jev gets
+  stuck: no serial wait) and `rewrite-on-stuck`.
+- **Fixture (`vague.py`):** 12 segments on the workstation page: vague references, composed replies,
+  a site to find before its target exists, two apps at once, the same requests under a consent modal
+  (`+popup`), 2 s loading results (`+slow`) and a banner that pushes the grid down 1.2 s after drawing
+  (`+shift`), plus "fire it off", which must not send.
+- **Per-call matrix (`model_matrix.py`):** 14 OpenRouter candidates and Gemini through Google, interleaved:
+  grounding of 27 described controls at 1x and on a 2560 px canvas (small targets), with Jev's
+  locate + 2 zooms as the baseline; the rewrite task; and study 3's first-step planning.
+  `router.py` runs the real executors on any OpenRouter model (`e2e_study.py --router <id>`).
+
+Run order once the keys are in `.env` (each step's output folder is under `work/arch/`):
+```sh
+PYTHONPATH=. .venv/bin/python -m bench.arch.model_matrix --pilot               # first: availability, latency, real cost
+PYTHONPATH=. .venv/bin/python -m bench.arch.model_matrix                       # ~2.6k LLM + ~2k Jev calls
+for s in vague workstation studio; do
+  PYTHONPATH=. .venv/bin/python -m bench.arch.e2e_study --scenario $s --repeats 2 \
+    --executors runtime-race runtime-jev rewrite rewrite-parallel rewrite-on-stuck
+done
+PYTHONPATH=. .venv/bin/python -m bench.arch.e2e_study --scenario vague --router <fastest-good model> \
+    --executors rewrite-parallel runtime-race                                  # the matrix's pick in the runtime
+```
+
 ### Streaming (study 2, `stream_study.py`)
 - Schema-enforced streaming is valid but only ~0.4 s faster (2.38 vs 2.79 s), because Flash
   plans **one stage per observation point** even when told to look ahead. That's sensible:

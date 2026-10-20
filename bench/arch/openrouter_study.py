@@ -54,14 +54,18 @@ def parse_json(text: str) -> dict:
 
 
 class OpenRouterJSON:
-    def __init__(self, model: str, key: str) -> None:
+    """`effort` "" turns reasoning off; `fastest` routes to the provider with the lowest latency."""
+
+    def __init__(self, model: str, key: str, effort: str = "low", fastest: bool = False) -> None:
         self.model = model
+        self.reasoning = {"effort": effort} if effort else {"enabled": False}
+        self.provider = {"sort": "latency"} if fastest else None
         self.client = httpx.Client(timeout=90, headers={"Authorization": f"Bearer {key}"})
 
     def call(self, image: bytes, prompt: str, system: str, schema: dict) -> tuple[dict, dict]:
         body = {
             "model": self.model, "stream": True, "temperature": 0,
-            "reasoning": {"effort": "low"},
+            "reasoning": self.reasoning,
             "response_format": {"type": "json_schema",
                                 "json_schema": {"name": "reply", "schema": schema, "strict": False}},
             "messages": [
@@ -72,6 +76,8 @@ class OpenRouterJSON:
             ],
             "usage": {"include": True},
         }
+        if self.provider:
+            body["provider"] = self.provider
         started = time.monotonic()
         first = None
         text, usage = "", {}
@@ -92,26 +98,28 @@ class OpenRouterJSON:
         out_tokens = usage.get("completion_tokens") or 0
         gen_time = max(1e-6, total - (first or total))
         return parse_json(text), {"ttft": first, "total": total, "out_tokens": out_tokens,
-                                  "tok_s": out_tokens / gen_time if first else None}
+                                  "tok_s": out_tokens / gen_time if first else None, "cost": usage.get("cost")}
 
 
 class DirectGemini:
     """Baseline through the Google API (no streaming), as the runtime calls it."""
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, model: str = "gemini-3.8-flash", thinking: str | None = "low") -> None:
         from google import genai
         from google.genai import types
 
+        self.model, self.thinking = model, thinking
         self.types = types
         self.client = genai.Client(api_key=cfg.gemini_api_key, http_options=types.HttpOptions(timeout=90_000))
 
     def call(self, image: bytes, prompt: str, system: str, schema: dict) -> tuple[dict, dict]:
         t = self.types
         config = t.GenerateContentConfig(system_instruction=system, response_mime_type="application/json",
-                                         response_json_schema=schema, thinking_config=t.ThinkingConfig(thinking_level="low"))
+                                         response_json_schema=schema,
+                                         thinking_config=t.ThinkingConfig(thinking_level=self.thinking) if self.thinking else None)
         started = time.monotonic()
         response = self.client.models.generate_content(
-            model="gemini-3.8-flash", contents=[t.Part.from_bytes(data=image, mime_type="image/jpeg"), prompt], config=config)
+            model=self.model, contents=[t.Part.from_bytes(data=image, mime_type="image/jpeg"), prompt], config=config)
         total = time.monotonic() - started
         out = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
         return json.loads(response.text or "{}"), {"ttft": None, "total": total, "out_tokens": out, "tok_s": None}
