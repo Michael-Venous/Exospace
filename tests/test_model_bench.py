@@ -13,7 +13,7 @@ from bench.arch import model_matrix, router, vague
 from bench.arch.completion_log import CompletionLog
 from bench.arch.completion_study import errors
 from bench.arch.plan_ground import PlanGroundPlanner
-from bench.arch.race_continue import ContinuePlanner, _HandBack
+from bench.arch.race_continue import LOOKAHEAD_PROMPT, ContinuePlanner, _HandBack
 from bench.arch.race_pointer import PointerFlash
 from bench.arch.rewrite import RewritePlanner
 from brain.agent.executor import Plan, StepContext
@@ -285,6 +285,12 @@ class RaceContinueTests(unittest.TestCase):
         noted = _continuing(jev_fails=False)
         self.assertEqual(noted.next_actions(SCREEN, _ctx("play lofi", note="Screen unchanged; try something different.")).reasoning,
                          "Flash replan")
+
+    def test_lookahead_changes_only_where_the_plan_stops(self):
+        from brain.agent.jev_flash import PROMPT
+        self.assertNotIn("next useful observation point", LOOKAHEAD_PROMPT)
+        self.assertIn("up to the end of the goal", LOOKAHEAD_PROMPT)
+        self.assertEqual(len(LOOKAHEAD_PROMPT.splitlines()), len(PROMPT.splitlines()))
 
     def test_flash_replans_only_when_jev_cannot(self):
         planner = _continuing(jev_fails=True)

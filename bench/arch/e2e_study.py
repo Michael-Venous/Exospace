@@ -20,7 +20,8 @@ from bench.arch.triage_executor import RaceExecutor, RaceLedgerExecutor, RaceRel
 from bench.arch import correction, injection, studio, vague, workstation
 from bench.arch.completion_log import CompletionLog
 from bench.arch.plan_ground import PlanGroundExecutor, PlanGroundPointerExecutor
-from bench.arch.race_continue import RaceContinueExecutor, RaceGateExecutor
+from bench.arch.race_continue import (RaceContinueExecutor, RaceGateExecutor, RaceLookaheadExecutor,
+                                      RaceLookaheadPointerExecutor)
 from bench.arch.race_pointer import RacePointerExecutor
 from bench.arch.rewrite import ParallelRewriteExecutor, RewriteExecutor, RewriteOnStuckExecutor
 from bench.arch.router import routed
@@ -78,7 +79,8 @@ EXECUTORS = {"jev-flash (current)": JevFlashExecutor, "triage-first": TriageExec
              "race+ledger-verify-v2": RaceLedgerExecutor,
              "final-concrete": RaceExecutor, "final-steps-aware": RaceLedgerExecutor,
              "runtime-race": RuntimeRaceExecutor, "race+pointer": RacePointerExecutor,
-             "race+continue": RaceContinueExecutor, "race-gate0.6": RaceGateExecutor, "runtime-jev": runtime_as("jev"),
+             "race+continue": RaceContinueExecutor, "race-gate0.6": RaceGateExecutor,
+             "race+lookahead": RaceLookaheadExecutor, "race+lookahead+pointer": RaceLookaheadPointerExecutor, "runtime-jev": runtime_as("jev"),
              "runtime-jev-only": runtime_as("jev-only"),
              "rewrite": RewriteExecutor, "rewrite-parallel": ParallelRewriteExecutor,
              "rewrite-on-stuck": RewriteOnStuckExecutor, "plan-ground": PlanGroundExecutor,

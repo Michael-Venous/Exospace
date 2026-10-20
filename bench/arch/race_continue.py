@@ -7,6 +7,9 @@ brain/agent/jev_first.py and jev_flash.py, Agent owner).
                   can't take it. Jev's steps join Flash's executed steps, so the steps-aware check sees them.
   race-gate0.6    the planner's completion gate at 0.6, not 0.5: on 129 labelled calls replayed 3 times it
                   passed 1-3 of 65 unfinished screens (5-7 at 0.5) and rejected none of 36 finished ones.
+  race+lookahead  Flash's prompt asks for every stage it can foresee to the end of the goal, screens not
+                  shown yet included, rather than stopping at the next observation point; Jev still checks
+                  each stage's `ready` on its own screen, and a failed one replans as before.
 """
 
 from __future__ import annotations
@@ -15,8 +18,10 @@ from dataclasses import replace
 
 from brain.agent import jev_flash
 from brain.agent.executor import Plan, StepContext
+from bench.arch.pointer import Pointer
+from bench.arch.race_pointer import PointerFlash
 from brain.agent.jev_first import JevFirstPlanner
-from brain.agent.jev_flash import JevFlashExecutor
+from brain.agent.jev_flash import PROMPT, SCHEMA, JevFlashExecutor
 from brain.agent.jev_only import FAILED
 from brain.agent.race import RaceExecutor
 from brain.cancel import CancelToken
@@ -81,6 +86,44 @@ class RaceContinueExecutor(RaceExecutor):
         # The runtime builds both inside the race; they keep their state and gain the hand-back.
         self.planner.__class__ = ContinuePlanner
         self.planner.flash.__class__ = ContinueFlash
+
+
+STOP_AT_OBSERVATION = ("Unknown\nscreens need not be guessed: stop the plan at the next useful observation point;\n"
+                       "completion must still describe the entire goal.")
+assert STOP_AT_OBSERVATION in PROMPT
+LOOKAHEAD_PROMPT = PROMPT.replace(STOP_AT_OBSERVATION, (
+    "Plan every stage you can foresee\nup to the end of the goal, including stages on screens not shown yet: "
+    "name the controls\nthey will need and their ready conditions. Completion describes the entire goal."))
+
+
+class LookaheadFlash(JevFlashExecutor):
+    def _generate(self, image, prompt, ctx, replan):
+        self.last_model = self.model.model  # replans use the same model, as the runtime does by default
+        return self.model.generate(image, prompt, LOOKAHEAD_PROMPT, SCHEMA, role="flash", run_id=ctx.run_id,
+                                   step=ctx.step)
+
+
+class RaceLookaheadExecutor(RaceExecutor):
+    def __init__(self, cfg: Config, cancel: CancelToken) -> None:
+        super().__init__(replace(cfg, jev_first=True, replan_thinking=None), cancel)
+        self.planner.flash.__class__ = LookaheadFlash
+
+
+class LookaheadPointerFlash(LookaheadFlash, PointerFlash):
+    """Lookahead's later stages name targets on screens not shown yet; Jev refused 9 of them in 36 runs
+    (thumbnails, as in the matrix), each a Flash replan. The pointer places those instead."""
+
+
+class RaceLookaheadPointerExecutor(RaceExecutor):
+    def __init__(self, cfg: Config, cancel: CancelToken) -> None:
+        super().__init__(replace(cfg, jev_first=True, replan_thinking=None), cancel)
+        flash = self.planner.flash
+        flash.__class__ = LookaheadPointerFlash
+        flash.pointer = Pointer(cancel, flash.jev)
+
+    def close(self) -> None:
+        self.planner.flash.pointer.close()
+        super().close()
 
 
 class RaceGateExecutor(RaceExecutor):
