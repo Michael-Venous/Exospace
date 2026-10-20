@@ -28,7 +28,7 @@ import numpy as np
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import COMPLETION_QUESTION, IRREVERSIBLE_KINDS, JevVision, probability
-from brain.agent.triage import (GATE, ZOOM_WINDOW, beside, box_center, box_contains, box_size, encloses, mark, refine,
+from brain.agent.triage import (APPROVED, GATE, ZOOM_WINDOW, Box, beside, box_center, box_contains, box_size, encloses, mark, refine,
                                 spans, zoom)
 from brain.skills import OPEN_APP_KEYS
 from brain.types import Action
@@ -132,11 +132,24 @@ BROWSER = "web browser"
 LOADING = ("Is an app or page in `screen` still starting or loading, so the next step must wait: a start-up or "
            "splash screen (a logo, tip or progress on a plain background), a blank or partly drawn window, or grey "
            "placeholder shapes where content will appear?")
+# A site the browser is going to shows under the page before it until it draws: Brave's new tab page under youtube.com
+# was clicked for YouTube's search box, the click landed on YouTube as it drew, on nothing, and "horses" was typed
+# into nothing (4.5 s, 2026-10-20). Address bar and page at odds read 0.66-0.97 on 2 such frames, LOADING 0.03-0.20;
+# 31 drawn pages 0.01-0.09 (3 tries each).
+PENDING = ("Does `screen` show a web browser whose address bar names a different website than the page shown below "
+           "it, as when it has started going to a site and still shows the page before?")
 # Asked right after a launch: Brave's restored YouTube Short drew its search box as a blank shape (0.90-0.95 on
 # 3 frames, 3 tries each; drawn pages 0.07-0.38 on 23), and Jev typed the search into the address bar, which
 # LOADING (0.04) let through. The box was drawn 0.6 s later (v4-t1, 2026-10-19).
-DRAWING = ("Are any controls in `screen`, such as a search box or round buttons, drawn as blank grey or dark shapes, "
-           "without the text or icons they will show once the page has loaded?")
+# Asked of the step's own control: asked of any control, the round buttons YouTube draws last held a search box
+# already drawn to two looks again (1.4 s, 2026-10-20). On 33 frames after launches, a blank search box read
+# 0.44-0.91 (0.44-0.63 on frames caught mid-resize), a drawn one 0.02-0.21 beside blank buttons (3 tries each).
+DRAWING = ("Is the control that the next step of the `goal` uses in `screen`, such as a search box, drawn as a blank "
+           "grey or dark shape, without the text or icon it will show once the page has loaded?")
+# A browser a line opened may show its new tab page: a new tab key then adds another. Chrome relaunched for "make a new
+# tab" after "close out the tab" closed its window read 0.41-0.56 left there, and Ctrl+T cost 1.0 s (2026-10-20). Its
+# new tab page read 0.79-0.92 so; Docs, Gmail, YouTube, Calc and restored Brave pages 0.00-0.04 (3 tries each).
+FRESH = "Is the tab in front in `screen` a web browser's new tab page, with nothing opened in it yet?"
 # An app's box this big is the window in front: "click the third video" while YouTube's results loaded fitted the
 # page 0.44 and boxed the browser [0.01-0.99 x 0.04-0.98], and a switch clicked the middle of the page (v6-t1).
 FRONT = 0.9
@@ -153,6 +166,12 @@ COMPOSED = ("Does what remains of the `goal`, after the `executed_steps`, need t
 # documents half the time; the control that creates or opens what the step works in, 0.88-0.92 on Calc's entry.
 OPENER = "When what it works in isn't open yet, that control is the one that creates or opens it."
 STEP_CONTROL = "the spot that the next step of the `goal`, after the `executed_steps`, clicks"
+# Asked apart: on LibreOffice's Start Center "add hello to b1" read its control clear 0.41-0.77 in live runs and 0.26-0.39
+# offline, failing one run, where this read 0.89-0.92 (a tooltip over a recent file or not); Calc's open sheet, YouTube's
+# home and results pages 0.01-0.11. Its zooms saw Calc's entry 0.22-0.33 as the step's spot, 0.89-0.94 as its opener.
+OPENS = ("Is what the next step of the `goal` works in (a document, sheet, page or window) not open yet in `screen`, "
+         "while a control that creates or opens it is visible?")
+OPENER_CONTROL = f"{STEP_CONTROL}: when what it works in isn't open yet, the control that creates or opens it"
 COPY_CONTROL = "the text that the first line of the `goal` copies (a later line names it by what it pastes)"
 # A box this big holds the spot it was drawn on without a closer look, and a zoom loses where it sits among
 # its neighbours: on "click the third video" zooms chose the second or fourth of YouTube's Shorts row. Only when
@@ -162,6 +181,10 @@ BIG_TARGET = 0.1  # of the screen's width and height
 # A zoom shows the whole target with this margin: one cutting YouTube's search box to its last letter left Jev
 # 0.26 sure it was there (4/4), one holding all of it 0.75.
 ZOOM_MARGIN = 1.15
+# A zoom's box this many times the first look's along an axis boxed a run of controls along it: of a desktop's
+# LockDown Browser and Chrome icons, one above the other, both zooms boxed the two, 2.1 times the first box's height,
+# and the double click at its centre landed between them (2026-10-20). Along it the click goes where the boxes overlap.
+SPAN = 1.5
 NEXT_IRREVERSIBLE = "Would the next step of the `goal`, after the `executed_steps`, " + IRREVERSIBLE_KINDS
 WAIT = Action("skill", name="wait", args={"s": 3.0})  # the app or its results still appearing
 LOOK_AGAIN = Action("skill", name="wait", args={"s": 1.0})  # a page still drawing; a drawn one waited 10 s
@@ -219,6 +242,16 @@ CLIPBOARD = {"copy": "C", "paste": "V"}  # the key each clipboard step presses w
 # The agent joins words said mid-run on as "User correction: ..." lines (loop.py, app.py). Jev read "add hello to b1"
 # so marked as a fix to "open up libre office" and waited on its Start Center (3/3); unmarked it clicked Calc (2/2).
 CORRECTION = "User correction: "
+# Each pause of 0.2 s ends a segment, sent as such a line: "Click on eras and ages" came as "Click on errors" and
+# "ages.", and two "close this browser" runs closed it, then went on to a tail of their own, failing on it or
+# opening Brave again (2026-10-20). Asked so, Jev read 7 such cut sentences one (4/4 each) and 5 of 7 requests two:
+# 2 joined it "and"-led, the one the page sends whole anyway. Yet "Close this" + "browser." read two (0.8, 4/4), "Close
+# this" whole on its own; told a line naming no action finishes the one before, 12/12 such cuts read one (0.89+) and
+# 6/6 requests two, a correction ("no, firefox instead") one: joined it is read whole, never done twice (2026-10-20).
+JOIN = ("Speech to text split the goal into two lines at a pause. Did the pause cut one sentence in two, or did the "
+        "user say two separate requests? A line is a request of its own only if it says an action of its own to take; "
+        "a line that names no action (only a thing, place or word) finishes the sentence on the line before, even when "
+        "that line could stand alone.")
 MAX_SPANS = 250  # Jev's choice budget (bench/interpreter_screen.py)
 FAILED = "Jev can't take the next step"
 Ask = tuple[bytes, str, list[tuple[dict, dict]]]  # an image, its trace label, and question sets with their state
@@ -233,6 +266,7 @@ class JevOnlyPlanner:
         self.since = 0  # where that line's steps start in the run's history
         self.prev = 0  # where the line before it started: Jev sees its steps too ("delete hello" after typing it)
         self.routed = False  # Jev has seen the app in front can take the line's next step
+        self.kind: str | None = None  # the kind of app the line names, routed to the browser as a website
         self.seen = False  # Jev planned the line's next step at an earlier step: it wasn't done then
         # History length and screen when an input changed nothing: its retry may repeat it.
         self.unmoved: tuple[int, bytes] | None = None
@@ -250,18 +284,39 @@ class JevOnlyPlanner:
         self.screen: bytes | None = None  # the last step's screen
         self.planned: tuple[int, list[str]] = (0, [])  # the history's length then, and the steps planned on it
         self.idle = False  # the last step looked again and the screen stayed as it was
+        # Launches the skill refused (no launcher showed): never in the history, each was tried again, 2 s apiece
+        # ("open google" three times on a desktop whose launcher key showed only the panel, 2026-10-20).
+        self.refused: list[str] = []
+        self.joined: set[int] = set()  # the goal's lines Jev read as the rest of the line before: each is joined on
+        self.judged = 1  # the goal's lines Jev read so: the first line is no rest
 
     @property
     def current_line(self) -> str:
         """The line of the request Jev's last step was for."""
-        lines = self.goal.splitlines()
-        return lines[self.line].removeprefix(CORRECTION) if self.line < len(lines) else self.goal
+        lines = self._lines(self.goal)
+        return lines[self.line] if self.line < len(lines) else self.goal
+
+    def _lines(self, goal: str) -> list[str]:
+        """The goal's lines, each joined on the line before it is the rest of, its own line left empty."""
+        # The approval is no line to act on: read as one, "close the spreadsheet without saving" failed stuck on
+        # the desktop its approved Don't Save left (2026-10-20).
+        lines = ["" if line == APPROVED else line.removeprefix(CORRECTION) for line in goal.splitlines()]
+        for i in sorted(self.joined):
+            j = max((k for k in range(i) if lines[k]), default=0)
+            lines[j], lines[i] = f"{lines[j]} {lines[i]}", ""
+        return lines
 
     def acknowledge(self, executed: bool) -> None:
-        pass  # no plan cursor: every step is chosen afresh from the screen and the history
+        if not executed:
+            self.refused += [step for step in self.planned[1] if step.startswith("skill(open_app ")]
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
         plan = self._plan(image, ctx)
+        # A kind of app read as a website has its app to open: "open up a spreadsheet" with Google Docs in front read
+        # a site (0.92), and on Chrome's new tab Jev had no words of the request to type, or no control (2026-10-20).
+        launch = Action("skill", name="open_app", args={"name": self.kind})
+        if plan.reasoning == FAILED and self.kind and launch.brief() not in ctx.history[self.since:] + self.refused:
+            plan = Plan("Open the app the line names", [launch], [], blind=True)
         self.screen, self.planned = image, (len(ctx.history), [action.brief() for action in plan.actions])
         return plan
 
@@ -270,13 +325,15 @@ class JevOnlyPlanner:
             continued = bool(self.finished) and ctx.goal.startswith(self.finished + "\n")
             self.run_id, self.line, self.since = ctx.run_id, self.finished.count("\n") + 1 if continued else 0, 0
             self.prev, self.routed, self.clicked, self.seen, self.typed, self.unmoved = 0, False, None, False, None, None
+            self.kind = None
             self.doubted = self.screen = None
+            self.refused = []
             if not ctx.goal.startswith(self.goal + "\n"):
                 self.opened = None  # a new request: what an earlier one opened isn't its app
+                self.joined, self.judged = set(), 1
         # A run that failed starts again with the words said since joined on, its history empty: "make a new tab"
         # after closing Chrome's last tab found no app to reopen (v11-t4).
         self.goal, self.opened = ctx.goal, _last_opened(ctx.history) or self.opened
-        lines = [line.removeprefix(CORRECTION) for line in ctx.goal.splitlines()]
         clicked, self.clicked = self.clicked, None
         doubted, self.doubted = self.doubted, None
         self.idle = ctx.history[-1:] == [LOOK_AGAIN.brief()] and self.screen is not None and _same(self.screen, image)
@@ -298,17 +355,31 @@ class JevOnlyPlanner:
         # shortcut: a correction said mid-line waits for that line to finish; show Jev the later lines too if
         # corrections need to cut in.
         # The next line is asked alongside, so its first step needs no look of its own once this line is done.
-        before = lines[self.line - 1] if self.line else ""
-        asks = [(lines[self.line], ctx.history[self.since:], _seen(ctx.history, before, self.prev, self.since),
-                 not self.routed)]
-        if self.line + 1 < len(lines):
-            asks.append((lines[self.line + 1], [], _seen(ctx.history, lines[self.line], self.since), True))
-        typed = _typed_into_field(ctx.history[self.since:], self.typed)
-        looks = [self._line_done(mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED) if clicked
-                 else self._line_done(image, ctx, lines)]
-        shown = [self._shown(image, ctx, lines[self.line], typed)] if typed else []
-        replies = self._evaluate_all(ctx, looks + shown + [self._ask(image, ctx, *ask, guard, opened) for ask in asks])
-        answered = replies[len(looks) + len(shown):]
+        # Lines new to Jev are asked too whether each is the rest of the line before; one that is asks again, joined.
+        raw = ctx.goal.splitlines()
+        while True:
+            lines = self._lines(ctx.goal)
+            if not lines[self.line]:  # its words went on the line before it, which is done
+                return self._next_line(image, ctx, lines, "Jev verified the completed goal")
+            before = lines[self.line - 1] if self.line else ""
+            asks = [(lines[self.line], ctx.history[self.since:], _seen(ctx.history, before, self.prev, self.since),
+                     not self.routed)]
+            if self.line + 1 < len(lines) and lines[self.line + 1]:
+                asks.append((lines[self.line + 1], [], _seen(ctx.history, lines[self.line], self.since), True))
+            typed = _typed_into_field(ctx.history[self.since:], self.typed)
+            looks = [self._line_done(mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED) if clicked
+                     else self._line_done(image, ctx, lines)]
+            shown = [self._shown(image, ctx, lines[self.line], typed)] if typed else []
+            rests = [i for i in range(self.judged, len(raw)) if raw[i].startswith(CORRECTION)]
+            self.judged = len(raw)
+            replies = self._evaluate_all(ctx, looks + shown + [self._ask(image, ctx, *ask, guard, opened) for ask in asks]
+                                         + [self._rest(image, raw, i) for i in rests])
+            joined = {i for i, (answers, _, _) in zip(rests, replies[len(replies) - len(rests):])
+                      if answers["joined"].get("choice") == "one"}
+            if not joined:
+                break
+            self.joined |= joined
+        answered = replies[len(looks) + len(shown):len(replies) - len(rests)]
         missing = bool(shown) and probability(replies[len(looks)][0]["typed"].get("noul")) < MISSING
         left = max(1 - probability(answers["left"].get("noul")) for answers, _, _ in replies[:len(looks)])
         # An input that changed nothing finished nothing: a Brave Search result clicked 1.3 s after the results drew
@@ -333,7 +404,9 @@ class JevOnlyPlanner:
         listed = "launcher" in first and min(probability(first["launcher"].get("noul")),
                                              probability(first["present"].get("noul"))) >= GATE
         held = finished and first["next"].get("choice") in CLICKS and (ctx.history[-1:] == [doubted] or listed)
-        finished = finished and not held
+        fresh = opened and first["next"].get("choice") == "new_tab" and probability(first["fresh"].get("noul")) >= GATE \
+            and any(s.startswith("skill(open_app ") for s in ctx.history[self.since:])
+        finished = (finished or fresh) and not held
         if finished and len(answered) > 1:
             self._advance(ctx)
             answered, finished = answered[1:], False  # the next line's first step
@@ -384,10 +457,11 @@ class JevOnlyPlanner:
         # "close google" waited 12 s for it (2026-10-19). What is still drawing is drawn within two looks.
         keys = answers["next"].get("choice") in (*TAB_KEYS, "close_app")
         drawing = opened and not keys and probability(answers["drawing"].get("noul")) >= GATE
-        loading = probability(answers["loading"].get("noul")) >= GATE
+        pending = not keys and probability(answers["pending"].get("noul")) >= GATE
+        loading = pending or probability(answers["loading"].get("noul")) >= GATE
         wait = self._look_again(ctx, MAX_LOADING_WAITS if loading else MAX_WAITS, anytime=True) if loading or drawing \
             else None
-        if opened and wait:
+        if (opened or pending) and wait:
             return wait
         if routing:
             # A website that names no browser is no app to search the launcher for: "youtube" found nothing there.
@@ -395,6 +469,9 @@ class JevOnlyPlanner:
                 and probability(answers["browser_named"].get("noul")) < GATE
             choice = answers["app_name"].get("choice")
             name = BROWSER if site else texts[int(choice)] if choice in named else None
+            # Not a site's own name, which no launcher lists ("youtube" found nothing on Cinnamon).
+            self.kind = texts[int(choice)] if site and choice in named \
+                and probability(answers["dotcom"].get("noul")) < GATE else None
             # "make a new tab" after closing Chrome's last tab: a line that names no app, with no app window open,
             # goes on in the app the request last opened, by name, since a visible app suited to the line can be
             # another browser.
@@ -410,13 +487,15 @@ class JevOnlyPlanner:
             search = self._search(answers, ctx, name, steps)
             if search:
                 return search
-            fits = probability(answers["fits"].get("noul")) >= GATE \
-                or site and probability(answers["browser_front"].get("noul")) >= GATE
+            # Nothing is in front with only the desktop showing: "open a terminal" there fitted 0.53, Jev boxed VS Code
+            # beside the terminal's panel icon, its zooms the terminal, and the line failed (2026-10-20).
+            fits = (probability(answers["fits"].get("noul")) >= GATE
+                    or site and probability(answers["browser_front"].get("noul")) >= GATE) and not (closed and name)
             # The demo phone ignored taps; its keyboard launcher works. Not for the app in front: Brave was launched
             # again for each line of "search for horses and click the third video" on a DeX phone (2026-10-19).
-            if ctx.profile.input == "touch" and name and not fits and launch.brief() not in steps:
+            if ctx.profile.input == "touch" and name and not fits and launch.brief() not in steps + self.refused:
                 return Plan("Open the app", [launch], [], blind=True)
-            if (not fits or elsewhere) and again and launch.brief() not in steps:
+            if (not fits or elsewhere) and again and launch.brief() not in steps + self.refused:
                 return wait or Plan("Open the app again", [launch], [], blind=True)
             # Only a request that names an app or a site is routed: gibberish ("asdkjh qwe zxcv") opened the launcher.
             if not fits and name:
@@ -471,7 +550,9 @@ class JevOnlyPlanner:
         certain = settled = True  # of the click's target: only a doubtful zoom says otherwise
         if step in ("click", "double_click", "right_click", "fill", "copy") or focus:
             point = box_center(answers["target"], size, padded)
-            sure = probability(answers["present"].get("noul"))
+            opens = probability(answers["opens"].get("noul"))
+            sure = max(probability(answers["present"].get("noul")), opens if opens >= GATE else 0.0)
+            control = OPENER_CONTROL if opens >= GATE else STEP_CONTROL
             if held and (point is None or sure < GATE):
                 return self._next_line(image, ctx, lines, "Jev verified the completed goal")
             # Not a copy's: on the citation a footnote jump marked, "copy the header" was 0.22-0.35 sure of it, waited,
@@ -493,7 +574,7 @@ class JevOnlyPlanner:
                 # the crop's side is a fraction of the screen's longer side, and its height 0.66 of its width
                 window = max(ZOOM_WINDOW, ZOOM_MARGIN * max(width * size[0], height * size[1] / 0.66) / max(size))
                 with ThreadPoolExecutor(2) as pool:
-                    zooms = list(pool.map(lambda _: zoom(self.jev, image, state, STEP_CONTROL, point, window,
+                    zooms = list(pool.map(lambda _: zoom(self.jev, image, state, control, point, window,
                                                           ctx.run_id, ctx.step), range(2)))
                 # A zoom boxing the other's box with room around it boxed the region it sits in: "search up genghis
                 # khan" on Chrome's new tab had one zoom on the search box, one on it and the logo above, nearer the
@@ -503,7 +584,10 @@ class JevOnlyPlanner:
                 certain = max(z for _, z, _ in zooms) >= CLICK_SURE
                 settled = max(z for _, z, _ in zooms) >= HOLD_SURE
                 again = ctx.history[-1:] == [LOOK_AGAIN.brief()]
-                if not looks and again:
+                # Three looks on one spot agree: both zooms on cell B1 read 0.46-0.49, inside Jev's box, and the look
+                # again they cost (2.2 s) placed the same click (2026-10-20).
+                agree = len(zooms) == 2 and all(p and box_contains(answers["target"], size, padded, p) for p, _, _ in zooms)
+                if not looks and (again or agree):
                     # A page that drew no closer view in a look again won't: both zooms on Wikipedia's [b] read
                     # 0.41-0.53 twice, and Flash, handed it after 7 s, clicked [b] (2026-10-19). As a doubted click.
                     looks = [(p, b) for p, z, b in zooms if p and z >= DOUBT]
@@ -519,8 +603,13 @@ class JevOnlyPlanner:
                 if held and not (looks and certain):
                     return self._next_line(image, ctx, lines, "Jev verified the completed goal")
                 if not looks:
-                    return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
-                point = min((p for p, _ in looks), key=lambda p: math.dist(p, point))
+                    # On a run's first screen too: "close the spreadsheet without saving" boxed Calc's close button,
+                    # both zooms the window's 0.41-0.47, and the run failed with nothing tried (2026-10-20). A look
+                    # again takes the zooms over DOUBT.
+                    return wait or self._look_again(ctx, anytime=True) \
+                        or _fail("its target isn't clearly visible", planner=True)
+                first = _edges(answers["target"], size, padded)
+                point = min((_narrowed(p, b, first) for p, b in looks), key=lambda p: math.dist(p, point))
             if step == "copy":
                 actions.append(Action("skill", name="select", args={"x": round(point[0], 3), "y": round(point[1], 3)}))
             else:
@@ -563,6 +652,10 @@ class JevOnlyPlanner:
         if step == "enter":
             actions.append(Action("hotkey", keys=("ENTER",)))
         if step in ("scroll_down", "scroll_up"):
+            # A line begun on Enter sees the page Enter left: "click the third video" after a YouTube search scrolled
+            # YouTube's home page under its suggestions twice while the results loaded (2.7 s, 2026-10-20).
+            if not steps and ctx.history and _ENTER.fullmatch(ctx.history[-1]) and (look := self._look_again(ctx)):
+                return look
             if ctx.profile.input == "mouse":
                 # The wheel scrolls what is under the pointer: a toolbar scrolled nothing on a Mac, and the screen's
                 # middle was the desktop beside a half-screen Chrome, so its apps panel never scrolled (3 runs).
@@ -632,7 +725,8 @@ class JevOnlyPlanner:
             | ({"opened_front": {"type": "noul", "instructions": OPENED_FRONT.format(app=json.dumps(self.opened))}}
                if self.opened else {}) if route and ctx.profile.os in OPEN_APP_KEYS else {}  # firmware has no apps
         irreversible = {"irreversible": {"type": "noul", "instructions": NEXT_IRREVERSIBLE}} if guard else {}
-        drawing = {"drawing": {"type": "noul", "instructions": DRAWING}} if opened else {}
+        drawing = {"drawing": {"type": "noul", "instructions": DRAWING},
+                   "fresh": {"type": "noul", "instructions": FRESH}} if opened else {}
         stepping = irreversible | drawing | {
             "complete": {"type": "noul", "instructions": COMPLETION_QUESTION},
             "question": {"type": "noul", "instructions": QUESTION},
@@ -657,15 +751,27 @@ class JevOnlyPlanner:
             "lookup": {"type": "noul", "instructions": LOOKUP},
             "focused": {"type": "noul", "instructions": FOCUSED},
             "loading": {"type": "noul", "instructions": LOADING},
+            "pending": {"type": "noul", "instructions": PENDING},
+            "opens": {"type": "noul", "instructions": OPENS},
         }
         return image, "jev", ([(routing, {"goal": line, "executed_steps": steps})] if routing else []) \
             + [(stepping, {"goal": line, "executed_steps": context})]
 
     def _line_done(self, image: bytes, ctx: StepContext, lines: list[str], question: str = LINE_LEFT) -> Ask:
         """Whether the line Jev sees is left to do ("left"), asked with the line before it in view."""
-        shown = "\n".join(lines[max(self.line - 1, 0):self.line + 1])
+        shown = "\n".join(filter(None, lines[max(self.line - 1, 0):self.line + 1]))
         return image, "line-done", [({"left": {"type": "noul", "instructions": question}},
                                      {"goal": shown, "executed_steps": ctx.history[self.prev:]})]
+
+    def _rest(self, image: bytes, raw: list[str], i: int) -> Ask:
+        """Whether the goal's line `i` is the rest of the sentence on the line before it ("joined": one)."""
+        first, rest = (line.removeprefix(CORRECTION) for line in raw[i - 1:i + 1])
+        said = f"{first} {rest.rstrip('.')}"
+        readings = {"one": f"One request: {json.dumps(said, ensure_ascii=False)}",
+                    "two": f"Two requests: first {json.dumps(first, ensure_ascii=False)}, "
+                           f"then {json.dumps(rest, ensure_ascii=False)}"}
+        return image, "join", [({"joined": {"type": "choice", "instructions": JOIN, "criteria": readings}},
+                                {"goal": f"{first}\n{rest}"})]
 
     def _shown(self, image: bytes, ctx: StepContext, line: str, text: str) -> Ask:
         """Whether the text the line typed shows where it was typed ("typed")."""
@@ -735,7 +841,7 @@ class JevOnlyPlanner:
         return self.unmoved is not None and all(done == LOOK_AGAIN.brief() for done in history[self.unmoved[0]:])
 
     def _advance(self, ctx: StepContext) -> None:
-        self.line, self.prev, self.since, self.routed = self.line + 1, self.since, len(ctx.history), False
+        self.line, self.prev, self.since, self.routed, self.kind = self.line + 1, self.since, len(ctx.history), False, None
         self.finished = "\n".join(ctx.goal.splitlines()[:self.line])
 
     def _search(self, answers: dict, ctx: StepContext, name: str | None, steps: list[str]) -> Plan | None:
@@ -774,11 +880,15 @@ class JevOnlyPlanner:
             # when the app box is a desktop icon if those get missed.
             return Plan("Switch to the app for the request", [switch], [])
         # Blind: a launch goes by name, so a Short playing behind it discarded "open up discord" twice (2026-10-19).
-        if launch.brief() not in steps:
+        if launch.brief() not in steps + self.refused:
             return Plan("Open the app", [launch], [], blind=True)
-        if launcher.brief() not in steps:
+        # The app just launched is still coming: LibreOffice's splash ended the launch's wait and its window drew
+        # after a look at the bare desktop, which pressed the launcher key over it (2026-10-20).
+        if _just_opened(ctx.history) and (look := self._look_again(ctx)):
+            return look
+        if launcher.brief() not in steps and not self.refused:  # its key just showed no launcher
             return Plan("Open the app launcher", [launcher], [], blind=True)
-        if ctx.history[-1] != WAIT.brief():  # the launcher, its results or the chosen app still appearing
+        if ctx.history[-1:] != [WAIT.brief()]:  # the launcher, its results or the chosen app still appearing
             return Plan("Waiting for the app", [WAIT], [])
         return _fail("no app suited to the request is visible")
 
@@ -852,6 +962,30 @@ def _finished(answers: dict, steps: list[str], done: float, seen: bool, gate: fl
     # A line that took no step of its own is held to ALREADY: "open up chrome" with Brave in front read done 0.58
     # and the request went on in the user's Brave (2026-10-19).
     return done >= (gate if steps else max(gate, ALREADY)) and not unsent and not idle and not untaken
+
+
+def _edges(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> Box | None:
+    """A box answer as (left, top, right, bottom, 0-1 of the image), as a zoom gives its box."""
+    box = answer.get("box") or {}
+    try:
+        left, right, top, bottom = (probability(box.get(k)) for k in ("left", "right", "top", "bottom"))
+    except ValueError:
+        return None
+    (w, h), (pw, ph) = size, padded
+    return left * pw / w, top * ph / h, right * pw / w, bottom * ph / h
+
+
+def _narrowed(point: tuple[float, float], box: Box | None, first: Box | None) -> tuple[float, float]:
+    """A zoom's `point`, along each axis on which its `box` is over SPAN times as long as the `first` look's, in the
+    middle of where the two overlap: inside the zoom's box still."""
+    if box is None or first is None:
+        return point
+    moved = list(point)
+    for axis in (0, 1):
+        low, high = max(box[axis], first[axis]), min(box[axis + 2], first[axis + 2])
+        if box[axis + 2] - box[axis] > SPAN * (first[axis + 2] - first[axis]) and low < high:
+            moved[axis] = (low + high) / 2
+    return moved[0], moved[1]
 
 
 def _is_the_request(text: str, line: str) -> bool:

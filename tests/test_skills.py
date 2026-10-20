@@ -28,9 +28,8 @@ class SkillTests(unittest.TestCase):
                 self.assertEqual(self.controller.method_calls, [
                     unittest.mock.call.capture.grab(),
                     unittest.mock.call.hotkey(keys),
-                    unittest.mock.call.wait_settled(),
                     unittest.mock.call.type_text("Notes"),
-                    unittest.mock.call.wait_settled(),
+                    unittest.mock.call.wait_settled(react=os != "linux"),
                     unittest.mock.call.hotkey(["ENTER"]),
                 ])
 
@@ -39,7 +38,7 @@ class SkillTests(unittest.TestCase):
         run_skill("open_app", {"name": "Notes"}, self.profile("macos"), self.controller)
         calls = [c[0] for c in self.controller.method_calls]
         self.assertEqual(calls[calls.index("hotkey"):calls.index("type_text")],
-                         ["hotkey", "wait_for_change", "wait_settled"])
+                         ["hotkey", "wait_for_change"])
         self.assertEqual(self.controller.method_calls[calls.index("wait_for_change")],
                          unittest.mock.call.wait_for_change(2.0, since=unittest.mock.ANY))
 
@@ -83,7 +82,7 @@ class SkillTests(unittest.TestCase):
         self.assertEqual(self.controller.method_calls, [])
 
     def test_cancel_after_search_prevents_typing(self):
-        self.controller.wait_settled.side_effect = lambda: self.controller.cancel.cancel("barge-in")
+        self.controller.hotkey.side_effect = lambda keys: self.controller.cancel.cancel("barge-in")
         with self.assertRaises(Cancelled):
             run_skill("open_app", {"name": "Notes"}, self.profile("macos"), self.controller)
         self.controller.type_text.assert_not_called()

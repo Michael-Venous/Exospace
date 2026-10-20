@@ -43,19 +43,24 @@ def probability(value: object) -> float:
     return float(value)
 
 
+# Jev's longest side. A 1080p screen sent at 1280 px was 0.3 s faster a step but fitted "close discord" to
+# Discord in front 0.46-0.58 (0.75-0.86 at 1568, 4 tries each) and boxed part of YouTube's search box.
+JEV_SIDE = 1568
+
+
 def prepare_image(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
     image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError('Invalid image')
     h, w = image.shape[:2]
-    # Jev's longest side. A 1080p screen sent at 1280 px was 0.3 s faster a step but fitted "close discord" to
-    # Discord in front 0.46-0.58 (0.75-0.86 at 1568, 4 tries each) and boxed part of YouTube's search box.
-    scale = min(1.0, 1568 / max(h, w))
+    scale = min(1.0, JEV_SIDE / max(h, w))
     w, h = max(1, round(w * scale)), max(1, round(h * scale))
     image = cv2.resize(image, (w, h), interpolation=cv2.INTER_AREA)
     pw, ph = max(w, 280), max(h, 280)
     image = cv2.copyMakeBorder(image, 0, ph-h, 0, pw-w, cv2.BORDER_CONSTANT, value=(255,255,255))
-    ok, encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    # 70, not 90: a step's calls at once queue on their uploads (5 of a 240 kB screen 0.51 s, of 143 kB 0.39 s from
+    # the Pi), and on 6 recorded rounds answers and zoomed clicks moved no more than between two asks at 90 (2026-10-20).
+    ok, encoded = cv2.imencode('.jpg', image, [cv2.IMWRITE_JPEG_QUALITY, 70])
     if not ok:
         raise ValueError('Image encoding failed')
     return encoded.tobytes(), (w, h), (pw, ph)

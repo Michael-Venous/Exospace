@@ -27,6 +27,11 @@ RESUMABLE = frozenset({"target disconnected", "video lost"})
 # Plans in a row discarded for a change where they aimed before the spot counts as moving: a preview YouTube played
 # under the pointer discarded 48 clicks on "the third video" until the step limit (2026-10-19).
 MAX_DISCARDS = 2
+# How much the area a plan aims at must change before the plan is discarded. Of 8 discards (2026-10-18..20), the 6
+# whose replan clicked the same spot changed it 1.56-2.64 (a search box restyling as YouTube drew, a hover highlight),
+# each costing a ~1.1 s replan; the 2 whose target moved changed it 133-173. The settle threshold (1.5) is a whole-screen
+# measure. shortcut: 8 samples; recheck with the discard listing if a kept plan clicks a moved target.
+AREA_MOVED = 6.0
 
 
 @dataclass(frozen=True)
@@ -150,10 +155,10 @@ class Agent:
                         # Only what the first action aims at must be where the plan saw it: Google's results
                         # drawing in below the address bar a plan clicked discarded that plan (2026-10-18).
                         first = plan.actions[0]
-                        changed = (area_change(frame, latest, profile.rect, first.x, first.y)
-                                   if first.x is not None and first.y is not None
-                                   else frame_change(before, thumbnail(latest)))
-                        if not moving and changed >= ctl.settle.threshold and discarded < MAX_DISCARDS:
+                        moved = (area_change(frame, latest, profile.rect, first.x, first.y) >= AREA_MOVED
+                                 if first.x is not None and first.y is not None
+                                 else ctl.changed(before, thumbnail(latest)))
+                        if not moving and moved and discarded < MAX_DISCARDS:
                             discarded += 1
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
                             progress_at += times["t_model"]  # a plan never tried: its thinking time isn't a stall
@@ -181,11 +186,24 @@ class Agent:
                                 stamp = time.monotonic()
                                 latest = ctl.capture.grab()
                                 times["t_capture"] += time.monotonic() - stamp
-                                if latest is None or frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                                if latest is None or ctl.changed(before, thumbnail(latest)):
                                     notes.append("The screen changed mid-batch, so the rest was skipped. "
                                                  "Reground on this screen.")
                                     break
+                            # Keys sent next go where the click put the focus, whatever the screen shows: the
+                            # page-load wait after a click on YouTube's search box held the typing ~0.8 s (v5-t1),
+                            # and waiting for B1's click or "hello" to show held each next key ~0.3 s (v12-t3), YouTube's
+                            # suggestions under "horses" Enter ~0.5 s (v13-t1). The Pico runs each command before the
+                            # next. A click may open what they go to (a menu), and a key too (a launcher).
+                            keys_next = i + 1 < len(plan.actions) and plan.actions[i + 1].type in ("type_text", "hotkey")
+                            # A scroll goes where the pointer is, whatever the screen shows: waiting for the hover
+                            # to show held it ~0.5 s (v20-t1).
+                            scroll_next = (action.type, action.name) == ("skill", "hover") \
+                                and i + 1 < len(plan.actions) and plan.actions[i + 1].type == "scroll"
+                            settles = not (keys_next and action.type == "type_text") and not scroll_next
                             stamp = time.monotonic()
+                            # The screen this input is judged against; the plan's own was grabbed just now.
+                            base = sent_to if i == 0 and sent_to is not frame else ctl.capture.grab() if settles else None
                             try:
                                 ctl.execute(action, profile)
                                 acted = True
@@ -208,19 +226,10 @@ class Agent:
                             finally:
                                 times["t_execute"] += time.monotonic() - stamp
                             history.append(action.brief())  # before settling: a restart lands there
-                            # Keys sent next go where the click put the focus, whatever the screen shows: the
-                            # page-load wait after a click on YouTube's search box held the typing ~0.8 s (v5-t1),
-                            # and waiting for B1's click or "hello" to show held each next key ~0.3 s (v12-t3), YouTube's
-                            # suggestions under "horses" Enter ~0.5 s (v13-t1). The Pico runs each command before the
-                            # next. A click may open what they go to (a menu), and a key too (a launcher).
-                            keys_next = i + 1 < len(plan.actions) and plan.actions[i + 1].type in ("type_text", "hotkey")
-                            # A scroll goes where the pointer is, whatever the screen shows: waiting for the hover
-                            # to show held it ~0.5 s (v20-t1).
-                            scroll_next = (action.type, action.name) == ("skill", "hover") \
-                                and i + 1 < len(plan.actions) and plan.actions[i + 1].type == "scroll"
-                            if not (keys_next and action.type == "type_text") and not scroll_next:
+                            if settles:
                                 settled_s = ctl.wait_settled(loading=_may_load(action) and not keys_next,
-                                                             react=not keys_next or action.type == "hotkey")
+                                                             react=not keys_next or action.type == "hotkey",
+                                                             since=None if base is None else thumbnail(base))
                                 times["t_settle"] += settled_s
                     if pending_done is not None:
                         # Check the claim on the new screen now: replanning on a screen that looks unchanged
@@ -338,7 +347,8 @@ class Agent:
 
 
 def _may_load(action: Action) -> bool:
-    """A click or Enter can start a page load, which needs a longer stillness to count as settled."""
-    if action.type in ("click", "tap", "double_click"):
+    """A click or Enter can start a page load, which needs a longer stillness to count as settled. So does an
+    app launch: Chrome's window showed before its new tab page drew, and a plan on it was discarded (2026-10-20)."""
+    if action.type in ("click", "tap", "double_click") or (action.type, action.name) == ("skill", "open_app"):
         return True
     return action.type == "hotkey" and [k.upper() for k in action.keys] in (["ENTER"], ["RETURN"])

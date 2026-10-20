@@ -30,6 +30,10 @@ PARK = (0.995, 0.5)
 # 44 ms after its key and held each settle to its 2.5 s timeout (2026-10-19).
 MOVING_DIFF = 8
 MOTION_POLLS = 8
+# Cells moving on their own over the last MOTION_POLLS polls of one settle are left out of it while they are at most
+# this part of the screen: Brave restored a playing YouTube Short at launch and the settle held to its 2.5 s timeout,
+# which delayed every later step of the request (2026-10-20). More is a page being drawn or scrolled.
+MAX_MOVING = 1 / 3
 
 _ASCII_FIXES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."})
 
@@ -71,6 +75,8 @@ class Controller:
         self.settle = settle
         # Thumbnail cells left out of change checks: learned on a run's first look and on each settle timeout.
         self.moving: np.ndarray | None = None
+        # Cells playing on their own when the last settle ended (a video in a still page), left out of `changed`.
+        self.playing: np.ndarray | None = None
 
     # -- actions -----------------------------------------------------------
 
@@ -165,11 +171,14 @@ class Controller:
 
     # -- settling ----------------------------------------------------------
 
-    def wait_settled(self, loading: bool = False, react: bool = True, timeout_s: float | None = None) -> float:
+    def wait_settled(self, loading: bool = False, react: bool = True, timeout_s: float | None = None,
+                     since: np.ndarray | None = None) -> float:
         """Block until the screen stops changing. Returns seconds waited. `loading`: the last input may
         have started a page load, so the screen must stay still longer. `react`: input was just sent, so a
         still screen may only be slow to react; False skips that wait (a run's first look). `timeout_s`
-        overrides the config's."""
+        overrides the config's. `since`: a thumbnail from before the input; a first look that already
+        differs from it has seen the reaction (a tab closed by Ctrl+W showed by then, and the wait for one
+        held ~0.45 s on a still screen, 2026-10-20)."""
         cfg = self.settle
         stable_s = cfg.load_stable_s if loading else cfg.stable_s
         react_s = (max(cfg.react_s, cfg.load_react_s) if loading else cfg.react_s) if react else 0.0
@@ -187,12 +196,18 @@ class Controller:
                 thumb = thumbnail(frame)
                 if prev is not None:
                     diffs = [*diffs[1 - MOTION_POLLS:], cv2.absdiff(prev, thumb) >= MOVING_DIFF]
-                if prev is not None and self._change(prev, thumb) < cfg.threshold:
+                if prev is None and since is not None:
+                    changed = self._change(since, thumb) >= cfg.threshold
+                playing = self._motion(diffs) if len(diffs) == MOTION_POLLS else None
+                if playing is not None and playing.mean() > MAX_MOVING:
+                    playing = None
+                if prev is not None and self._change(prev, thumb, playing) < cfg.threshold:
                     still_since = still_since if still_since is not None else now
                     if elapsed >= (cfg.min_s if changed else max(cfg.min_s, react_s)) \
                             and now - still_since >= stable_s:
                         if not react:  # nothing of ours moved it
                             self._learn(diffs)
+                        self.playing = playing
                         return elapsed
                 else:
                     changed = changed or prev is not None
@@ -200,20 +215,32 @@ class Controller:
                 prev = thumb
             if elapsed >= (cfg.timeout_s if timeout_s is None else timeout_s):
                 self._learn(diffs)
+                self.playing = None
                 return elapsed
             self.cancel.sleep(cfg.poll_s)
 
     def _learn(self, diffs: list[np.ndarray]) -> None:
-        """Remember the cells that kept moving over the last polls, grown by one cell for a video's edges."""
+        """Remember the cells that kept moving over the last polls."""
         if len(diffs) >= MOTION_POLLS // 2:
-            moving = (np.sum(diffs, axis=0) * 2 >= len(diffs)).astype(np.uint8)
-            self.moving = cv2.dilate(moving, np.ones((3, 3), np.uint8)).astype(bool) if moving.any() else None
+            self.moving = self._motion(diffs)
 
-    def _change(self, a: np.ndarray, b: np.ndarray) -> float:
+    @staticmethod
+    def _motion(diffs: list[np.ndarray]) -> np.ndarray | None:
+        """The cells moving in at least half of `diffs`, grown by one cell for a video's edges; None if none."""
+        moving = (np.sum(diffs, axis=0) * 2 >= len(diffs)).astype(np.uint8)
+        return cv2.dilate(moving, np.ones((3, 3), np.uint8)).astype(bool) if moving.any() else None
+
+    def _change(self, a: np.ndarray, b: np.ndarray, playing: np.ndarray | None = None) -> float:
         """frame_change outside the cells moving on their own (all of them if nothing else is left)."""
-        if self.moving is None or self.moving.all():
+        moving = self.moving if playing is None else playing if self.moving is None else self.moving | playing
+        if moving is None or moving.all():
             return frame_change(a, b)
-        return float(np.mean(cv2.absdiff(a, b)[~self.moving]))
+        return float(np.mean(cv2.absdiff(a, b)[~moving]))
+
+    def changed(self, a: np.ndarray, b: np.ndarray) -> bool:
+        """Whether the screen changed from thumbnail `a` to `b` beyond what moves on its own: a YouTube ad preview
+        playing above the results discarded each scroll planned to reach "the third video" (2026-10-20)."""
+        return self._change(a, b, self.playing) >= self.settle.threshold
 
     def wait_for_change(self, timeout_s: float | None = None, since: np.ndarray | None = None) -> bool:
         """Block until the screen differs from `since` (a thumbnail; default: now), as a load,

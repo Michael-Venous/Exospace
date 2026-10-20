@@ -17,6 +17,7 @@ from brain.agent.orchestrator import Guidance, Orchestrator
 from brain.agent.prompts import DONE_PROMPT, SYSTEM_PROMPT
 from brain.app import _connected_profile
 from brain.cancel import Cancelled, CancelToken
+from brain.capture import thumbnail
 from brain.controller import Controller, SettleConfig
 from brain.device import detect_profile
 from brain.errors import describe
@@ -96,6 +97,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertLess(controller.wait_settled(react=False), .1)
         self.assertGreaterEqual(controller.wait_settled(), .3)  # input just sent may be slow to show
 
+    def test_a_reaction_already_shown_needs_no_wait_for_one(self):
+        controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(
+            min_s=0, react_s=.3, load_stable_s=0, load_react_s=0, stable_s=0, timeout_s=1, poll_s=.001))
+        still = thumbnail(self.capture.grab())
+        self.assertGreaterEqual(controller.wait_settled(since=still), .3)  # nothing shown yet
+        self.assertLess(controller.wait_settled(since=255 - still), .1)  # a tab closed before the first look
+
     def test_a_moving_screen_settles_at_the_given_timeout(self):
         controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(timeout_s=5, poll_s=.001))
         frames = iter(np.full((100, 160, 3), v % 256, dtype=np.uint8) for v in range(0, 10**6, 40))
@@ -114,6 +122,23 @@ class RuntimeTests(unittest.TestCase):
         self.assertLess(controller.wait_settled(react=False, timeout_s=.05), .5)  # the look times out, learning it
         self.assertLess(controller.wait_settled(react=False), 1)  # a 5 s timeout otherwise
         self.assertFalse(controller.wait_for_change(.05))
+
+    def test_a_video_playing_in_a_still_page_settles_on_the_first_look(self):
+        controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(timeout_s=5, poll_s=.001))
+        tick = iter(range(10**6))
+
+        def video(part):  # a part of the screen plays; the rest is still
+            frame = np.zeros((360, 640, 3), dtype=np.uint8)
+            frame[:int(360 * part), :int(640 * part)] = next(tick) * 40 % 256
+            return frame
+        self.capture.grab = lambda: video(.25)
+        self.assertLess(controller.wait_settled(), 1)  # a 5 s timeout otherwise
+        self.assertFalse(controller.changed(thumbnail(video(.25)), thumbnail(video(.25))))  # the video played on
+        page = video(.25)
+        page[300:] = 255
+        self.assertTrue(controller.changed(thumbnail(video(.25)), thumbnail(page)))  # the page around it changed
+        self.capture.grab = lambda: video(.8)  # most of the screen moving is a page drawn or scrolled
+        self.assertGreaterEqual(controller.wait_settled(timeout_s=.3), .3)
 
     def test_words_said_mid_run_join_the_request_at_the_next_step(self):
         goals = []
@@ -365,6 +390,16 @@ class RuntimeTests(unittest.TestCase):
             return Plan("ask", [Action("ask_user", question="Next?")], [])
         self.fast.next_actions.side_effect = next_actions
         self.assertEqual(self.agent(self.fast).run("Go to a site", self.profile).status, "ask_user")
+        self.assertIn("click", [command["op"] for command in self.hid.commands])
+
+    def test_a_slight_redraw_at_the_target_keeps_the_plan(self):
+        def next_actions(image, ctx):
+            if ctx.step == 1:
+                self.capture.frame[:] = self.capture.frame + 3  # the search box restyles as the page finishes
+                return Plan("search box", [Action("click", x=.5, y=.1)], [])
+            return Plan("ask", [Action("ask_user", question="Next?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.assertEqual(self.agent(self.fast).run("Search", self.profile).status, "ask_user")
         self.assertIn("click", [command["op"] for command in self.hid.commands])
 
     def test_a_click_is_judged_on_the_screen_it_was_sent_to(self):

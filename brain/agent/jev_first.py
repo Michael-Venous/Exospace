@@ -80,6 +80,7 @@ class JevFirstPlanner:
         return replace(plan, reasoning=f"{plan.reasoning} [Jev handed off: {why}]") if why else plan
 
     def acknowledge(self, executed: bool) -> None:
+        self.steps.acknowledge(executed)
         self.flash.acknowledge(executed)
 
     def forget_plan(self) -> None:

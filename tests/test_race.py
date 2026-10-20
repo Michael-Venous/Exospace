@@ -13,7 +13,8 @@ from brain.agent.executor import Plan, StepContext
 from brain.agent.memory import Memory
 from brain.agent.race import RaceExecutor
 import brain.agent.triage as triage_module
-from brain.agent.triage import Triage, answer_to_pending, spans, triage
+from brain.agent.jev import JEV_SIDE
+from brain.agent.triage import Triage, _crop_around, answer_to_pending, spans, triage
 from brain.cancel import CancelToken
 from brain.types import Action, DeviceProfile, Rect
 
@@ -60,6 +61,12 @@ class TriageTests(unittest.TestCase):
         self.assertEqual(self.jev.evaluate.call_count, 3)  # the screen, a zoom, a tighter zoom
         x, y = result.point
         self.assertTrue(0 <= x <= 1 and 0 <= y <= 1)
+
+    def test_a_zoom_crop_is_no_larger_than_jev_takes(self):
+        frame = cv2.imencode(".jpg", np.zeros((720, 1280, 3), np.uint8))[1].tobytes()
+        for window, side in ((.3, 960), (.8, JEV_SIDE)):  # a small target enlarged 2.5x, a wide one only to Jev's size
+            crop, _ = _crop_around(frame, (.5, .3), window)
+            self.assertEqual(max(cv2.imdecode(np.frombuffer(crop, np.uint8), 1).shape[:2]), side)
 
     def test_ambiguous_target_goes_to_the_planner(self):
         self.jev.evaluate.return_value = self.answer("act_now", unique=.3)

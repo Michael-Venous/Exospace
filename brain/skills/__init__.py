@@ -30,6 +30,10 @@ SEARCH_KEYS: dict[str, list[str]] = {"android": ["CTRL", "F"]}
 _ANDROID = {("settings",): ["GUI", "I"], ("messages", "messaging", "texts", "sms", "google messages"): ["GUI", "S"],
             ("browser", "brave", "chrome", "web browser", "internet"): ["GUI", "B"], ("contacts",): ["GUI", "C"],
             ("calendar",): ["GUI", "L"], ("email", "gmail", "mail"): ["GUI", "E"]}
+# Launchers whose search shows its result as the name is typed: Cinnamon's did by the first look after the typing
+# returned (0.09-0.19 s), changing the screen too little to wait for (0.1-1.0 inside the menu), and a wait for a
+# reaction held Enter 0.45 s (2026-10-20). shortcut: only Linux measured; add others once timed.
+INSTANT_SEARCH = {"linux"}
 APP_KEYS: dict[str, dict[str, list[str]]] = {"android": {name: keys for names, keys in _ANDROID.items() for name in names}}
 
 
@@ -88,13 +92,15 @@ def run_skill(
     # "web browser" (2026-10-19).
     if start is not None and not controller.wait_for_change(LAUNCHER_S, since=start):
         raise ActionError("the launcher didn't open, so nothing was typed")
-    controller.wait_settled()
+    # Cinnamon's menu showed in one frame and took the name typed at once; a settle here waited 0.45 s on a
+    # still screen (2026-10-20). Android's drawer still slides in before its search key.
     if profile.os in SEARCH_KEYS:
+        controller.wait_settled()
         controller.hotkey(SEARCH_KEYS[profile.os])
         controller.wait_settled()
     controller.cancel.check()
     controller.type_text(app.strip())
-    controller.wait_settled()
+    controller.wait_settled(react=profile.os not in INSTANT_SEARCH)
     controller.cancel.check()
     controller.hotkey(["ENTER"])
     # Apps take a second or two to map their window; the screen is "settled" before that, and a
