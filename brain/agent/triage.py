@@ -20,10 +20,12 @@ from brain.cancel import CancelToken
 
 Mode = Literal["act", "plan", "none", "scroll", "launch"]
 Gesture = Literal["click", "double_click", "right_click"]
+Box = tuple[float, float, float, float]
 
 GATE = 0.5  # presence/uniqueness, zoom presence, irreversible, approval: 0 unsafe acts at this gate
 ZOOM_WINDOW = 0.30  # crop side as a fraction of the longer screen side
 ZOOM_SCALE = 2.5
+BOX_STEP = 0.01
 FINE_WINDOW = 0.12  # the second, tighter look: Jev's boxes come in 0.005 steps of whatever it is shown
 SCROLL = 5  # wheel notches for "scroll down a bit": about a screenful
 MAX_SPANS = 40  # word runs of the utterance offered as the app's name
@@ -155,14 +157,19 @@ def refine(jev: JevVision, jpeg: bytes, target: str, point: tuple[float, float],
     the point landed in the target 4 times from the full screen, 28 after one zoom and 35 after
     both (a median of three zooms: 27)."""
     state = state or {"utterance": target}
-    coarse = _look(jev, jpeg, state, control, point, window, run_id, step)
-    if coarse is None or not fine:
+    coarse, sure, _ = zoom(jev, jpeg, state, control, point, window, run_id, step)
+    if coarse is None or sure < GATE:
+        return None
+    if not fine:
         return coarse
-    return _look(jev, jpeg, state, control, coarse, FINE_WINDOW, run_id, step) or coarse
+    closer, sure, _ = zoom(jev, jpeg, state, control, coarse, FINE_WINDOW, run_id, step)
+    return closer if closer and sure >= GATE else coarse
 
 
-def _look(jev: JevVision, jpeg: bytes, state: dict, control: str, point: tuple[float, float], window: float,
-          run_id: str, step: int) -> tuple[float, float] | None:
+def zoom(jev: JevVision, jpeg: bytes, state: dict, control: str, point: tuple[float, float], window: float,
+         run_id: str = "", step: int = 0) -> tuple[tuple[float, float] | None, float, Box | None]:
+    """One look at `control` in an enlarged crop (`window`) around `point`: where Jev boxed it, None with no box, how
+    sure Jev is that it is there, and the box (left, top, right, bottom, 0-1 of the screen)."""
     crop, (x0, y0, x1, y1) = _crop_around(jpeg, point, window)
     questions = {
         "present": {"type": "noul", "instructions":
@@ -173,9 +180,23 @@ def _look(jev: JevVision, jpeg: bytes, state: dict, control: str, point: tuple[f
     answers, size, padded = jev.evaluate(crop, questions, run_id=run_id, step=step, state=state,
                                          label="zoom", gates={"present": GATE}, region=(x0, y0, x1, y1))
     local = box_center(answers["target"], size, padded)
-    if local is None or probability(answers["present"].get("noul")) < GATE:
-        return None
-    return x0 + local[0] * (x1 - x0), y0 + local[1] * (y1 - y0)
+    sure = probability(answers["present"].get("noul"))
+    if local is None:
+        return None, sure, None
+    w, h = box_size(answers["target"], size, padded)
+    left, top = x0 + (local[0] - w / 2) * (x1 - x0), y0 + (local[1] - h / 2) * (y1 - y0)
+    box = (left, top, left + w * (x1 - x0), top + h * (y1 - y0))
+    return (x0 + local[0] * (x1 - x0), y0 + local[1] * (y1 - y0)), sure, box
+
+
+def encloses(outer: Box | None, inner: Box | None) -> bool:
+    """Whether `outer` holds all of `inner` and is over twice its size: the region around it rather than the same
+    control boxed again."""
+    if outer is None or inner is None:
+        return False
+    holds = outer[0] - BOX_STEP <= inner[0] and outer[1] - BOX_STEP <= inner[1] \
+        and inner[2] <= outer[2] + BOX_STEP and inner[3] <= outer[3] + BOX_STEP
+    return holds and (outer[2] - outer[0]) * (outer[3] - outer[1]) > 2 * (inner[2] - inner[0]) * (inner[3] - inner[1])
 
 
 Reply = Literal["approve", "decline", "other"]
@@ -209,7 +230,26 @@ def box_contains(answer: dict, size: tuple[int, int], padded: tuple[int, int], p
     except ValueError:
         return False
     (w, h), (pw, ph) = size, padded
-    return left * pw / w <= point[0] <= right * pw / w and top * ph / h <= point[1] <= bottom * ph / h
+    # Jev's box edges come in 0.01 steps: a zoom on a footnote's [20] landed 0.002 right of its box (2026-10-19)
+    return left * pw / w - BOX_STEP <= point[0] <= right * pw / w + BOX_STEP \
+        and top * ph / h - BOX_STEP <= point[1] <= bottom * ph / h + BOX_STEP
+
+
+def beside(answer: dict, size: tuple[int, int], padded: tuple[int, int], other: Box | None) -> bool:
+    """Whether `other` (left, top, right, bottom, 0-1 of the image) lies within a box answer's own width and height
+    of it."""
+    box = answer.get("box") or {}
+    try:
+        left, right, top, bottom = (probability(box.get(k)) for k in ("left", "right", "top", "bottom"))
+    except ValueError:
+        return False
+    if other is None:
+        return False
+    (w, h), (pw, ph) = size, padded
+    left, right, top, bottom = left * pw / w, right * pw / w, top * ph / h, bottom * ph / h
+    width, height = right - left, bottom - top
+    return left - width <= other[2] and other[0] <= right + width and top - height <= other[3] \
+        and other[1] <= bottom + height
 
 
 def box_size(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> tuple[float, float]:

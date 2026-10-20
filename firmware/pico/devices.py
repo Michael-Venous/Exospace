@@ -12,7 +12,7 @@ import keys
 from descriptors import MOUSE_REPORT_ID, TOUCH_REPORT_ID
 from reports import mouse_report, touch_report
 
-CLICK_HOLD_S = 0.02
+CLICK_HOLD_S = 0.04  # over libinput's 25 ms debounce: a shorter release is held back and lands after the next move (a drag)
 TAP_HOLD_S = 0.05
 SWIPE_STEP_MS = 20
 

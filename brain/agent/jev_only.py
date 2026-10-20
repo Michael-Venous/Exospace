@@ -23,11 +23,16 @@ import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
+import cv2
+import numpy as np
+
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import COMPLETION_QUESTION, IRREVERSIBLE_KINDS, JevVision, probability
-from brain.agent.triage import GATE, ZOOM_WINDOW, box_center, box_contains, box_size, mark, refine, spans
+from brain.agent.triage import (GATE, ZOOM_WINDOW, beside, box_center, box_contains, box_size, encloses, mark, refine,
+                                spans, zoom)
 from brain.skills import OPEN_APP_KEYS
 from brain.types import Action
+from brain.verification import visibly_changed
 
 NEXT_QUESTION = ("The user's `goal` is being carried out on the device in `screen`; `executed_steps` were already "
                  "done. Which single action comes next?")
@@ -147,6 +152,7 @@ COMPOSED = ("Does what remains of the `goal`, after the `executed_steps`, need t
 # documents half the time; the control that creates or opens what the step works in, 0.88-0.92 on Calc's entry.
 OPENER = "When what it works in isn't open yet, that control is the one that creates or opens it."
 STEP_CONTROL = "the spot that the next step of the `goal`, after the `executed_steps`, clicks"
+COPY_CONTROL = "the text that the first line of the `goal` copies (a later line names it by what it pastes)"
 # A box this big holds the spot it was drawn on without a closer look, and a zoom loses where it sits among
 # its neighbours: on "click the third video" zooms chose the second or fourth of YouTube's Shorts row. Only when
 # Jev is sure of it: "copy the header" boxed four rows of Wikipedia's citations 0.54 sure, and the select at its
@@ -171,15 +177,43 @@ LINE_LEFT = ("The `goal` lists requests one per line, and those before its last 
              "still left to do for the request on its last line, after the `executed_steps`, as `screen` shows?")
 # After a click the screen it led to can't tell what the click did: a Short playing left "click the third video"
 # 0.57-0.77 left on every step, and Jev scrolled for another. The screen it was planned on, the click marked on it,
-# can: on 12 frames (3 tries each) clicks that finished their line left 0.16-0.36, others 0.87-0.95.
+# can: on 12 frames (3 tries each) clicks that finished their line left 0.16-0.36, others 0.87-0.95. It alone judges
+# the click: the screen after it read a Wikipedia link or the [20] that cites the birth 0.42-0.58 left, and Docs'
+# template gallery, which Chrome's Docs shortcut opened for "open up a google doc template", 0.47-0.54; marked, the
+# first read 0.18-0.34 left and the gallery 0.57-0.72 (8 tries each, 2026-10-19).
 LINE_LEFT_CLICKED = ("The `goal` lists requests one per line, and those before its last line are already done. "
                      "`screen` is the device just before the last of the `executed_steps`, a click on the red circle. "
                      "Once that click is done, is anything still left to do for the request on its last line?")
-# A click's line is done unless Jev is fairly sure something is left: lines a click finished scored 0.11-0.52 left on
-# the surer of the two looks (21 steps), lines it didn't 0.83-0.97 (6). At 0.52 a Google result's Wikipedia link read
-# as not done, and the article's logo was clicked as "the wikipedia link" (2026-10-19).
-CLICK_DONE = 0.3
+# A click's line is judged so only for a click Jev was sure of: "click the date of birth reference" clicked the lead's [b], a pronunciation
+# note beside the birth name, its zooms 0.50-0.58 sure (9 runs); the marked look read it done and the copy that followed
+# took a heading (2026-10-19). Footnotes that did cite the birth zoomed 0.62-0.68, Wikipedia links 0.90-0.97. The screen
+# a doubtful click led to judges it: [b]'s note read 0.45-0.62 left on its own.
+CLICK_SURE = 0.6
+# A click held open for a surer one of its line's (below) is one zoomed under this: [b] once zoomed 0.61, its note read
+# 0.40-0.50 left, the line ended there with the [20] that cites the birth boxed 0.58, and a note's text was copied
+# (2026-10-19). Wikipedia links zoom 0.90-0.97.
+HOLD_SURE = 0.7
+# A zoom this sure of a click's target, though no surer after a look again, still places it: [b]'s zooms read 0.41-0.61
+# in 10 runs, a search box under typing that went nowhere 0.41-0.48.
+# shortcut: zooms on a spot that isn't the target are unmeasured; size them with zoomdone.py if doubted clicks miss.
+DOUBT = 0.4
 CLICKS = ("click", "double_click", "right_click")
+# What a copy takes is asked with the request's later lines, which name it by what they paste: "copy the header" before
+# "paste the date of birth reference in", on the citation a footnote jump marked, was boxed four rows deep alone and
+# on that citation's row with them (15/15, the pointer off the page). Its presence doesn't tell it apart: 0.45-0.54
+# there, 0.66-0.75 on the article's lead and Google's results, so nothing gates it: the lines before reach the screen.
+COPY_PRESENT = ("Is the text that the first line of the `goal` copies visible in `screen`? A later line of the `goal` "
+                "names that text by what it pastes.")
+COPIED = ("The visible text in `screen` that the first line of the `goal` copies, boxed tightly around that text "
+          "alone. A later line of the `goal` names that text by what it pastes.")
+# A copy's triple click goes this far past the end of the text, still in its line: the box's middle was on the
+# citation's link about half the time, and a click there follows it (a run pasted "Citations", 2026-10-19). Past
+# the end it selected the citation 15/15, the article's title 10/10.
+COPY_PAST = 0.005  # of the screen's width
+# The look closer that places the copy's row: Jev's box on the citation just under Chrome's toolbar reached into the
+# toolbar, and its middle row (0.09) selected nothing 6 times in 6; a zoom this wide on it placed the row 15/16, and
+# 41/48 over that, its twin frame and an article's title (2026-10-19).
+COPY_WINDOW = 0.25
 CLIPBOARD = {"copy": "C", "paste": "V"}  # the key each clipboard step presses with Ctrl (Cmd on macOS)
 # The agent joins words said mid-run on as "User correction: ..." lines (loop.py, app.py). Jev read "add hello to b1"
 # so marked as a fix to "open up libre office" and waited on its Start Center (3/3); unmarked it clicked Calc (2/2).
@@ -199,16 +233,22 @@ class JevOnlyPlanner:
         self.prev = 0  # where the line before it started: Jev sees its steps too ("delete hello" after typing it)
         self.routed = False  # Jev has seen the app in front can take the line's next step
         self.seen = False  # Jev planned the line's next step at an earlier step: it wasn't done then
+        # History length and screen when an input changed nothing: its retry may repeat it.
+        self.unmoved: tuple[int, bytes] | None = None
         # The goal's lines Jev saw done: a request continuing it starts at its next line. A failed run's too: its
         # restart with the words said since redid "close google" after "open up google again".
         self.finished = ""
         self.goal = ""  # the goal of the last step: a run whose goal goes on from it continues that request
         self.opened: str | None = None  # the app the request last opened, also in an earlier run it continues
         self.clicked: tuple[bytes, tuple[float, float], str] | None = None  # the last plan's click: screen, point, step
+        self.doubted: str | None = None  # the last plan's click, as its step reads, when Jev wasn't sure of its target
         # Jev's last typing, as its step reads: Flash's went where its own focus check saw a field. Flash clicked
         # the address bar and typed "docs.new\n"; on the document it opened that text was nowhere (0.09), and it
         # was typed again into the document (2026-10-19).
         self.typed: str | None = None
+        self.screen: bytes | None = None  # the last step's screen
+        self.planned: tuple[int, list[str]] = (0, [])  # the history's length then, and the steps planned on it
+        self.idle = False  # the last step looked again and the screen stayed as it was
 
     @property
     def current_line(self) -> str:
@@ -220,10 +260,16 @@ class JevOnlyPlanner:
         pass  # no plan cursor: every step is chosen afresh from the screen and the history
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
+        plan = self._plan(image, ctx)
+        self.screen, self.planned = image, (len(ctx.history), [action.brief() for action in plan.actions])
+        return plan
+
+    def _plan(self, image: bytes, ctx: StepContext) -> Plan:
         if self.run_id != ctx.run_id:
             continued = bool(self.finished) and ctx.goal.startswith(self.finished + "\n")
             self.run_id, self.line, self.since = ctx.run_id, self.finished.count("\n") + 1 if continued else 0, 0
-            self.prev, self.routed, self.clicked, self.seen, self.typed = 0, False, None, False, None
+            self.prev, self.routed, self.clicked, self.seen, self.typed, self.unmoved = 0, False, None, False, None, None
+            self.doubted = self.screen = None
             if not ctx.goal.startswith(self.goal + "\n"):
                 self.opened = None  # a new request: what an earlier one opened isn't its app
         # A run that failed starts again with the words said since joined on, its history empty: "make a new tab"
@@ -231,8 +277,19 @@ class JevOnlyPlanner:
         self.goal, self.opened = ctx.goal, _last_opened(ctx.history) or self.opened
         lines = [line.removeprefix(CORRECTION) for line in ctx.goal.splitlines()]
         clicked, self.clicked = self.clicked, None
-        if clicked and (ctx.history[-1:] != [clicked[2]] or "unchanged" in ctx.note):
-            clicked = None  # not the step just taken, or one with no visible effect: nothing it did to judge
+        doubted, self.doubted = self.doubted, None
+        self.idle = ctx.history[-1:] == [LOOK_AGAIN.brief()] and self.screen is not None and _same(self.screen, image)
+        # Flash's click, the step on the last screen handed to it, is judged as Jev's sure ones are: the Docs
+        # shortcut it clicked for "open up a google doc template" read 0.46-0.54 left on the gallery that opened, and
+        # the paste after it clicked a blank document there (2026-10-19).
+        taken = ctx.history[self.planned[0]:]
+        if self.screen is not None and len(taken) == 1 and taken != self.planned[1] and (point := _POINT.match(taken[0])) \
+                and point[1] == "click":
+            clicked = self.screen, (int(point[2]) / 1000, int(point[3]) / 1000), taken[0]
+        inputs = [done for done in ctx.history if done not in (LOOK_AGAIN.brief(), WAIT.brief())]
+        if clicked and (inputs[-1:] != [clicked[2]] or "unchanged" in ctx.note):
+            clicked = None  # not the last input, or one with no visible effect: nothing it did to judge
+        self.clicked = clicked  # still judged after looks again: the page it opened may take a few to draw
         guard = self.approved_run is not None and not self.approved_run(ctx)
         opened = _just_opened(ctx.history)
         # One line at a time: "click the first email" as the last of 8 lines boxed Gmail's tab row (0.78 sure,
@@ -246,18 +303,36 @@ class JevOnlyPlanner:
         if self.line + 1 < len(lines):
             asks.append((lines[self.line + 1], [], _seen(ctx.history, lines[self.line], self.since), True))
         typed = _typed_into_field(ctx.history[self.since:], self.typed)
-        looks = [self._line_done(image, ctx, lines)]
-        if clicked:
-            looks.append(self._line_done(mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED))
+        looks = [self._line_done(mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED) if clicked
+                 else self._line_done(image, ctx, lines)]
         shown = [self._shown(image, ctx, lines[self.line], typed)] if typed else []
         replies = self._evaluate_all(ctx, looks + shown + [self._ask(image, ctx, *ask, guard, opened) for ask in asks])
         answered = replies[len(looks) + len(shown):]
         missing = bool(shown) and probability(replies[len(looks)][0]["typed"].get("noul")) < MISSING
         left = max(1 - probability(answers["left"].get("noul")) for answers, _, _ in replies[:len(looks)])
-        # Not for a right-click: the menu it opens is for a step still to come ("copy the title" read 0.31 done).
-        lenient = clicked and not clicked[2].startswith("right_click(")
-        finished = not missing and _finished(answered[0][0], ctx.history[self.since:], left, self.seen,
-                                             CLICK_DONE if lenient else GATE)
+        # An input that changed nothing finished nothing: a Brave Search result clicked 1.3 s after the results drew
+        # stayed put, the unchanged page read 0.35 left, and the snippet under it was clicked as the next line's
+        # "date of birth reference" (2026-10-19; 2 of 3 clicks that early did nothing, every one at 4 s went).
+        unchanged = "unchanged" in ctx.note and bool(ctx.history[self.since:])
+        retrying = self._retrying(ctx.history)
+        retried = unchanged and self.unmoved is not None and not retrying
+        # Nor does the look after it while the screen stays as it was: the [20] after "Temüjin's birth" clicked on
+        # its top edge stayed put, the look a second later read the line done (0.54), and the page itself was copied
+        # (2026-10-19).
+        still = retrying and not unchanged and _same(self.unmoved[1], image)
+        if not unchanged and not retrying:
+            self.unmoved = None
+        finished = not missing and not unchanged and not still and _finished(answered[0][0], ctx.history[self.since:], left, self.seen)
+        # A click Jev doubted doesn't end its line while Jev has another for it that it is sure of: after the lead's
+        # [b] the screen read done (0.38-0.55) with the note that cites the birth showing, its [20] boxed and zoomed
+        # 0.70 (2026-10-19). Without such a click the line is done.
+        # Nor while an app launcher is open with an entry Jev is sure to click: "open the calculator" read done (0.72)
+        # on a phone's app drawer listing Calculator, which Samsung opens only on a tap (2026-10-19).
+        first = answered[0][0]
+        listed = "launcher" in first and min(probability(first["launcher"].get("noul")),
+                                             probability(first["present"].get("noul"))) >= GATE
+        held = finished and first["next"].get("choice") in CLICKS and (ctx.history[-1:] == [doubted] or listed)
+        finished = finished and not held
         if finished and len(answered) > 1:
             self._advance(ctx)
             answered, finished = answered[1:], False  # the next line's first step
@@ -283,8 +358,25 @@ class JevOnlyPlanner:
             return self._next_line(image, ctx, lines, "Jev verified the completed goal")
         if not steps and probability(answers["complete"].get("noul")) >= ALREADY:
             return self._next_line(image, ctx, lines, "Jev sees the line already done")
-        if "unchanged" in ctx.note and steps:
-            return _fail("the last step had no visible effect")  # Jev would choose it again
+        # A paste that changed nothing went where no key lands: Ctrl+V into a Docs template just inserted, its caret
+        # drawn, pasted nothing and the line read done on Docs' "Saving..." (2026-10-19). Its retry clicks first.
+        refocus = unchanged and not retried and bool(_PASTE.fullmatch(steps[-1]))
+        # A copy that changed nothing selected nothing (a selection shows): its select landed on Chrome's toolbar
+        # edge, the look after it read the copy done (paste next, 0.22 complete) and Flash went on with nothing
+        # copied (2026-10-19). It copies again from a fresh look.
+        recopy = unchanged and not retried and bool(_COPY.fullmatch(steps[-1]))
+        if unchanged:
+            # Once more after a look: a page just drawn may not take input yet. Twice is Jev choosing it again.
+            self.unmoved = len(ctx.history), image
+            look = None if retried or refocus or recopy else self._look_again(ctx)
+            if not (refocus or recopy):
+                return look or _fail("the last step had no visible effect")
+        # Text sent with Enter leaves its box while the page it asked for loads: Google's results drew 2.7 s after
+        # Enter on Chrome's new tab, its emptied box read not typed (0.08), and the space in the text typed again
+        # scrolled those results past the Wikipedia link (2026-10-19).
+        sent = [s for s in steps if s not in (LOOK_AGAIN.brief(), WAIT.brief())][-1:]
+        if missing and sent and _ENTER.fullmatch(sent[0]) and (look := self._look_again(ctx)):
+            return look
         # Only when nothing can be done yet: YouTube's placeholder page already has a search box to click. An app
         # just opened is waited for before its first step: its own controls may not be there yet.
         # A key for a tab or window needs nothing drawn: Chrome's drawn new tab page read as drawing 0.51-0.58, and
@@ -292,7 +384,7 @@ class JevOnlyPlanner:
         keys = answers["next"].get("choice") in (*TAB_KEYS, "close_app")
         drawing = opened and not keys and probability(answers["drawing"].get("noul")) >= GATE
         loading = probability(answers["loading"].get("noul")) >= GATE
-        wait = _look_again(ctx, MAX_LOADING_WAITS if loading else MAX_WAITS, anytime=True) if loading or drawing \
+        wait = self._look_again(ctx, MAX_LOADING_WAITS if loading else MAX_WAITS, anytime=True) if loading or drawing \
             else None
         if opened and wait:
             return wait
@@ -310,14 +402,16 @@ class JevOnlyPlanner:
             # The open_app skill knows each launcher's keys (a phone's drawer needs Ctrl+F before typing). Once per
             # app in a clause: one line can name two ("open up discord, close discord, and open a terminal").
             launch = Action("skill", name="open_app", args={"name": name or again})
-            if ctx.profile.input == "touch" and name and launch.brief() not in steps:
-                return Plan("Open the app", [launch], [])  # the demo phone ignores taps; its keyboard launcher works
             # Before the fits check: Jev can judge the open launcher itself as fitting and type the whole goal.
             search = self._search(answers, ctx, name, steps)
             if search:
                 return search
             fits = probability(answers["fits"].get("noul")) >= GATE \
                 or site and probability(answers["browser_front"].get("noul")) >= GATE
+            # The demo phone ignored taps; its keyboard launcher works. Not for the app in front: Brave was launched
+            # again for each line of "search for horses and click the third video" on a DeX phone (2026-10-19).
+            if ctx.profile.input == "touch" and name and not fits and launch.brief() not in steps:
+                return Plan("Open the app", [launch], [])
             if not fits and again and launch.brief() not in steps:
                 return wait or Plan("Open the app again", [launch], [])
             # Only a request that names an app or a site is routed: gibberish ("asdkjh qwe zxcv") opened the launcher.
@@ -328,7 +422,7 @@ class JevOnlyPlanner:
                     return route
             else:
                 self.routed = True
-        step = answers["next"].get("choice")
+        step = "copy" if recopy else answers["next"].get("choice")
         choice = answers["text"].get("choice")
         text = texts[int(choice)] if choice in named else None
         if step == "erase" and text is None:
@@ -354,20 +448,38 @@ class JevOnlyPlanner:
                 and probability(answers["input"].get("noul")) >= self.jev.min_presence:
             step = "fill"
         if step == "paste" and ctx.history and ctx.history[-1].startswith("click(") \
-                and probability(answers["focused"].get("noul")) < GATE and (look := _look_again(ctx)):
+                and probability(answers["focused"].get("noul")) < GATE and (look := self._look_again(ctx)):
             # What the click opened may still be opening: a Docs template clicked in its gallery took the paste
             # before its document showed (focused 0.25), and the line read done (2026-10-19).
             return look
         # As with typing: a paste right after a click, or into the place Jev sees focused, needs no click first.
-        focus = step == "paste" and not (ctx.history and ctx.history[-1].startswith("click(")) \
-            and probability(answers["focused"].get("noul")) < GATE
+        focus = step == "paste" and (refocus or not (ctx.history and ctx.history[-1].startswith("click("))
+                                     and probability(answers["focused"].get("noul")) < GATE)
+        if focus and not refocus and (box_center(answers["target"], size, padded) is None
+                                      or probability(answers["present"].get("noul")) < GATE):
+            # Where Jev can't see the place to click, the keys go where the page put its caret: a Docs template
+            # just opened was 0.34-0.39 sure of a body line, waited twice, and Flash, handed it after 3.3 s, pressed
+            # only Ctrl+V, which pasted (2026-10-19). A paste that changes nothing clicks on its retry.
+            look = wait or self._look_again(ctx)
+            if look:
+                return look
+            focus = False
+        certain = settled = True  # of the click's target: only a doubtful zoom says otherwise
         if step in ("click", "double_click", "right_click", "fill", "copy") or focus:
             point = box_center(answers["target"], size, padded)
             sure = probability(answers["present"].get("noul"))
-            if point is None or sure < GATE:
-                return wait or _look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
+            if held and (point is None or sure < GATE):
+                return self._next_line(image, ctx, lines, "Jev verified the completed goal")
+            # Not a copy's: on the citation a footnote jump marked, "copy the header" was 0.22-0.35 sure of it, waited,
+            # and Flash took the hatnote at the article's top (0.53 there, 2026-10-19). Its own look places it.
+            if step != "copy" and (point is None or sure < GATE):
+                return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
             width, height = box_size(answers["target"], size, padded)
-            if min(width, height) < BIG_TARGET or sure < self.jev.min_presence:
+            if step == "copy":
+                point = self._copy_spot(image, ctx, lines, seen)
+                if point is None:
+                    return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
+            elif min(width, height) < BIG_TARGET or sure < self.jev.min_presence:
                 # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
                 # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
                 # shortcuts). Keeping the zoom nearer the first box is a majority of the three looks. No tighter
@@ -377,19 +489,34 @@ class JevOnlyPlanner:
                 # the crop's side is a fraction of the screen's longer side, and its height 0.66 of its width
                 window = max(ZOOM_WINDOW, ZOOM_MARGIN * max(width * size[0], height * size[1] / 0.66) / max(size))
                 with ThreadPoolExecutor(2) as pool:
-                    looks = [p for p in pool.map(lambda _: refine(self.jev, image, line, point, state=state,
-                                                                   control=STEP_CONTROL, run_id=ctx.run_id,
-                                                                   step=ctx.step, fine=False, window=window),
-                                                   range(2)) if p]
+                    zooms = list(pool.map(lambda _: zoom(self.jev, image, state, STEP_CONTROL, point, window,
+                                                          ctx.run_id, ctx.step), range(2)))
+                # A zoom boxing the other's box with room around it boxed the region it sits in: "search up genghis
+                # khan" on Chrome's new tab had one zoom on the search box, one on it and the logo above, nearer the
+                # first look's address bar, and the click on the logo typed into nothing (2026-10-19).
+                zooms = [z for z in zooms if not any(encloses(z[2], other[2]) for other in zooms)]
+                looks = [(p, b) for p, z, b in zooms if p and z >= GATE]
+                certain = max(z for _, z, _ in zooms) >= CLICK_SURE
+                settled = max(z for _, z, _ in zooms) >= HOLD_SURE
+                again = ctx.history[-1:] == [LOOK_AGAIN.brief()]
+                if not looks and again:
+                    # A page that drew no closer view in a look again won't: both zooms on Wikipedia's [b] read
+                    # 0.41-0.53 twice, and Flash, handed it after 7 s, clicked [b] (2026-10-19). As a doubted click.
+                    looks = [(p, b) for p, z, b in zooms if p and z >= DOUBT]
                 # Jev's doubt about which step comes next also lowers its sureness that the target is visible (a
                 # small YouTube search box: 0.77-0.84 on 5 tries, each box on it; a spreadsheet cell 0.79-0.81), so
                 # a zoom that lands in its box stands in for it: on cell B1 one zoom in 3 drifted to the selected
-                # A1 beside it. Zooms elsewhere don't: both left Chrome's Gmail link for the address bar.
+                # A1 beside it. Zooms elsewhere don't: both left Chrome's Gmail link for the address bar. Once a look
+                # again saw the same, zooms beside the box do: the step's box on Wikipedia's birth date ended
+                # 0.007-0.016 left of the [b] both zooms boxed, three looks running, and Flash took it (2026-10-19).
                 if sure < self.jev.min_presence:
-                    looks = [p for p in looks if box_contains(answers["target"], size, padded, p)]
+                    looks = [(p, b) for p, b in looks if box_contains(answers["target"], size, padded, p)
+                             or again and beside(answers["target"], size, padded, b)]
+                if held and not (looks and certain):
+                    return self._next_line(image, ctx, lines, "Jev verified the completed goal")
                 if not looks:
-                    return wait or _look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
-                point = min(looks, key=lambda p: math.dist(p, point))
+                    return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
+                point = min((p for p, _ in looks), key=lambda p: math.dist(p, point))
             if step == "copy":
                 actions.append(Action("skill", name="select", args={"x": round(point[0], 3), "y": round(point[1], 3)}))
             else:
@@ -426,8 +553,8 @@ class JevOnlyPlanner:
         if step in TAB_KEYS:
             actions.append(Action("hotkey", keys=(mod, TAB_KEYS[step])))
         if step == "close_app":
-            # shortcut: phones have no quit key, so Alt+F4 leaves the screen unchanged and the step fails; close
-            # from the app switcher if phones need it.
+            # Samsung DeX closes the window in front on Alt+F4 too (the calculator, 2026-10-19).
+            # shortcut: a phone outside DeX has no quit key, so the step fails; close from the app switcher if needed.
             actions.append(Action("hotkey", keys=("GUI", "Q") if ctx.profile.os == "macos" else ("ALT", "F4")))
         if step == "enter":
             actions.append(Action("hotkey", keys=("ENTER",)))
@@ -446,17 +573,38 @@ class JevOnlyPlanner:
             if not wait and probability(answers["complete"].get("noul")) >= GATE:
                 return self._next_line(image, ctx, lines, "Jev sees nothing left to do")
             # Jev's answers vary between looks: "open up youtube" on a browser's new tab was stuck 1 time in 3.
-            return wait or _look_again(ctx) or _fail("it needs reasoning or content Jev can't supply")
-        if _repeats(actions, steps):
+            return wait or self._look_again(ctx) or _fail("it needs reasoning or content Jev can't supply")
+        if _repeats(actions, steps) and not self._retrying(ctx.history):
             # Clicking "1" twice typed 11 for "12 times eight", and Enter twice submitted twice: never repeat
             # input to find out whether it worked (Diego, agent/jev-only-fixes). Only the line's own: Docs' Blank
-            # document tile was where the Google Docs search result just clicked had been (v11-t4).
-            return _fail("it would repeat the step it just took")
+            # document tile was where the Google Docs search result just clicked had been (v11-t4). A look again isn't
+            # a repeat: Enter after Flash's "https://www.google.com\n" was the line's screen not yet read done, and
+            # failing there restarted the request (2026-10-19).
+            return self._look_again(ctx) or _fail("it would repeat the step it just took")
         if guard and probability(answers["irreversible"].get("noul")) >= GATE:
             return Plan("Irreversible step needs approval", [], [], held=f'the next step of "{line}"')
-        if step in CLICKS:
+        if step in CLICKS and certain:
             self.clicked = image, point, actions[0].brief()
+        if step in CLICKS and not settled:
+            self.doubted = actions[0].brief()
         return Plan(f"Jev next step: {step}", actions, [], blind=step in ("address", "new_tab"))
+
+    def _look_again(self, ctx: StepContext, limit: int = MAX_WAITS, anytime: bool = False) -> Plan | None:
+        """A target not visible yet is often a page still loading: right after a launch, YouTube's search box
+        wasn't there and Flash took the rest (30 s on the Pi). Wait briefly instead, up to `limit` in a row
+        (nrebolloso, origin/live-speech cfb822b); on a run's first screen only when Jev sees it still `anytime`
+        loading."""
+        # A page a look again left as it was is drawn: Chrome's new tab page waited twice for a Google Docs
+        # template 2.4 s apart, unchanged, before Flash clicked its Docs shortcut (2026-10-19). Loading isn't: an
+        # app launching or a placeholder page can sit still a second.
+        if self.idle and limit <= MAX_WAITS:
+            return None
+        waits = 0
+        for done in reversed(ctx.history):
+            if done != LOOK_AGAIN.brief():
+                break
+            waits += 1
+        return Plan("Jev waits for the page", [LOOK_AGAIN], []) if (ctx.history or anytime) and waits < limit else None
 
     def _ask(self, image: bytes, ctx: StepContext, line: str, steps: list[str], context: list[str], route: bool,
              guard: bool, opened: bool) -> Ask:
@@ -520,6 +668,28 @@ class JevOnlyPlanner:
         return image, "typed", [({"typed": {"type": "noul", "instructions": question}},
                                  {"goal": line, "executed_steps": ctx.history[self.since:]})]
 
+    def _copy_spot(self, image: bytes, ctx: StepContext, lines: list[str], context: list[str]) -> tuple[float, float] | None:
+        """Where a triple click selects the text the line copies: just past the end of Jev's box around it, on the
+        box's middle row, so it lands on no link in that text. Of two boxes the one reaching further: one look's box
+        ended inside the citation, on its link or before it, 3 times in 15."""
+        questions = {"copy_present": {"type": "noul", "instructions": COPY_PRESENT},
+                     "copied": {"type": "box", "instructions": COPIED}}
+        state = {"goal": "\n".join(lines[self.line:]), "executed_steps": context}
+        with ThreadPoolExecutor(2) as pool:
+            replies = list(pool.map(lambda _: self.jev.evaluate(image, questions, run_id=ctx.run_id, step=ctx.step,
+                                                                state=state, label="copy"), range(2)))
+        ends = [(center[0] + box_size(answers["copied"], size, padded)[0] / 2, center, answers["copied"], size, padded)
+                for answers, size, padded in replies if (center := box_center(answers["copied"], size, padded))]
+        if not ends:
+            return None
+        # shortcut: a paragraph wrapping to its column's edge puts this point past the column; aim inside its first
+        # line if copies of long paragraphs need it.
+        x, center, box, size, padded = max(ends, key=lambda end: end[0])
+        point, _, _ = zoom(self.jev, image, state, COPY_CONTROL, center, COPY_WINDOW, ctx.run_id, ctx.step)
+        # Only its row: a zoom off the box went to the address bar above it (1 in 16).
+        y = point[1] if point and box_contains(box, size, padded, point) else center[1]
+        return min(1.0, x + COPY_PAST), y
+
     def _evaluate_all(self, ctx: StepContext, asks: list[Ask]) -> list[tuple[dict, tuple[int, int], tuple[int, int]]]:
         """Each ask's answers, its question sets asked in parallel, those on the same image in the same state in one
         call: each call uploads the screen and a step's calls queue on those uploads (a 1080p screen sent at 1280 px
@@ -554,6 +724,10 @@ class JevOnlyPlanner:
             return self.next_actions(image, ctx)
         self.finished = ctx.goal
         return Plan(why, [Action("done", summary="Done.")], [])
+
+    def _retrying(self, history: list[str]) -> bool:
+        """An input changed nothing and only looks have run since: the next step is its one retry."""
+        return self.unmoved is not None and all(done == LOOK_AGAIN.brief() for done in history[self.unmoved[0]:])
 
     def _advance(self, ctx: StepContext) -> None:
         self.line, self.prev, self.since, self.routed = self.line + 1, self.since, len(ctx.history), False
@@ -590,7 +764,7 @@ class JevOnlyPlanner:
             if _repeats([switch], ctx.history):
                 # The app the last click opened is still coming: "close discord" boxed Discord's panel icon on the
                 # desktop 2 s after "open up discord" clicked it, and clicking it again would minimise it (v8-t2).
-                return _look_again(ctx, MAX_LOADING_WAITS) or _fail("the app the last click opened never appeared")
+                return self._look_again(ctx, MAX_LOADING_WAITS) or _fail("the app the last click opened never appeared")
             # shortcut: one click opens taskbar, dock and launcher entries but not desktop icons; double-click
             # when the app box is a desktop icon if those get missed.
             return Plan("Switch to the app for the request", [switch], [])
@@ -603,17 +777,10 @@ class JevOnlyPlanner:
         return _fail("no app suited to the request is visible")
 
 
-def _look_again(ctx: StepContext, limit: int = MAX_WAITS, anytime: bool = False) -> Plan | None:
-    """A target not visible yet is often a page still loading: right after a launch, YouTube's search box
-    wasn't there and Flash took the rest (30 s on the Pi). Wait briefly instead, up to `limit` in a row
-    (nrebolloso, origin/live-speech cfb822b); on a run's first screen only when Jev sees it still `anytime`
-    loading."""
-    waits = 0
-    for done in reversed(ctx.history):
-        if done != LOOK_AGAIN.brief():
-            break
-        waits += 1
-    return Plan("Jev waits for the page", [LOOK_AGAIN], []) if (ctx.history or anytime) and waits < limit else None
+def _same(before: bytes, after: bytes) -> bool:
+    """Whether two screens look alike; one that won't decode is not."""
+    a, b = (cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR) for jpeg in (before, after))
+    return a is not None and b is not None and not visibly_changed(a, b)
 
 
 def _just_opened(history: list[str]) -> bool:
@@ -689,12 +856,14 @@ def _is_the_request(text: str, line: str) -> bool:
 
 _POINT = re.compile(r"^(click|double_click|right_click)\((\d+),(\d+)\)$")
 _ENTER = re.compile(r"hotkey\((\w+\+)?ENTER\)")
+_PASTE = re.compile(r"hotkey\((CTRL|GUI)\+V\)", re.IGNORECASE)
+_COPY = re.compile(r"hotkey\((CTRL|GUI)\+C\)", re.IGNORECASE)
 SAME_SPOT = 20  # history coordinates are 0-1000: a click this close to the last one is the same click
 
 
 def _repeats(actions: list[Action], history: list[str]) -> bool:
     """True when these actions are the same input as the last ones that ran (a click within SAME_SPOT, the
-    same text or the same keys). Scrolls, waits and pointer moves may repeat."""
+    same text or the same keys, Enter after text typed with its own). Scrolls, waits and pointer moves may repeat."""
     inputs = [a.brief() for a in actions if a.type not in ("scroll", "skill")]
     recent = [h for h in history if not h.startswith(("scroll(", "skill("))][-len(inputs):] if inputs else []
     if not inputs or len(recent) < len(inputs):
@@ -704,7 +873,9 @@ def _repeats(actions: list[Action], history: list[str]) -> bool:
         if a and b:
             if a[1] != b[1] or abs(int(a[2]) - int(b[2])) > SAME_SPOT or abs(int(a[3]) - int(b[3])) > SAME_SPOT:
                 return False
-        elif new != old:
+        # Text typed with its newline was sent: Enter after Flash's "docs.new\n" went into the blank document it
+        # opened, twice (2026-10-19).
+        elif new != old and not (new == "hotkey(ENTER)" and old.startswith("type_text(") and old.endswith("\\n')")):
             return False
     return True
 

@@ -3,9 +3,12 @@
 import unittest
 from unittest.mock import Mock, patch
 
+import cv2
+import numpy as np
+
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_first import JevFirstPlanner
-from brain.agent.jev_only import FAILED, JevOnlyPlanner
+from brain.agent.jev_only import FAILED, LOOK_AGAIN, JevOnlyPlanner
 from brain.agent.triage import spans
 from brain.types import Action, DeviceProfile, Rect
 
@@ -22,7 +25,7 @@ class JevOnlyTests(unittest.TestCase):
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, browser_front=.05, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
-             lookup=.05):
+             lookup=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
@@ -31,12 +34,13 @@ class JevOnlyTests(unittest.TestCase):
                 "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
-                "lookup": {"noul": lookup}}
+                "lookup": {"noul": lookup}, "copy_present": {"noul": .5}, "copied": copied}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
-        profile = DeviceProfile(os, Rect(0, 0, 400, 300), "mouse", 1)
+        profile = DeviceProfile(os, Rect(0, 0, 400, 300), device, 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
-        with patch("brain.agent.jev_only.refine", side_effect=list(looks)) as self.refine:
-            self.last = self.planner.next_actions(b"img", ctx)
+        with patch("brain.agent.jev_only.refine", side_effect=list(looks)) as self.refine, \
+                patch("brain.agent.jev_only.zoom", side_effect=[(p, zoomed, b) for p, b in zip(looks, boxes)]) as self.zoom:
+            self.last = self.planner.next_actions(image, ctx)
             return self.last.actions
 
     def step(self, goal, **answers):
@@ -61,10 +65,13 @@ class JevOnlyTests(unittest.TestCase):
     def test_text_typed_into_nothing_is_typed_again_into_the_field_clicked_first(self):
         typed = ["type_text('horses')", "hotkey(ENTER)", "skill(wait {'s': 1.0})"]
         self.planner.run_id, self.planner.typed = "r", typed[0]  # Jev typed it
+        # sent with Enter: the box may be empty only while the results load
+        self.assertEqual(self.step("search for horses", left=.1, typed=.01, history=typed).brief(), typed[2])
+        typed.append(typed[2])
         again = self.plan("search for horses", left=.1, next="stuck", submit=.9, typed=.01, history=typed,
                           looks=((.4, .1), (.4, .1)))  # though Jev sees the line done
         self.assertEqual([a.brief() for a in again], ["click(400,100)", "type_text('horses')", "hotkey(ENTER)"])
-        self.assertEqual(self.refine.call_args.kwargs["state"]["executed_steps"], [])  # not told the text is in
+        self.assertEqual(self.zoom.call_args.args[2]["executed_steps"], [])  # not told the text is in
         self.assertEqual(self.step("search for horses", left=.1, typed=.6, history=typed, run="s").type, "done")
         address = ["hotkey(CTRL+L)", "type_text('gmail')", "hotkey(CTRL+ENTER)"]  # the page it opened replaced it
         self.assertEqual(self.step("go to gmail", left=.1, typed=.01, history=address, run="s").type, "done")
@@ -125,6 +132,17 @@ class JevOnlyTests(unittest.TestCase):
                          "skill(wait {'s': 1.0})")
         waited = ["skill(open_app {'name': 'firefox'})", "skill(wait {'s': 1.0})", "skill(wait {'s': 1.0})"]
         self.assertEqual(self.step(goal, present=.4, history=waited).type, "fail")
+        page = cv2.imencode(".jpg", np.full((300, 400, 3), 200, np.uint8))[1].tobytes()
+        clicked = ["click(300,300)"]
+        self.assertEqual(self.step(goal, present=.4, history=clicked, run="d", image=page).brief(), waited[1])
+        # the page didn't change while it was looked at again: it is drawn, and another look won't find it
+        self.assertEqual(self.step(goal, present=.4, history=clicked + waited[1:2], run="d", image=page).type, "fail")
+
+    def test_a_paste_whose_place_jev_cant_see_goes_where_the_keys_go_once_looked_for(self):
+        goal, opened = "paste it in", ["click(684,713)", LOOK_AGAIN.brief()]
+        self.assertEqual(self.step(goal, next="paste", present=.39, focused=.2, history=opened).brief(), opened[1])
+        pasted = self.plan(goal, next="paste", present=.39, focused=.2, history=opened + opened[1:])
+        self.assertEqual([a.brief() for a in pasted], ["hotkey(CTRL+V)"])
 
     def test_a_zoom_that_strays_is_outvoted(self):
         for looks in ((ON, STRAY), (STRAY, ON)):
@@ -137,6 +155,27 @@ class JevOnlyTests(unittest.TestCase):
             self.assertEqual((action.type, round(action.y, 2)), ("click", .3))
         self.assertEqual(self.step("search for horse videos", present=.7, looks=(STRAY, STRAY)).type, "fail")
 
+    def test_a_zoom_boxing_the_region_around_the_other_is_dropped(self):
+        logo, field = (.52, .25), (.52, .41)  # Chrome's new tab: the logo and search box, and the search box alone
+        for looks, boxes in (((logo, field), ((.24, .05, .81, .45), (.24, .37, .8, .45))),
+                             ((field, logo), ((.24, .37, .8, .45), (.24, .05, .81, .45)))):
+            bar = {"box": {"left": .12, "right": .87, "top": .07, "bottom": .11}, "confidence": .9}  # first look's box
+            action = self.step("search up genghis khan", target=bar, looks=looks, boxes=boxes)
+            self.assertEqual(round(action.y, 2), .41)
+        self.assertEqual(round(self.step("click it", looks=(ON, STRAY), boxes=((.2, .2, .4, .4), None)).y, 2), .3)
+
+    def test_a_zoom_beside_a_doubted_box_is_taken_once_a_look_again_saw_it_too(self):
+        note, box = (.345, .3), (.34, .29, .35, .31)  # Wikipedia's [b], just right of the birth date Jev boxed
+        wait = self.step("click the date of birth reference", present=.7, looks=(note, note), boxes=(box, box),
+                         history=["click(1,1)"])
+        self.assertEqual(wait.brief(), "skill(wait {'s': 1.0})")
+        click = self.step("click the date of birth reference", present=.7, looks=(note, note), boxes=(box, box),
+                          history=["click(1,1)", wait.brief()], run="s")
+        self.assertEqual((round(click.x, 3), round(click.y, 2)), note)
+        far = (.29, .9, .31, .99)
+        self.assertEqual(self.step("click it", present=.7, looks=(STRAY, STRAY), boxes=(far, far),
+                                   history=["click(1,1)", wait.brief()], run="t").type, "skill")
+
     def test_two_zooms_that_agree_move_a_sure_click(self):
         action = self.step("open a new tab and search cats", looks=(STRAY, STRAY))
         self.assertEqual((action.type, action.y), ("click", .95))
@@ -144,7 +183,7 @@ class JevOnlyTests(unittest.TestCase):
     def test_a_wide_target_is_zoomed_whole(self):
         wide = {"box": {"left": .05, "right": .55, "top": .28, "bottom": .32}, "confidence": .9}  # a search box
         self.step("search for cats", target=wide, looks=((.3, .3), (.3, .3)))
-        self.assertGreater(self.refine.call_args.kwargs["window"], .5)
+        self.assertGreater(self.zoom.call_args.args[5], .5)
 
     def test_a_click_is_judged_done_on_the_screen_it_was_planned_on(self):
         jev = self.planner.jev
@@ -159,28 +198,62 @@ class JevOnlyTests(unittest.TestCase):
             click = self.step(goal, target=BIG).brief()
             self.assertEqual(self.step(goal, target=BIG, history=[click]).type, "done")
             self.assertEqual([round(v, 2) for v in marked.call_args.args[1]], [.3, .3])
+            self.step(goal, target=BIG, run="w")  # judged so after a look again too: the page may still be drawing
+            self.assertEqual(self.step(goal, target=BIG, history=[click, LOOK_AGAIN.brief()], run="w").type, "done")
             for later in ({"history": [click, "hotkey(ENTER)"]},  # not the step just taken
                           {"history": [click], "note": "Screen unchanged; try something different."}):
                 self.step(goal, target=BIG, run=str(later))
                 self.assertNotEqual(self.step(goal, target=BIG, run=str(later), **later).type, "done")
-            self.assertEqual(marked.call_count, 1)
+            self.assertEqual(marked.call_count, 2)
+            # Flash's click, on the screen Jev handed it
+            self.assertEqual(self.step(goal, question=.9, complete=.9, history=["hotkey(CTRL+T)"], run="f").type,
+                             "fail")
+            self.assertEqual(self.step(goal, history=["hotkey(CTRL+T)", "click(500,500)"], run="f").type, "done")
+            self.assertEqual(marked.call_args.args[1], (.5, .5))
 
     def test_a_click_ends_its_line_unless_jev_is_fairly_sure_something_is_left(self):
         goal = "click the wikipedia link"
         with patch("brain.agent.jev_only.mark", return_value=b"marked"):
             click = self.step(goal).brief()
-            self.assertEqual(self.step(goal, history=[click], left=.55).type, "done")
+            self.assertEqual(self.step(goal, history=[click], left=.5).type, "done")
             self.step(goal, run="s")
             self.assertNotEqual(self.step(goal, history=[click], left=.85, run="s").type, "done")
+            self.step(goal, run="g")
+            self.assertNotEqual(self.step(goal, history=[click], left=.6, run="g").type, "done")  # Docs' gallery
             menu = self.step("copy the title", next="right_click", run="r").brief()
             self.assertNotEqual(self.step("copy the title", history=[menu], left=.55, run="r").type, "done")
         self.assertNotEqual(self.step(goal, history=[click], left=.55, run="t").type, "done")  # no click of its own
 
+    def test_a_doubtful_click_is_judged_only_on_the_screen_it_led_to(self):
+        goal = "click the date of birth reference"
+        with patch("brain.agent.jev_only.mark", return_value=b"marked") as marked:
+            click = self.step(goal, zoomed=.52).brief()
+            self.assertNotEqual(self.step(goal, history=[click], left=.55).type, "done")
+            self.assertFalse(marked.called)  # no look at the screen it was planned on
+        # read done on the screen it led to, yet Jev is sure of another click for the line: that click, else done
+        click = self.step(goal, zoomed=.52, run="s").brief()
+        again = self.step(goal, history=[click], left=.1, run="s", looks=((.6, .6), (.6, .6)))
+        self.assertEqual(again.brief(), "click(600,600)")
+        click = self.step(goal, zoomed=.52, run="t").brief()
+        self.assertEqual(self.step(goal, history=[click], left=.1, run="t", zoomed=.52).type, "done")
+        # a click sure enough to place but not to settle its line is held open too; a sure one isn't
+        with patch("brain.agent.jev_only.mark", return_value=b"marked"):
+            click = self.step(goal, zoomed=.65, run="w").brief()
+            again = self.step(goal, history=[click], left=.1, run="w", looks=((.6, .6), (.6, .6)))
+            self.assertEqual(again.brief(), "click(600,600)")
+            click = self.step(goal, run="x").brief()
+            self.assertEqual(self.step(goal, history=[click], left=.1, run="x").type, "done")
+        # zooms that half see it: a look again first, then the click, doubted
+        wait = self.step(goal, zoomed=.45, history=["click(1,1)"], run="u").brief()
+        self.assertEqual(wait, "skill(wait {'s': 1.0})")
+        click = self.step(goal, zoomed=.45, history=["click(1,1)", wait], run="u")
+        self.assertEqual(click.brief(), "click(300,300)")
+        self.assertEqual(self.planner.doubted, click.brief())
+        self.assertEqual(self.step(goal, zoomed=.2, history=["click(1,1)", wait], run="v").type, "skill")
+
     def test_a_big_target_is_clicked_without_a_closer_look(self):
         action = self.step("click the third video", target=BIG, looks=(STRAY, STRAY))
         self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))
-        unsure = self.step("copy the header", next="copy", target=BIG, present=.54, looks=(STRAY, STRAY))
-        self.assertEqual(unsure.type, "fail")  # looked at closer: a stray look is outside the box, so Flash takes it
 
     def test_typed_text_is_a_run_of_the_goals_words(self):
         goal = 'type "hello world", then press enter'
@@ -207,9 +280,38 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual([a.type for a in actions], ["click", "type_text"])
         self.assertEqual(self.step("enter it in Name", next="fill", present=.3).type, "fail")
 
-    def test_step_with_no_visible_effect_fails(self):
-        self.assertEqual(self.step("open it", note="Screen unchanged; try something different.",
-                                   history=["click(600,300)"]).type, "fail")
+    def test_step_with_no_visible_effect_is_tried_once_more_then_fails(self):
+        unchanged = "Screen unchanged; try something different."
+        wait = LOOK_AGAIN.brief()
+        self.assertEqual(self.step("open it", note=unchanged, history=["click(300,300)"]).brief(), wait)
+        self.assertEqual(self.step("open it", history=["click(300,300)", wait]).brief(), "click(300,300)")  # the retry
+        self.assertEqual(self.step("open it", note=unchanged, history=["click(300,300)", wait, "click(300,300)"]).type,
+                         "fail")
+        # nor does it finish its line, however done the screen reads
+        self.assertEqual(self.step("open it", note=unchanged, history=["click(600,300)"], left=.1, run="d").brief(),
+                         wait)
+        # a paste that changed nothing clicks its place first, at once
+        pasted = self.plan("paste it in", next="paste", note=unchanged, history=["hotkey(CTRL+V)"], left=.1, run="e")
+        self.assertEqual([a.brief() for a in pasted], ["click(300,300)", "hotkey(CTRL+V)"])
+        self.assertEqual(self.step("paste it in", next="paste", note=unchanged, history=["hotkey(CTRL+V)", *[
+            a.brief() for a in pasted]], run="e").type, "fail")
+        # a copy that changed nothing selected nothing: it copies again at once, though Jev reads it done
+        copied = ["skill(select {'x': 0.405, 'y': 0.3})", "hotkey(CTRL+C)"]
+        again = self.plan("copy the header\npaste it in", next="paste", note=unchanged, history=copied, left=.1, run="f")
+        self.assertEqual([a.brief() for a in again], copied)
+        self.assertEqual(self.step("copy the header\npaste it in", next="paste", note=unchanged, history=copied * 2,
+                                   run="f").type, "fail")
+
+    def test_the_look_after_a_step_with_no_visible_effect_finishes_nothing_while_the_screen_stays(self):
+        page = np.full((300, 400, 3), 200, np.uint8)
+        still, moved = (cv2.imencode(".jpg", screen)[1].tobytes() for screen in (page, cv2.rectangle(
+            page.copy(), (0, 0), (400, 150), (40, 40, 40), -1)))
+        unchanged, wait = "Screen unchanged; try something different.", LOOK_AGAIN.brief()
+        for run, after, step in (("a", still, "click(300,300)"), ("b", moved, "done")):
+            self.assertEqual(self.step("open it", note=unchanged, history=["click(300,300)"], run=run,
+                                       image=still).brief(), wait)
+            self.assertEqual(self.step("open it", history=["click(300,300)", wait], left=.1, run=run,
+                                       image=after).brief(), step)
 
     def test_a_question_or_nonsense_is_left_to_flash(self):
         self.assertEqual(self.step("what is this page about?", complete=.9, question=.9).type, "fail")
@@ -217,10 +319,16 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("search up genghis khan", question=.6, run="s").type, "click")  # a step to take
 
     def test_the_same_input_is_never_repeated_right_after_it_ran(self):
-        self.assertEqual(self.step("open calculator, then click 7", history=["click(300,300)"]).type, "fail")
+        waited = [LOOK_AGAIN.brief()] * 2  # it looks again first: the screen may not show the step yet
+        self.assertEqual(self.step("open calculator, then click 7", history=["click(300,300)"]).type, "skill")
+        self.assertEqual(self.step("open calculator, then click 7", history=["click(300,300)", *waited]).type, "fail")
         self.assertEqual(self.step("open calculator, then click 7", history=["click(600,300)"]).type, "click")
-        typed = self.plan("search for cats", next="enter", history=["type_text('cats')", "hotkey(ENTER)"])
+        typed = self.plan("search for cats", next="enter", history=["type_text('cats')", "hotkey(ENTER)", *waited])
         self.assertEqual(typed[0].type, "fail")
+        sent = self.plan("open a template", next="enter", history=["hotkey(CTRL+L)", "type_text('docs.new\\n')"])
+        self.assertEqual(sent[0].brief(), LOOK_AGAIN.brief())
+        sent = self.plan("open a template", next="enter", history=["type_text('docs.new\\n')", *waited])
+        self.assertEqual(sent[0].type, "fail")
 
     def test_a_new_lines_click_where_the_last_line_clicked_is_no_repeat(self):
         self.assertEqual(self.step("go to google docs\ntype in hello", left=.1, history=["click(300,300)"]).type, "click")
@@ -233,8 +341,22 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(typed[-1].brief(), "type_text('Nicholas Rebelloza')")
 
     def test_copy_selects_the_boxed_text_and_paste_goes_where_the_focus_is(self):
-        copied = self.plan("copy the header", next="copy", target=BIG)
-        self.assertEqual([a.brief() for a in copied], ["skill(select {'x': 0.3, 'y': 0.3})", "hotkey(CTRL+C)"])
+        wide = {"box": {"left": .2, "right": .6, "top": .28, "bottom": .32}}
+        boxes = iter([BIG, wide])  # two looks at what is copied: the select goes just past the further box's end
+
+        def evaluate(image, questions, **_):
+            answers, size, padded = self.planner.jev.evaluate.return_value
+            return answers | ({"copied": next(boxes)} if "copied" in questions else {}), size, padded
+
+        self.planner.jev.evaluate.side_effect = evaluate
+        copied = self.plan("copy the header\npaste it in", next="copy", target=BOX, present=.25, looks=(STRAY, STRAY))  # doubted
+        self.assertEqual([a.brief() for a in copied], ["skill(select {'x': 0.605, 'y': 0.3})", "hotkey(CTRL+C)"])
+        asked = [c.kwargs["state"]["goal"] for c in self.planner.jev.evaluate.call_args_list if c.kwargs["label"] == "copy"]
+        self.assertEqual(asked, ["copy the header\npaste it in"] * 2)  # with the later line that names it
+        boxes = iter([BIG, wide])
+        rowed = self.plan("copy the header\npaste it in", next="copy", looks=((.5, .31), ON), run="z")
+        self.assertEqual(rowed[0].brief(), "skill(select {'x': 0.605, 'y': 0.31})")  # the closer look's row, in the box
+        self.planner.jev.evaluate.side_effect = None
         pasted = self.plan("paste it in", next="paste", run="s")
         self.assertEqual([a.brief() for a in pasted], ["hotkey(CTRL+V)"])
         unfocused = self.plan("paste it in", next="paste", focused=.2, target=BIG, run="t")
@@ -360,6 +482,14 @@ class JevOnlyTests(unittest.TestCase):
         opened = ["skill(open_app {'name': 'web browser'})", "hotkey(GUI)"]
         self.assertEqual(self.step(goal, **site, launcher=.9, history=opened).brief(), "type_text('web browser')")
         self.assertEqual(self.step(goal, **site, browser_front=.99, run="s").type, "click")  # in the browser in front
+        phone = dict(site, device="touch", app_present=.95)
+        self.assertEqual(self.step(goal, **phone, browser_front=.99, run="t").type, "click")
+        self.assertEqual(self.step(goal, **phone, run="u").brief(), "skill(open_app {'name': 'web browser'})")  # keys
+
+    def test_an_open_launcher_listing_the_app_leaves_its_line_to_click(self):
+        goal, opened = "open the calculator", ["skill(open_app {'name': 'calculator'})"]
+        self.assertEqual(self.step(goal, left=.28, launcher=.99, history=opened).type, "click")
+        self.assertEqual(self.step(goal, left=.28, history=opened, run="s").type, "done")
 
     def test_each_line_routes_again(self):
         first = "open up discord"

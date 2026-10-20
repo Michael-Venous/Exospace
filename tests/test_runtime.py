@@ -43,7 +43,7 @@ class HID:
 
     def send(self, command):
         self.commands.append(command)
-        if self.change and command["op"] != "release_all":
+        if self.change and command["op"] not in ("release_all", "move"):  # a moved pointer changes a few pixels
             self.capture.frame[:] = 160 if self.capture.frame[0, 0, 0] == 80 else 80
 
     def on_event(self, callback):
@@ -309,6 +309,18 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(self.hid.commands, [{"op": "release_all"}])
 
+    def test_a_spot_that_keeps_changing_during_inference_is_clicked_on_the_third_plan(self):
+        notes = []
+        def next_actions(image, ctx):
+            notes.append(ctx.note)
+            if "click" in [command["op"] for command in self.hid.commands]:
+                return Plan("ask", [Action("ask_user", question="Next?")], [])
+            self.capture.frame[:] = 210 if ctx.step % 2 else 60  # a preview playing under the target
+            return Plan("third video", [Action("click", x=.5, y=.5)], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.assertEqual(self.agent(self.fast).run("Click the third video", self.profile).status, "ask_user")
+        self.assertEqual(["discarded" in note for note in notes[:4]], [False, True, True, False])
+
     def test_a_screen_change_during_inference_keeps_a_done(self):
         def next_actions(image, ctx):
             self.capture.frame[:] = 210 if ctx.step % 2 else 60  # a video playing on
@@ -335,6 +347,29 @@ class RuntimeTests(unittest.TestCase):
         self.fast.next_actions.side_effect = next_actions
         self.assertEqual(self.agent(self.fast).run("Go to a site", self.profile).status, "ask_user")
         self.assertIn("click", [command["op"] for command in self.hid.commands])
+
+    def test_a_click_is_judged_on_the_screen_it_was_sent_to(self):
+        notes = []
+        def next_actions(image, ctx):
+            notes.append(ctx.note)
+            if ctx.step == 1:
+                self.capture.frame[80:] = 210  # the page finishes drawing away from the link the plan clicks
+                return Plan("link", [Action("click", x=.5, y=.1)], [])
+            return Plan("ask", [Action("ask_user", question="Next?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.hid.change = False  # the click does nothing
+        self.agent(self.fast).run("Click the link", self.profile)
+        self.assertIn("Screen unchanged", notes[1])
+
+    def test_the_pointer_leaves_the_page_after_a_click_or_scroll_unless_a_scroll_follows(self):
+        self.fast.next_actions.side_effect = [
+            Plan("scroll there", [Action("click", x=.5, y=.5), Action("scroll", dy=1)], []),
+            Plan("select", [Action("skill", name="select", args={"x": .2, "y": .2})], []),
+            Plan("ask", [Action("ask_user", question="Next?")], [])]
+        self.agent(self.fast).run("Copy the heading", self.profile)
+        ops = [c["op"] for c in self.hid.commands if c["op"] in ("click", "move", "scroll")]
+        self.assertEqual(ops, ["click", "scroll", "move", "click", "click", "click", "move"])
+        self.assertEqual([c["y"] for c in self.hid.commands if c["op"] == "move"], [16384] * 2)  # the right edge's middle
 
     def test_a_discarded_plan_does_not_count_toward_the_stall(self):
         def next_actions(image, ctx):
@@ -567,6 +602,14 @@ class RuntimeTests(unittest.TestCase):
         self.controller.execute(Action("scroll", dy=-2), self.profile)
         scrolls = [c for c in self.hid.commands if c["op"] == "scroll"]
         self.assertEqual(scrolls, [{"op": "scroll", "dy": 1}] * 15 + [{"op": "scroll", "dy": -1}] * 2)
+
+    def test_a_touch_scroll_drags_the_middle_of_the_screen_the_other_way(self):
+        phone = DeviceProfile("android", Rect(0, 0, 160, 100), "touch", 1)
+        self.controller.execute(Action("scroll", dy=5), phone)
+        self.controller.execute(Action("scroll", dy=-800), phone)
+        swipes = [(c["y1"], c["y2"]) for c in self.hid.commands if c["op"] == "swipe"]
+        self.assertEqual([round(y / 32767, 2) for swipe in swipes for y in swipe], [.65, .35, .05, .95])
+        self.assertFalse([c for c in self.hid.commands if c["op"] == "scroll"])
 
 
 class AwaitTargetTests(unittest.TestCase):

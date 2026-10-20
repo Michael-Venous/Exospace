@@ -18,7 +18,12 @@ from brain.types import Action, ActionError, DeviceProfile
 TYPE_CHUNK = 32  # chars per UART "type" command, so cancel lands quickly
 WAIT_S = 10.0  # longest block of the wait skill
 MAX_SCROLL = 15  # wheel notches per action; a pixel count (e.g. 800) would fling to the page end
+SWIPE_PER_NOTCH = 0.06  # screen heights a finger drags per notch on touch: 5 notches, 0.65 to 0.35, scrolled a page
 RETURN_HOLD_S = 0.2  # live video this long counts as back: at least one monitor poll, so it has seen it
+# Where the pointer waits between clicks: left on a page it hid text and drew Jev's box to it, "copy the header" boxed
+# the citation row under the I-beam for the one a footnote jump marked (3 of 6); with it erased, the marked one (9/9).
+# The right edge's middle: a scrollbar in a maximized window, no hot corner, no panel.
+PARK = (0.995, 0.5)
 
 _ASCII_FIXES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."})
 
@@ -78,6 +83,14 @@ class Controller:
             x1, y1 = _hid_xy(action.x, action.y)
             x2, y2 = _hid_xy(action.x2, action.y2)
             self._send({"op": "swipe", "x1": x1, "y1": y1, "x2": x2, "y2": y2, "ms": action.ms})
+        elif kind == "scroll" and touch:
+            # A phone takes no wheel (Samsung DeX scrolled nothing for 3x5 notches, 2026-10-19): a finger drags the
+            # page the other way. shortcut: through the screen's middle, as a wheel without a pointer; swipe at
+            # Jev's box if a panel away from the middle needs scrolling.
+            travel = max(-MAX_SCROLL, min(MAX_SCROLL, action.dy)) * SWIPE_PER_NOTCH / 2
+            x, y1 = _hid_xy(0.5, 0.5 + travel)
+            _, y2 = _hid_xy(0.5, 0.5 - travel)
+            self._send({"op": "swipe", "x1": x, "y1": y1, "x2": x, "y2": y2, "ms": 300})
         elif kind == "scroll":
             # A notch per report, as a wheel turns: a browser just started took the first scroll event as its
             # baseline, and 5 notches in one report scrolled nothing (4 of 5 went through one at a time, v19-t1).
@@ -106,6 +119,10 @@ class Controller:
         """Move without pressing a button; reuse the existing UART move command."""
         px, py = _hid_xy(x, y)
         self._send({"op": "move", "x": px, "y": py})
+
+    def park(self) -> None:
+        """Move the pointer off what the screen shows."""
+        self.hover(*PARK)
 
     def type_text(self, text: str) -> None:
         clean = _ascii(text)

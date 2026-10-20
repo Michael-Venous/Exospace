@@ -24,6 +24,9 @@ from brain.verification import visibly_changed
 STALL_S = 20.0  # no visible progress for this long ends the run (a demo must never look frozen)
 # A run survives these (PLAN.md §5.6): the target restarted, was replugged or blanked.
 RESUMABLE = frozenset({"target disconnected", "video lost"})
+# Plans in a row discarded for a change where they aimed before the spot counts as moving: a preview YouTube played
+# under the pointer discarded 48 clicks on "the third video" until the step limit (2026-10-19).
+MAX_DISCARDS = 2
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,7 @@ class Agent:
         recovery_used = False
         attempts: dict[tuple[str, ...], list[np.ndarray]] = {}  # each batch's starting screens
         settled_s: float | None = None  # how long the last action's settle took; None = settle first
+        discarded = 0  # plans in a row discarded for a screen change
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
         self.on_status("Working on your request…")
@@ -132,8 +136,12 @@ class Agent:
                     # A plan that only says done aims at nothing: a Short playing on is no reason to doubt it, and
                     # discarding each "done" Jev saw for "click the third video" left it scrolling (2026-10-19).
                     # Nor does a blind one: Brave's restored page drawing in discarded "Ctrl+L, youtube" (v5-t1).
+                    # What the input is judged against: Google's results finished drawing between the screen a
+                    # click on their Wikipedia link was planned on and the click, which did nothing, and that
+                    # drawing read as its effect (2026-10-19).
+                    sent_to = frame
                     if plan.actions and plan.actions[0].type != "done" and not plan.blind:
-                        latest = ctl.capture.grab()
+                        latest = sent_to = ctl.capture.grab()
                         if latest is None or is_blank(latest):
                             token.cancel("video lost")
                             token.check()
@@ -143,10 +151,12 @@ class Agent:
                         changed = (area_change(frame, latest, profile.rect, first.x, first.y)
                                    if first.x is not None and first.y is not None
                                    else frame_change(before, thumbnail(latest)))
-                        if not moving and changed >= ctl.settle.threshold:
+                        if not moving and changed >= ctl.settle.threshold and discarded < MAX_DISCARDS:
+                            discarded += 1
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
                             progress_at += times["t_model"]  # a plan never tried: its thinking time isn't a stall
                             continue
+                    discarded = 0
                     notes = list(plan.rejected)
                     acted = sent_input = False
                     action_failed = bool(plan.rejected)
@@ -177,6 +187,14 @@ class Agent:
                             try:
                                 ctl.execute(action, profile)
                                 acted = True
+                                # shortcut: a menu that opens on hover closes once the pointer leaves it; keep the
+                                # pointer there if clicks into hover menus need it.
+                                # A scroll next goes where the pointer is. One done leaves it too: the thumbnail
+                                # it ended on played its preview on YouTube (2026-10-19).
+                                if profile.input == "mouse" and (action.type in POINTER_ACTIONS | {"scroll"} or (
+                                        action.type, action.name) == ("skill", "select")) \
+                                        and [a.type for a in plan.actions[i + 1:i + 2]] != ["scroll"]:
+                                    ctl.park()
                                 # A wait sends no input, so a still screen after it is no failure.
                                 sent_input = sent_input or (action.type, action.name) != ("skill", "wait")
                                 self._emit_action(step, action, ok=True)
@@ -231,7 +249,7 @@ class Agent:
                         if after is None or is_blank(after):
                             token.cancel("video lost")
                             token.check()
-                        unchanged = not visibly_changed(frame, after)
+                        unchanged = not visibly_changed(sent_to, after)
                         unchanged_steps = unchanged_steps + 1 if unchanged else 0
                         if not unchanged and not action_failed:
                             progress_at = time.monotonic()
