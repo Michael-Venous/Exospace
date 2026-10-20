@@ -2,8 +2,10 @@
 
 import csv
 import tempfile
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -342,6 +344,11 @@ class RuntimeTests(unittest.TestCase):
             raise TimeoutError("provider timed out")
         with self.assertRaisesRegex(TimeoutError, "provider timed out"):
             self.cancel.run(timeout)
+
+    def test_a_steps_six_calls_run_at_once(self):
+        together = threading.Barrier(6, timeout=2)  # breaks if a call waits for another to finish
+        with ThreadPoolExecutor(6) as pool:
+            self.assertEqual(list(pool.map(lambda _: self.cancel.run(together.wait) >= 0, range(6))), [True] * 6)
 
     def test_cancellation_prevents_model_result_execution(self):
         def next_actions(image, ctx):
