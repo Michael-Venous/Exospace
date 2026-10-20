@@ -102,7 +102,13 @@ def run_skill(
     controller.type_text(app.strip())
     controller.wait_settled(react=profile.os not in INSTANT_SEARCH)
     controller.cancel.check()
+    frame = controller.capture.grab()
+    typed = thumbnail(frame) if frame is not None else None
     controller.hotkey(["ENTER"])
+    # Cinnamon's menu stayed up 1.2 s after Enter, and that differed from the screen before the launch: a check
+    # on it saw no app and launched LibreOffice again (2026-10-20). So first wait for the launcher to go.
+    if typed is not None:
+        controller.wait_for_change(APP_START_S, since=typed)
     # Apps take a second or two to map their window; the screen is "settled" before that, and a
     # check on that screen saw no app and launched it again (measured: three KCalc instances).
     # So wait until the screen differs from before the launch, not merely from the launcher.

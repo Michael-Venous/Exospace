@@ -30,6 +30,7 @@ class SkillTests(unittest.TestCase):
                     unittest.mock.call.hotkey(keys),
                     unittest.mock.call.type_text("Notes"),
                     unittest.mock.call.wait_settled(react=os != "linux"),
+                    unittest.mock.call.capture.grab(),
                     unittest.mock.call.hotkey(["ENTER"]),
                 ])
 
@@ -53,8 +54,11 @@ class SkillTests(unittest.TestCase):
     def test_open_app_waits_for_the_window_not_just_the_launcher(self):
         self.controller.capture.grab.return_value = np.zeros((10, 10, 3), np.uint8)
         run_skill("open_app", {"name": "Notes"}, self.profile("macos"), self.controller)
-        self.assertEqual(self.controller.method_calls[-2:], [
-            unittest.mock.call.wait_settled(), unittest.mock.call.wait_for_change(4.0, since=unittest.mock.ANY)])
+        calls = self.controller.method_calls
+        # the launcher must go before the app counts as shown: a menu still up after Enter differs from the desktop
+        self.assertEqual(calls[calls.index(unittest.mock.call.hotkey(["ENTER"])) + 1:], [
+            unittest.mock.call.wait_for_change(4.0, since=unittest.mock.ANY), unittest.mock.call.wait_settled(),
+            unittest.mock.call.wait_for_change(4.0, since=unittest.mock.ANY)])
 
     def test_wait_only_watches_the_screen(self):
         run_skill("wait", {}, self.profile("windows"), self.controller)

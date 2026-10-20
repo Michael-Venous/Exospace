@@ -280,7 +280,7 @@ class RuntimeTests(unittest.TestCase):
                                                                      args={"name": "video player"})], [])
         with patch("brain.agent.loop.visibly_changed", return_value=True), \
                 patch("brain.skills.APP_START_S", 0.01), \
-                patch.object(self.controller, "wait_for_change", side_effect=[True, False] * 3):
+                patch.object(self.controller, "wait_for_change", side_effect=[True, True, False] * 3):
             # each try flashed the launcher; no window came
             result = self.agent().run("See the video", self.profile)
         self.assertEqual((result.status, result.message, result.steps), ("fail", "Stuck repeating the same action", 3))
