@@ -133,6 +133,10 @@ class RuntimeTests(unittest.TestCase):
             return frame
         self.capture.grab = lambda: video(.25)
         self.assertLess(controller.wait_settled(), 1)  # a 5 s timeout otherwise
+        self.assertFalse(controller.changed(thumbnail(video(.25)), thumbnail(video(.25))))  # the video played on
+        page = video(.25)
+        page[300:] = 255
+        self.assertTrue(controller.changed(thumbnail(video(.25)), thumbnail(page)))  # the page around it changed
         self.capture.grab = lambda: video(.8)  # most of the screen moving is a page drawn or scrolled
         self.assertGreaterEqual(controller.wait_settled(timeout_s=.3), .3)
 

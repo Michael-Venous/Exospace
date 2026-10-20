@@ -157,7 +157,7 @@ class Agent:
                         first = plan.actions[0]
                         moved = (area_change(frame, latest, profile.rect, first.x, first.y) >= AREA_MOVED
                                  if first.x is not None and first.y is not None
-                                 else frame_change(before, thumbnail(latest)) >= ctl.settle.threshold)
+                                 else ctl.changed(before, thumbnail(latest)))
                         if not moving and moved and discarded < MAX_DISCARDS:
                             discarded += 1
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
@@ -186,7 +186,7 @@ class Agent:
                                 stamp = time.monotonic()
                                 latest = ctl.capture.grab()
                                 times["t_capture"] += time.monotonic() - stamp
-                                if latest is None or frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                                if latest is None or ctl.changed(before, thumbnail(latest)):
                                     notes.append("The screen changed mid-batch, so the rest was skipped. "
                                                  "Reground on this screen.")
                                     break

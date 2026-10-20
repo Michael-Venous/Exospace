@@ -75,6 +75,8 @@ class Controller:
         self.settle = settle
         # Thumbnail cells left out of change checks: learned on a run's first look and on each settle timeout.
         self.moving: np.ndarray | None = None
+        # Cells playing on their own when the last settle ended (a video in a still page), left out of `changed`.
+        self.playing: np.ndarray | None = None
 
     # -- actions -----------------------------------------------------------
 
@@ -205,6 +207,7 @@ class Controller:
                             and now - still_since >= stable_s:
                         if not react:  # nothing of ours moved it
                             self._learn(diffs)
+                        self.playing = playing
                         return elapsed
                 else:
                     changed = changed or prev is not None
@@ -212,6 +215,7 @@ class Controller:
                 prev = thumb
             if elapsed >= (cfg.timeout_s if timeout_s is None else timeout_s):
                 self._learn(diffs)
+                self.playing = None
                 return elapsed
             self.cancel.sleep(cfg.poll_s)
 
@@ -232,6 +236,11 @@ class Controller:
         if moving is None or moving.all():
             return frame_change(a, b)
         return float(np.mean(cv2.absdiff(a, b)[~moving]))
+
+    def changed(self, a: np.ndarray, b: np.ndarray) -> bool:
+        """Whether the screen changed from thumbnail `a` to `b` beyond what moves on its own: a YouTube ad preview
+        playing above the results discarded each scroll planned to reach "the third video" (2026-10-20)."""
+        return self._change(a, b, self.playing) >= self.settle.threshold
 
     def wait_for_change(self, timeout_s: float | None = None, since: np.ndarray | None = None) -> bool:
         """Block until the screen differs from `since` (a thumbnail; default: now), as a load,
