@@ -195,8 +195,8 @@ one"). The faster models are unsafe on messy speech. Flash 3.8 stays the planner
 rows differ only by sampling noise (21 vs 25 of 36). Direct commands don't wait on any LLM.
 
 ### Vague speech and the Jev → Flash hand-off (study 9, 2026-10-20: built, not yet run)
-**Results: none yet.** Everything in this section is a hypothesis read from the code, to be confirmed or
-dropped by the runs below; measured numbers go in a results table here, kept apart from it.
+**Hypotheses** (read from the code) are marked as such below; **measured results** are in the
+"Measured" subsections, with their run dates and raw folders.
 
 Reported live: Jev's own steps are fast on plain commands, but vague or composed requests fail there,
 and the Flash fallback takes 5-10 s. **Hypothesis (from `jev_first.py`, `jev_only.py`, `jev_flash.py`):**
@@ -231,6 +231,88 @@ done
 PYTHONPATH=. .venv/bin/python -m bench.arch.e2e_study --scenario vague --router <fastest-good model> \
     --executors rewrite-parallel runtime-race                                  # the matrix's pick in the runtime
 ```
+
+#### Measured: per-call matrix (2026-10-20, `model_matrix.py`, `work/arch/matrix/rows.json`)
+2,340 calls, all models interleaved, 2 repeats; OpenRouter routed to the lowest-latency provider. Real
+OpenRouter cost for the whole matrix: **$1.30** (pilots: $0.03 and $0.07); Jev and Google API calls are billed
+separately. Ground = 27 described controls × (1x + small-target canvas) × 2 = 100; wrong = a point outside
+the control (a misclick), refused = no point. Rewrite = 12 requests × 2 (`unsafe` here is only ever an added
+"click Send" for "tell john…", which Jev's per-step irreversible check holds at runtime). Plan = study 3's
+first step, grounded by Jev.
+
+| Model (effort) | Ground hit / wrong / refused | Rewrite ok | Plan ok / wrong | p50 / p90 s | $ / 100 calls |
+|---|---|---|---|---|---|
+| **Jev locate + 2 zooms** (gates 0.85 / 0.6) | 69 / **0** / 31 | – | – | **0.46 / 0.61** | (TypeSafe) |
+| **Gemini 3.8 Flash (minimal)** | **100 / 0** / 0 | 21/24 | 25/36 / 8 | 3.04 / 4.74 | 0.18 |
+| Gemini 3.7 Flash (minimal) | **100 / 0** / 0 | 22/24 | 21/36 / 10 | 2.98 / 3.79 | 0.16 |
+| Gemini 3.8 Flash (low; the runtime's) | 98 / 2 / 0 | 21/24 | 20/36 / 9 | 3.06 / 5.01 | 0.18 |
+| Gemini 3.8 Flash, Google API (low) | 97 / 3 / 0 | 20/24 | 19/36 / 11 | 3.14 / 4.63 | – |
+| GPT-6 Luna (off) | 98 / 2 / 0 | 17/21 (3 JSON errors) | **27/36 / 4** | 4.12 / 6.82 | 0.01 |
+| **Gemini 3.5 Flash-Lite (minimal)** | 91 / 9 / 0 | **24/24** | 22/36 / 9 | **1.08 / 1.69** | 0.07 |
+| Gemini 3.5 Flash-Lite, Google API | 92 / 8 / 0 | 20/24 | 23/36 / 8 | 1.09 / 1.48 | – |
+| Perceptron Mk1.5 (off) | 92 / 8 / 0 | 6/24 | 20/35 / 5 | 0.90 / 1.81 | 0.04 |
+| Gemini 3.1 Flash-Lite (off) | 88 / 12 / 0 | 22/24 | 20/36 / 11 | 1.12 / 2.14 | 0.06 |
+| Gemma 4 26B (off) | 74 / 26 / 0 | 11/24 | 21/36 / 8 | 1.20 / 4.40 | 0.01 |
+| GLM-5.3-FlashX (minimal) | 56 / 44 / 0 | 19/24 | 20/35 / 9 | 1.79 / 3.54 | 0.04 |
+| Qwen 3.8 Omni Flash (off) | 50 / 0 / 50 | 15/24 | 22/36 / 7 | 2.89 / 8.30 | 0.03 |
+| DeepSeek V4.1 Flash (off) | 36 / 0 / 64 | 21/24 | 18/36 / 5 | **0.57** / 2.33 | 0.01 |
+| Claude Haiku 5.5 (off) | 35 / 65 / 0 | 18/24 | 18/36 / 13 | 3.82 / 5.29 | 0.03 |
+
+- Jev is the only fast grounder that never misclicked (0 wrong in 100), but at the planner's gates it
+  refused 31: BIOS tabs, Blender's workspace tabs, phone icons and two YouTube thumbnails, every repeat.
+- Only Gemini 3.8 / 3.7 Flash grounded everything, at ~3 s a call. Flash-Lite 3.5 is ~1 s but its 9
+  misclicks were all on the small-target canvas. Haiku, GLM and Gemma misclick too often to point.
+- **Jev first, another model only where Jev refuses** (derived from the same rows: each item's Jev call,
+  then the fallback model's own call on that item, latencies added; not yet run as one pipeline):
+
+  | Grounding chain | Hit / wrong of 100 | Mean / p90 s |
+  |---|---|---|
+  | **Jev → Perceptron Mk1.5** | **100 / 0** | **0.69 / 1.20** |
+  | Jev → Gemini 3.5 Flash-Lite | 95 / 5 | 0.75 / 1.25 |
+  | Jev → Gemini 3.8 Flash (minimal) | 100 / 0 | 1.56 / 4.10 |
+  | Jev → GPT-6 Luna | 100 / 0 | 1.53 / 4.23 |
+
+  Perceptron alone misclicked 8 of 100 (small targets); behind Jev it only saw the 31 Jev refused and hit all.
+- Planning quality is flat (18-27 of 36 for every model): the first stage is not where models differ.
+- Pilot (dropped): Moondream 3.1 returned no JSON; Ling 3.0 Flash VL was rate-limited upstream (16/16 429);
+  Gemini 3.8 / 3.7 Flash, 3.5 Flash-Lite and GLM-5.3-FlashX refuse reasoning off on OpenRouter (400).
+
+#### Measured: end-to-end on `vague.py` (2026-10-20, `work/arch/e2e_vague*/report.json`)
+12 segments × 2 repeats each, interleaved, Gemini 3.8 Flash (low) through Google as the runtime calls it;
+plan-ground+pointer ran in the next half hour (not interleaved with the others). Every run keeps its Jev
+trace (`trace.json`).
+
+| Executor | Success | Unsafe | Planned ok | Planned wall (18 runs) | of it in LLM calls | LLM calls | Jev calls |
+|---|---|---|---|---|---|---|---|
+| **runtime race (Jev-first + Flash)** | **23/24** | 0 | **17/18** | **218 s** | 133 s (61%) | 40 | 179 |
+| rewrite-parallel | 22/24 | 0 | 16/18 | 272 s | 108 s (40%) | 33 | 479 |
+| plan-ground + Perceptron pointer | 19/24 | 0 | 13/18 | 269 s | 158 s (59%) | 40 | 148 |
+| plan-ground | 15/24 | 0 | 9/18 | 297 s | 197 s (66%) | 48 | 156 |
+| `EXECUTOR=jev` (Jev steps, Flash one step) | 14/24 | 0 | 8/18 | 226 s | 50 s (22%) | 15 | 172 |
+
+- **The hypotheses above did not hold on this fixture.** Jev-first + Flash completed 17 of 18 vague,
+  multi-app and screen-change segments, popup, slow load and layout shift included; neither candidate
+  beat it. Its cost is time: 61% of a planned request's wall time is Flash (3.3 s a call, ~2.2 calls).
+- Rewriting the words did not keep Jev on its own steps: it chose "stuck" on clear lines and its step
+  picking took 2.7× the Jev calls (smoke trace: "go to youtube.com" read stuck 0.42-0.52).
+- Plan-ground fails where Jev refuses a target (the matrix's refused thumbnails); the Perceptron
+  pointer recovers 4 of those 6 runs. Race survives them through Flash's visual fallback, at a Flash call each.
+- Both draft segments ("tell john…", "write back to alex…") were asked about before drafting in nearly
+  every run: triage reads a composed reply as a send. Safe, but the reply is never drafted until "yes".
+- `EXECUTOR=jev` is not faster per request here: when Jev stops, the request ends (8/18).
+
+Same fixture with **Gemini 3.5 Flash-Lite** as the language model (interleaved pair, 2 repeats,
+`work/arch/e2e_vague-gemini-3.5-flash-lite/`):
+
+| Executor, model | Success | Unsafe | Planned ok | Planned wall | LLM s / call |
+|---|---|---|---|---|---|
+| runtime race, 3.8 Flash (above) | **23/24** | 0 | **17/18** | 218 s | 3.31 |
+| runtime race, 3.5 Flash-Lite | 20/24 | 0 | 14/18 | **166 s** (−24%) | 1.49 |
+| plan-ground + pointer, 3.5 Flash-Lite | 20/24 | 0 | 14/18 | **152 s** (−30%) | 1.29 |
+
+- Flash-Lite cut each call from 3.3 to 1.5 s, but 3 of race's 4 misses were a false "done": after a typed
+  YouTube search URL the fixture showed the home page, and Jev's steps-aware check passed "put on something
+  chill" at 0.64 with nothing playing (the HANDOFF "false done" issue, triggered more often by Lite's plans).
 
 ### Streaming (study 2, `stream_study.py`)
 - Schema-enforced streaming is valid but only ~0.4 s faster (2.38 vs 2.79 s), because Flash

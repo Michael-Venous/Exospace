@@ -18,7 +18,7 @@ from pathlib import Path
 
 from bench.arch.triage_executor import RaceExecutor, RaceLedgerExecutor, RaceRelaxedExecutor, TriageExecutor, TriageLedgerExecutor
 from bench.arch import correction, injection, studio, vague, workstation
-from bench.arch.plan_ground import PlanGroundExecutor
+from bench.arch.plan_ground import PlanGroundExecutor, PlanGroundPointerExecutor
 from bench.arch.rewrite import ParallelRewriteExecutor, RewriteExecutor, RewriteOnStuckExecutor
 from bench.arch.router import routed
 from brain.agent.executor import ModelExecutor
@@ -78,6 +78,7 @@ EXECUTORS = {"jev-flash (current)": JevFlashExecutor, "triage-first": TriageExec
              "runtime-jev-only": runtime_as("jev-only"),
              "rewrite": RewriteExecutor, "rewrite-parallel": ParallelRewriteExecutor,
              "rewrite-on-stuck": RewriteOnStuckExecutor, "plan-ground": PlanGroundExecutor,
+             "plan-ground+pointer": PlanGroundPointerExecutor,
              "runtime-direct-gemini": direct_gemini, "runtime-direct-zai": direct_zai}
 
 
@@ -163,6 +164,8 @@ def main() -> None:
     scenario = SCENARIOS[args.scenario]
     out = OUT if args.scenario == "workstation" else OUT.with_name(f"e2e_{args.scenario}")
     base = Config.load()
+    if args.model != parser.get_default("model"):
+        out = out.with_name(f"{out.name}-{args.model}")
     if args.router:
         base = routed(base, args.router, args.effort)
         out = out.with_name(f"{out.name}-{args.router.replace('/', '_')}-{args.effort or 'off'}")

@@ -149,7 +149,7 @@ def _grounder(plans: list[dict], found: bool = True, done: float = 0.9, risky: f
                           assess=lambda *a, **k: ({"irreversible": risky}, {}), evaluate=None)
     flash = SimpleNamespace(model=SimpleNamespace(generate=lambda *a, **k: next(calls)))
     planner.__dict__.update(flash=flash, jev=jev, cancel=CancelToken(), approved_run=lambda ctx: False,
-                            _looks=ThreadPoolExecutor(max_workers=2), _run=None, _steps=[], _done_when="",
+                            _looks=ThreadPoolExecutor(max_workers=2), pointer=None, _run=None, _steps=[], _done_when="",
                             _executed=[], _last=None, _plans=0, _notes=set())
     return planner
 
@@ -175,6 +175,12 @@ class PlanGroundTests(unittest.TestCase):
         planner = _grounder([{"steps": [{"do": "click", "target": "the Reply button"}], "done_when": ""}])
         action = planner.next_actions(SCREEN, _ctx("reply")).actions[0]
         self.assertEqual((action.type, action.x, action.y), ("click", 0.4, 0.2))
+
+    def test_a_target_jev_refuses_is_placed_by_the_pointer_model(self):
+        planner = _grounder([{"steps": [{"do": "click", "target": "the third video"}], "done_when": ""}], found=False)
+        planner.pointer = SimpleNamespace(call=lambda *a: ({"found": True, "x": 250, "y": 600}, {}))
+        action = planner.next_actions(SCREEN, _ctx("play the third video")).actions[0]
+        self.assertEqual((action.type, action.x, action.y), ("click", 0.25, 0.6))
 
     def test_a_target_jev_cannot_find_replans_and_the_plans_run_out(self):
         step = {"steps": [{"do": "click", "target": "a ghost"}], "done_when": ""}

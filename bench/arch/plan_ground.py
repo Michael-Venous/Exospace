@@ -11,10 +11,12 @@ again only then, with the executed steps, on the screen as it is.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
+from bench.arch.openrouter_study import OpenRouterJSON
 from brain.agent.executor import Plan, StepContext, context_prompt
 from brain.agent.jev_first import JevFirstPlanner
 from brain.agent.jev_flash import COMPLETION_GATE
@@ -47,6 +49,12 @@ SCHEMA = {"type": "object", "properties": {
         "keys": {"type": "array", "items": {"type": "string"}}, "dy": {"type": "integer"}}, "required": ["do"]}},
     "done_when": {"type": "string"}, "ask": {"type": "string"}}, "required": ["steps", "done_when"]}
 POINTER = {"click", "double_click", "right_click"}
+# Where Jev refuses a target, a pointing model places it: in study 9's matrix Jev refused 31 of 100 controls
+# (never misclicked), and Perceptron Mk1.5 hit all 31 of those (0.69 s mean for the chain).
+POINT_PROMPT = ('Find {target}. Reply with JSON {{"found": true|false, "x": 0-1000, "y": 0-1000}}: the centre of that '
+                "control, x from the left edge and y from the top edge of the image; found false if it isn't visible.")
+POINT_SCHEMA = {"type": "object", "properties": {"found": {"type": "boolean"}, "x": {"type": "number"},
+                                                 "y": {"type": "number"}}, "required": ["found"]}
 MAX_STEPS = 12
 MAX_PLANS = 4  # the first plan and three replans, then the request fails
 
@@ -55,9 +63,11 @@ class PlanGroundPlanner(JevFirstPlanner):
     """Race's planner slot: the same Jev client, language model, OS check and approval binding."""
 
     def __init__(self, cfg: Config, cancel: CancelToken,
-                 approved_run: Callable[[StepContext], bool] | None = None) -> None:
+                 approved_run: Callable[[StepContext], bool] | None = None, pointer: str = "") -> None:
         super().__init__(cfg, cancel, approved_run)
         self.cancel, self.approved_run = cancel, approved_run
+        # The OpenRouter model that places a target Jev refused; empty: a refused target replans.
+        self.pointer = OpenRouterJSON(pointer, os.environ["OPENROUTER_API_KEY"], "", fastest=True) if pointer else None
         self._looks = ThreadPoolExecutor(max_workers=2, thread_name_prefix="plan-ground")
         self._run: str | None = None
         self._steps: list[dict] = []
@@ -147,6 +157,8 @@ class PlanGroundPlanner(JevFirstPlanner):
             if point is not None:
                 point = self.cancel.run(lambda: refine(self.jev, image, target, point, run_id=ctx.run_id,
                                                        step=ctx.step)) or point
+            if point is None and self.pointer is not None:
+                point = self.cancel.run(lambda: self._point(image, target))
             if point is None:
                 return None, f'Jev could not find "{target}" on this screen'
             actions = [Action(kind, x=point[0], y=point[1])]
@@ -167,6 +179,14 @@ class PlanGroundPlanner(JevFirstPlanner):
         held = risky is not None and self.cancel.run(risky.result)
         return actions, _describe(step) if held else ""
 
+    def _point(self, image: bytes, target: str) -> tuple[float, float] | None:
+        data, _ = self.pointer.call(shrink(image), POINT_PROMPT.format(target=target),
+                                    "You locate controls in screenshots.", POINT_SCHEMA)
+        self.jev.trace.append({"label": "pointer", "target": target, "reply": data})
+        if not data.get("found") or "x" not in data or "y" not in data:
+            return None
+        return min(max(float(data["x"]) / 1000, 0.0), 1.0), min(max(float(data["y"]) / 1000, 0.0), 1.0)
+
     def _irreversible(self, image: bytes, ctx: StepContext, step: dict) -> bool:
         values, _ = self.jev.assess(image, {}, {}, run_id=ctx.run_id, step=ctx.step, request=ctx.goal,
                                     proposal=[step], irreversible=True)
@@ -178,6 +198,8 @@ class PlanGroundPlanner(JevFirstPlanner):
 
     def close(self) -> None:
         self._looks.shutdown(wait=False, cancel_futures=True)
+        if self.pointer is not None:
+            self.pointer.client.close()
         super().close()
 
 
@@ -189,8 +211,14 @@ def _describe(step: dict) -> str:
 class PlanGroundExecutor(RaceExecutor):
     """Race (Jev triage + planner at once) with the plan-ground planner in the planner's place."""
 
+    pointer = ""
+
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
         super().__init__(replace(cfg, executor="race", jev_first=True), cancel)
         self.planner.close()
-        self.planner = PlanGroundPlanner(cfg, cancel, self.approved_run)
+        self.planner = PlanGroundPlanner(cfg, cancel, self.approved_run, pointer=self.pointer)
         self.jev = self.planner.jev
+
+
+class PlanGroundPointerExecutor(PlanGroundExecutor):
+    pointer = "perceptron/perceptron-mk1.5"
