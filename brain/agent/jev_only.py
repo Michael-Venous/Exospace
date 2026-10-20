@@ -250,6 +250,9 @@ class JevOnlyPlanner:
         self.screen: bytes | None = None  # the last step's screen
         self.planned: tuple[int, list[str]] = (0, [])  # the history's length then, and the steps planned on it
         self.idle = False  # the last step looked again and the screen stayed as it was
+        # Launches the skill refused (no launcher showed): never in the history, each was tried again, 2 s apiece
+        # ("open google" three times on a desktop whose launcher key showed only the panel, 2026-10-20).
+        self.refused: list[str] = []
 
     @property
     def current_line(self) -> str:
@@ -258,7 +261,8 @@ class JevOnlyPlanner:
         return lines[self.line].removeprefix(CORRECTION) if self.line < len(lines) else self.goal
 
     def acknowledge(self, executed: bool) -> None:
-        pass  # no plan cursor: every step is chosen afresh from the screen and the history
+        if not executed:
+            self.refused += [step for step in self.planned[1] if step.startswith("skill(open_app ")]
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
         plan = self._plan(image, ctx)
@@ -271,6 +275,7 @@ class JevOnlyPlanner:
             self.run_id, self.line, self.since = ctx.run_id, self.finished.count("\n") + 1 if continued else 0, 0
             self.prev, self.routed, self.clicked, self.seen, self.typed, self.unmoved = 0, False, None, False, None, None
             self.doubted = self.screen = None
+            self.refused = []
             if not ctx.goal.startswith(self.goal + "\n"):
                 self.opened = None  # a new request: what an earlier one opened isn't its app
         # A run that failed starts again with the words said since joined on, its history empty: "make a new tab"
@@ -414,9 +419,9 @@ class JevOnlyPlanner:
                 or site and probability(answers["browser_front"].get("noul")) >= GATE
             # The demo phone ignored taps; its keyboard launcher works. Not for the app in front: Brave was launched
             # again for each line of "search for horses and click the third video" on a DeX phone (2026-10-19).
-            if ctx.profile.input == "touch" and name and not fits and launch.brief() not in steps:
+            if ctx.profile.input == "touch" and name and not fits and launch.brief() not in steps + self.refused:
                 return Plan("Open the app", [launch], [], blind=True)
-            if (not fits or elsewhere) and again and launch.brief() not in steps:
+            if (not fits or elsewhere) and again and launch.brief() not in steps + self.refused:
                 return wait or Plan("Open the app again", [launch], [], blind=True)
             # Only a request that names an app or a site is routed: gibberish ("asdkjh qwe zxcv") opened the launcher.
             if not fits and name:
@@ -774,15 +779,15 @@ class JevOnlyPlanner:
             # when the app box is a desktop icon if those get missed.
             return Plan("Switch to the app for the request", [switch], [])
         # Blind: a launch goes by name, so a Short playing behind it discarded "open up discord" twice (2026-10-19).
-        if launch.brief() not in steps:
+        if launch.brief() not in steps + self.refused:
             return Plan("Open the app", [launch], [], blind=True)
         # The app just launched is still coming: LibreOffice's splash ended the launch's wait and its window drew
         # after a look at the bare desktop, which pressed the launcher key over it (2026-10-20).
         if _just_opened(ctx.history) and (look := self._look_again(ctx)):
             return look
-        if launcher.brief() not in steps:
+        if launcher.brief() not in steps and not self.refused:  # its key just showed no launcher
             return Plan("Open the app launcher", [launcher], [], blind=True)
-        if ctx.history[-1] != WAIT.brief():  # the launcher, its results or the chosen app still appearing
+        if ctx.history[-1:] != [WAIT.brief()]:  # the launcher, its results or the chosen app still appearing
             return Plan("Waiting for the app", [WAIT], [])
         return _fail("no app suited to the request is visible")
 

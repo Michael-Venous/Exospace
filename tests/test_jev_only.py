@@ -471,6 +471,13 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step(goal, fits=.1, app_name=named,
                                    history=opened + ["hotkey(GUI)", "skill(wait {'s': 3.0})"]).type, "fail")
 
+    def test_a_launch_whose_launcher_never_showed_is_not_tried_again(self):
+        goal = "find a video about horses"
+        named = str(spans(goal, 250).index("video"))
+        self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), "skill(open_app {'name': 'video'})")
+        self.planner.acknowledge(False)  # the skill raised: no launcher showed, so it isn't in the history
+        self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), "skill(wait {'s': 3.0})")
+
     def test_launcher_is_searched_for_the_app_the_goal_names_before_an_icon_is_clicked(self):
         goal = "open up camera and take a picture"
         search = dict(fits=.1, app_name=str(spans(goal, 250).index("camera")), launcher=.9, app_present=.95,
