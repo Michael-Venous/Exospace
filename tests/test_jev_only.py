@@ -403,9 +403,13 @@ class JevOnlyTests(unittest.TestCase):
         self.assertTrue(self.last.needs_planner)  # text to write goes to Flash even without hand-off
         self.assertEqual(self.step("open camera", composed=.9).type, "click")  # a tap needs no text
 
-    def test_a_kind_of_app_read_as_a_website_opens_its_app_when_the_browser_has_no_words_to_go_by(self):
+    def test_a_kind_of_app_read_as_a_website_opens_its_app_when_the_browser_route_dead_ends(self):
         goal, kind = "open up a spreadsheet", str(spans("open up a spreadsheet").index("spreadsheet"))
-        self.assertEqual(self.step(goal, site=.92, browser_front=1, app_name=kind, next="new_tab").brief(), "hotkey(CTRL+T)")
+        routed = dict(site=.92, browser_front=1, app_name=kind)
+        self.step(goal, run="s", **routed, next="new_tab")
+        unseen = self.step(goal, run="s", next="stuck", question=.9, complete=.9, history=["hotkey(CTRL+T)"])
+        self.assertEqual(unseen.brief(), "skill(open_app {'name': 'spreadsheet'})")  # whatever dead end
+        self.assertEqual(self.step(goal, **routed, next="new_tab").brief(), "hotkey(CTRL+T)")
         typed = dict(composed=.6, next="type", history=["hotkey(CTRL+T)"])
         self.assertEqual(self.step(goal, **typed).brief(), "skill(open_app {'name': 'spreadsheet'})")
         self.assertEqual(self.step(goal, **typed | {"history": ["hotkey(CTRL+T)", self.last.actions[0].brief()]}).type,

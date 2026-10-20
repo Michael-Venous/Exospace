@@ -291,6 +291,11 @@ class JevOnlyPlanner:
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
         plan = self._plan(image, ctx)
+        # A kind of app read as a website has its app to open: "open up a spreadsheet" with Google Docs in front read
+        # a site (0.92), and on Chrome's new tab Jev had no words of the request to type, or no control (2026-10-20).
+        launch = Action("skill", name="open_app", args={"name": self.kind})
+        if plan.reasoning == FAILED and self.kind and launch.brief() not in ctx.history[self.since:] + self.refused:
+            plan = Plan("Open the app the line names", [launch], [], blind=True)
         self.screen, self.planned = image, (len(ctx.history), [action.brief() for action in plan.actions])
         return plan
 
@@ -399,11 +404,6 @@ class JevOnlyPlanner:
             # "go to google docs" (0.55) when the address bar takes a site's name as the request gives it.
             # "work out 12 times 9": Jev pressed keypad keys one per step and missed one (41.7 s; Flash typed
             # "12*9=" in one step, 12.2 s).
-            # A kind of app read as a website has its app to open: "open up a spreadsheet" with Google Docs in front
-            # read a site (0.92), and Chrome's new tab had no words of the request to type (2026-10-20).
-            launch = Action("skill", name="open_app", args={"name": self.kind})
-            if self.kind and launch.brief() not in steps + self.refused:
-                return Plan("Open the app the line names", [launch], [], blind=True)
             return _fail("the rest needs text the request doesn't give word for word", planner=True)
         if finished:
             return self._next_line(image, ctx, lines, "Jev verified the completed goal")
