@@ -392,6 +392,12 @@ class JevOnlyTests(unittest.TestCase):
         opening = self.step("paste it in", next="paste", focused=.2, history=["click(500,300)"], run="u")
         self.assertEqual(opening.brief(), "skill(wait {'s': 1.0})")  # the click's document may still be opening
 
+    def test_an_app_named_with_only_the_desktop_showing_is_opened_by_name(self):
+        terminal = str(spans("open a terminal").index("terminal"))
+        self.assertEqual(self.step("open a terminal", fits=.53, window=.06, app_name=terminal).brief(),
+                         "skill(open_app {'name': 'terminal'})")
+        self.assertEqual(self.step("open a terminal", fits=.53, app_name=terminal, run="s").type, "click")
+
     def test_a_line_begun_on_enter_looks_again_before_it_scrolls(self):
         goal = "search for horses\nUser correction: click the third video"
         self.planner.run_id, self.planner.line, self.planner.since = "r", 1, 1

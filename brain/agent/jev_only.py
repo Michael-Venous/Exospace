@@ -470,8 +470,10 @@ class JevOnlyPlanner:
             search = self._search(answers, ctx, name, steps)
             if search:
                 return search
-            fits = probability(answers["fits"].get("noul")) >= GATE \
-                or site and probability(answers["browser_front"].get("noul")) >= GATE
+            # Nothing is in front with only the desktop showing: "open a terminal" there fitted 0.53, Jev boxed VS Code
+            # beside the terminal's panel icon, its zooms the terminal, and the line failed (2026-10-20).
+            fits = (probability(answers["fits"].get("noul")) >= GATE
+                    or site and probability(answers["browser_front"].get("noul")) >= GATE) and not (closed and name)
             # The demo phone ignored taps; its keyboard launcher works. Not for the app in front: Brave was launched
             # again for each line of "search for horses and click the third video" on a DeX phone (2026-10-19).
             if ctx.profile.input == "touch" and name and not fits and launch.brief() not in steps + self.refused:
