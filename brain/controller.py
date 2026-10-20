@@ -165,11 +165,14 @@ class Controller:
 
     # -- settling ----------------------------------------------------------
 
-    def wait_settled(self, loading: bool = False, react: bool = True, timeout_s: float | None = None) -> float:
+    def wait_settled(self, loading: bool = False, react: bool = True, timeout_s: float | None = None,
+                     since: np.ndarray | None = None) -> float:
         """Block until the screen stops changing. Returns seconds waited. `loading`: the last input may
         have started a page load, so the screen must stay still longer. `react`: input was just sent, so a
         still screen may only be slow to react; False skips that wait (a run's first look). `timeout_s`
-        overrides the config's."""
+        overrides the config's. `since`: a thumbnail from before the input; a first look that already
+        differs from it has seen the reaction (a tab closed by Ctrl+W showed by then, and the wait for one
+        held ~0.45 s on a still screen, 2026-10-20)."""
         cfg = self.settle
         stable_s = cfg.load_stable_s if loading else cfg.stable_s
         react_s = (max(cfg.react_s, cfg.load_react_s) if loading else cfg.react_s) if react else 0.0
@@ -187,6 +190,8 @@ class Controller:
                 thumb = thumbnail(frame)
                 if prev is not None:
                     diffs = [*diffs[1 - MOTION_POLLS:], cv2.absdiff(prev, thumb) >= MOVING_DIFF]
+                if prev is None and since is not None:
+                    changed = self._change(since, thumb) >= cfg.threshold
                 if prev is not None and self._change(prev, thumb) < cfg.threshold:
                     still_since = still_since if still_since is not None else now
                     if elapsed >= (cfg.min_s if changed else max(cfg.min_s, react_s)) \

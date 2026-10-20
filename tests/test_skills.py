@@ -29,7 +29,7 @@ class SkillTests(unittest.TestCase):
                     unittest.mock.call.capture.grab(),
                     unittest.mock.call.hotkey(keys),
                     unittest.mock.call.type_text("Notes"),
-                    unittest.mock.call.wait_settled(),
+                    unittest.mock.call.wait_settled(react=os != "linux"),
                     unittest.mock.call.hotkey(["ENTER"]),
                 ])
 

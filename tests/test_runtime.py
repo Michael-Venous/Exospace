@@ -17,6 +17,7 @@ from brain.agent.orchestrator import Guidance, Orchestrator
 from brain.agent.prompts import DONE_PROMPT, SYSTEM_PROMPT
 from brain.app import _connected_profile
 from brain.cancel import Cancelled, CancelToken
+from brain.capture import thumbnail
 from brain.controller import Controller, SettleConfig
 from brain.device import detect_profile
 from brain.errors import describe
@@ -95,6 +96,13 @@ class RuntimeTests(unittest.TestCase):
             min_s=0, react_s=.3, load_stable_s=0, load_react_s=0, stable_s=0, timeout_s=1, poll_s=.001))
         self.assertLess(controller.wait_settled(react=False), .1)
         self.assertGreaterEqual(controller.wait_settled(), .3)  # input just sent may be slow to show
+
+    def test_a_reaction_already_shown_needs_no_wait_for_one(self):
+        controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(
+            min_s=0, react_s=.3, load_stable_s=0, load_react_s=0, stable_s=0, timeout_s=1, poll_s=.001))
+        still = thumbnail(self.capture.grab())
+        self.assertGreaterEqual(controller.wait_settled(since=still), .3)  # nothing shown yet
+        self.assertLess(controller.wait_settled(since=255 - still), .1)  # a tab closed before the first look
 
     def test_a_moving_screen_settles_at_the_given_timeout(self):
         controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(timeout_s=5, poll_s=.001))
