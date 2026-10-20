@@ -7,6 +7,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 
+import cv2
 import numpy as np
 
 from brain.cancel import Cancelled, CancelToken
@@ -24,6 +25,11 @@ RETURN_HOLD_S = 0.2  # live video this long counts as back: at least one monitor
 # the citation row under the I-beam for the one a footnote jump marked (3 of 6); with it erased, the marked one (9/9).
 # The right edge's middle: a scrollbar in a maximized window, no hot corner, no panel.
 PARK = (0.995, 0.5)
+# A thumbnail cell this different between polls is moving; one moving in at least half of the last MOTION_POLLS
+# polls is moving on its own (a playing video): a YouTube video behind the launcher made "the launcher showed" true
+# 44 ms after its key and held each settle to its 2.5 s timeout (2026-10-19).
+MOVING_DIFF = 8
+MOTION_POLLS = 8
 
 _ASCII_FIXES = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "..."})
 
@@ -63,6 +69,8 @@ class Controller:
         self.capture = capture
         self.cancel = cancel
         self.settle = settle
+        # Thumbnail cells left out of change checks: learned on a run's first look and on each settle timeout.
+        self.moving: np.ndarray | None = None
 
     # -- actions -----------------------------------------------------------
 
@@ -169,6 +177,7 @@ class Controller:
         prev = None
         still_since: float | None = None
         changed = False
+        diffs: list[np.ndarray] = []
         while True:
             self.cancel.check()
             now = time.monotonic()
@@ -176,18 +185,35 @@ class Controller:
             frame = self.capture.grab()
             if frame is not None:
                 thumb = thumbnail(frame)
-                if prev is not None and frame_change(prev, thumb) < cfg.threshold:
+                if prev is not None:
+                    diffs = [*diffs[1 - MOTION_POLLS:], cv2.absdiff(prev, thumb) >= MOVING_DIFF]
+                if prev is not None and self._change(prev, thumb) < cfg.threshold:
                     still_since = still_since if still_since is not None else now
                     if elapsed >= (cfg.min_s if changed else max(cfg.min_s, react_s)) \
                             and now - still_since >= stable_s:
+                        if not react:  # nothing of ours moved it
+                            self._learn(diffs)
                         return elapsed
                 else:
                     changed = changed or prev is not None
                     still_since = None
                 prev = thumb
             if elapsed >= (cfg.timeout_s if timeout_s is None else timeout_s):
+                self._learn(diffs)
                 return elapsed
             self.cancel.sleep(cfg.poll_s)
+
+    def _learn(self, diffs: list[np.ndarray]) -> None:
+        """Remember the cells that kept moving over the last polls, grown by one cell for a video's edges."""
+        if len(diffs) >= MOTION_POLLS // 2:
+            moving = (np.sum(diffs, axis=0) * 2 >= len(diffs)).astype(np.uint8)
+            self.moving = cv2.dilate(moving, np.ones((3, 3), np.uint8)).astype(bool) if moving.any() else None
+
+    def _change(self, a: np.ndarray, b: np.ndarray) -> float:
+        """frame_change outside the cells moving on their own (all of them if nothing else is left)."""
+        if self.moving is None or self.moving.all():
+            return frame_change(a, b)
+        return float(np.mean(cv2.absdiff(a, b)[~self.moving]))
 
     def wait_for_change(self, timeout_s: float | None = None, since: np.ndarray | None = None) -> bool:
         """Block until the screen differs from `since` (a thumbnail; default: now), as a load,
@@ -204,7 +230,7 @@ class Controller:
             frame = self.capture.grab()
             if frame is None:
                 return False
-            if frame_change(before, thumbnail(frame)) >= self.settle.threshold:
+            if self._change(before, thumbnail(frame)) >= self.settle.threshold:
                 return True
         return False
 

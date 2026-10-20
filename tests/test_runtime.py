@@ -102,6 +102,19 @@ class RuntimeTests(unittest.TestCase):
         self.capture.grab = lambda: next(frames)  # a video: every grab differs
         self.assertLess(controller.wait_settled(react=False, timeout_s=.05), .5)
 
+    def test_a_video_learned_on_a_look_neither_holds_a_settle_nor_counts_as_a_change(self):
+        controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(timeout_s=5, poll_s=.001))
+        tick = iter(range(10**6))
+
+        def video():  # a corner of the screen plays; the rest is still
+            frame = np.zeros((360, 640, 3), dtype=np.uint8)
+            frame[:90, :160] = next(tick) * 40 % 256
+            return frame
+        self.capture.grab = video
+        self.assertLess(controller.wait_settled(react=False, timeout_s=.05), .5)  # the look times out, learning it
+        self.assertLess(controller.wait_settled(react=False), 1)  # a 5 s timeout otherwise
+        self.assertFalse(controller.wait_for_change(.05))
+
     def test_words_said_mid_run_join_the_request_at_the_next_step(self):
         goals = []
         executor = Mock()
