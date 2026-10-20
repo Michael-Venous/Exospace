@@ -66,8 +66,6 @@ class OpenRouterJSON:
         body = {
             "model": self.model, "stream": True, "temperature": 0,
             "reasoning": self.reasoning,
-            "response_format": {"type": "json_schema",
-                                "json_schema": {"name": "reply", "schema": schema, "strict": False}},
             "messages": [
                 {"role": "system", "content": system + "\nReply with a single JSON object only."},
                 {"role": "user", "content": [
@@ -78,6 +76,8 @@ class OpenRouterJSON:
         }
         if self.provider:
             body["provider"] = self.provider
+        body["response_format"] = {"type": "json_schema",
+                                   "json_schema": {"name": "reply", "schema": schema, "strict": False}}
         started = time.monotonic()
         first = None
         text, usage = "", {}

@@ -42,14 +42,19 @@ from brain.imaging import shrink
 OUT = Path("work/arch/matrix")
 SCREENS = OUT / "screens"
 # (OpenRouter id, reasoning effort; "" = off). Fast vision models listed on 2026-10-20, plus study 7's finalists.
+# The pilot (2026-10-20): Gemini 3.8 / 3.7 Flash, 3.5 Flash-Lite and GLM-5.3-FlashX refuse reasoning off (400), so
+# they run at their lowest effort. Dropped: Moondream 3.1 (no JSON reply, with or without response_format) and
+# Ling 3.0 Flash VL (rate-limited upstream, 16/16 calls 429).
 CANDIDATES = [
-    ("google/gemini-3.8-flash", "low"), ("google/gemini-3.8-flash", ""),
-    ("google/gemini-3.7-flash", ""), ("google/gemini-3.5-flash-lite", ""), ("google/gemini-3.1-flash-lite", ""),
-    ("openai/gpt-6-luna", ""), ("anthropic/claude-haiku-5.5", ""), ("z-ai/glm-5.3-flashx", ""),
-    ("inclusionai/ling-3.0-flash-vl", ""), ("deepseek/deepseek-v4.1-flash-1017", ""),
+    ("google/gemini-3.8-flash", "low"), ("google/gemini-3.8-flash", "minimal"),
+    ("google/gemini-3.7-flash", "minimal"), ("google/gemini-3.5-flash-lite", "minimal"),
+    ("google/gemini-3.1-flash-lite", ""),
+    ("openai/gpt-6-luna", ""), ("anthropic/claude-haiku-5.5", ""), ("z-ai/glm-5.3-flashx", "minimal"),
+    ("deepseek/deepseek-v4.1-flash-1017", ""),
     ("google/gemma-4-26b-a4b-it", ""), ("qwen/qwen3.8-omni-flash", ""),
-    ("moondream/moondream3.1-9b-a2b", ""), ("perceptron/perceptron-mk1.5", ""),
+    ("perceptron/perceptron-mk1.5", ""),
 ]
+RETRY_S = 2.0  # one retry of a call that hit a 429, a 5xx or a dropped connection
 GOOGLE = [("gemini-3.8-flash", "low"), ("gemini-3.5-flash-lite", None)]
 JEV = "jev (locate + 2 zooms)"
 
@@ -197,6 +202,13 @@ def main() -> None:
     random.Random(9).shuffle(jobs)  # interleaved: API latency drifts 2x over an hour
 
     def run(job: tuple) -> dict:
+        row = _run(job)
+        if row["outcome"] == "error" and re.search(r"HTTP (429|5\d\d)|ReadError|Timeout|ServerError", row["error"]):
+            time.sleep(RETRY_S)
+            row = {**_run(job), "retried": True}
+        return row
+
+    def _run(job: tuple) -> dict:
         name, task, item, repeat = job
         row = {"model": name, "task": task, "repeat": repeat}
         try:

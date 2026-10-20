@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 
 from bench.arch import model_matrix, router, vague
+from bench.arch.plan_ground import PlanGroundPlanner
 from bench.arch.rewrite import RewritePlanner
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_only import FAILED
@@ -138,6 +139,60 @@ class RewritePlannerTests(unittest.TestCase):
         self.assertEqual(plan.reasoning, "Jev step")
         self.assertEqual(planner.steps.goals, ["tell john by six", 'click Reply\ntype "by six"'])
         self.assertEqual(planner._rewrites, 0)
+
+
+def _grounder(plans: list[dict], found: bool = True, done: float = 0.9, risky: float = 0.0) -> PlanGroundPlanner:
+    planner = PlanGroundPlanner.__new__(PlanGroundPlanner)
+    calls = iter(plans)
+    jev = SimpleNamespace(trace=[], locate=lambda *a, **k: (0.4, 0.2) if found else None,
+                          completion=lambda *a, **k: done,
+                          assess=lambda *a, **k: ({"irreversible": risky}, {}), evaluate=None)
+    flash = SimpleNamespace(model=SimpleNamespace(generate=lambda *a, **k: next(calls)))
+    planner.__dict__.update(flash=flash, jev=jev, cancel=CancelToken(), approved_run=lambda ctx: False,
+                            _looks=ThreadPoolExecutor(max_workers=2), _run=None, _steps=[], _done_when="",
+                            _executed=[], _last=None, _plans=0, _notes=set())
+    return planner
+
+
+class PlanGroundTests(unittest.TestCase):
+    def setUp(self):
+        import bench.arch.plan_ground as module
+        self.module, self.refine = module, module.refine
+        module.refine = lambda jev, image, target, point, **k: point  # no zoom calls
+
+    def tearDown(self):
+        self.module.refine = self.refine
+
+    def test_keys_and_typing_run_without_jev_and_a_site_goes_through_the_address_bar(self):
+        planner = _grounder([{"steps": [{"do": "go", "text": "youtube.com"}, {"do": "type", "text": "lofi"}],
+                              "done_when": "lofi playing"}])
+        first = planner.next_actions(SCREEN, _ctx("put on lofi"))
+        self.assertEqual([a.type for a in first.actions], ["hotkey", "type_text", "hotkey"])
+        planner.acknowledge(True)
+        self.assertEqual(planner.next_actions(SCREEN, _ctx("put on lofi")).actions[0].text, "lofi")
+
+    def test_a_click_goes_where_jev_found_its_target(self):
+        planner = _grounder([{"steps": [{"do": "click", "target": "the Reply button"}], "done_when": ""}])
+        action = planner.next_actions(SCREEN, _ctx("reply")).actions[0]
+        self.assertEqual((action.type, action.x, action.y), ("click", 0.4, 0.2))
+
+    def test_a_target_jev_cannot_find_replans_and_the_plans_run_out(self):
+        step = {"steps": [{"do": "click", "target": "a ghost"}], "done_when": ""}
+        plan = _grounder([step] * 4, found=False).next_actions(SCREEN, _ctx("click the ghost"))
+        self.assertEqual(plan.actions[0].type, "fail")
+
+    def test_an_irreversible_step_is_held_for_approval(self):
+        planner = _grounder([{"steps": [{"do": "click", "target": "Send"}], "done_when": ""}], risky=0.9)
+        self.assertEqual(planner.next_actions(SCREEN, _ctx("send it")).held, "click Send")
+
+    def test_no_steps_left_ends_only_when_jev_sees_it_done(self):
+        planner = _grounder([{"steps": [], "done_when": "inbox shown"}], done=0.8)
+        self.assertEqual(planner.next_actions(SCREEN, _ctx("go to the inbox")).actions[0].type, "done")
+
+    def test_a_speculative_step_never_acknowledged_is_taken_again(self):
+        planner = _grounder([{"steps": [{"do": "type", "text": "hi"}], "done_when": ""}])
+        planner.next_actions(SCREEN, _ctx("type hi"))
+        self.assertEqual(planner.next_actions(SCREEN, _ctx("type hi")).actions[0].text, "hi")
 
 
 if __name__ == "__main__":
