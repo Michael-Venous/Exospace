@@ -5,7 +5,8 @@ batched Jev call picks (brain/agent/jev_only.py) in about a second. A step that 
 new text or a key Jev doesn't offer fails there, and that request continues on the Flash
 planner for the rest of its run, so Flash is called only when Jev is stuck. With handoff off
 (EXECUTOR=jev) the request ends there instead, unless the step needs text written for it or
-has a target Jev can't make out: Flash takes that one step.
+has a target Jev can't make out: Flash takes that one step. With flash off (EXECUTOR=jev-only) Flash is never
+called, so a request runs with no language-model key at all.
 """
 
 from __future__ import annotations
@@ -36,9 +37,11 @@ class JevFirstPlanner:
     image_side = JevFlashExecutor.image_side
 
     def __init__(self, cfg: Config, cancel: CancelToken,
-                 approved_run: Callable[[StepContext], bool] | None = None, handoff: bool = True) -> None:
+                 approved_run: Callable[[StepContext], bool] | None = None, handoff: bool = True,
+                 flash: bool = True) -> None:
         self.flash = JevFlashExecutor(cfg, cancel, approved_run)
         self.handoff = handoff
+        self.uses_flash = flash
         self.jev = self.flash.jev
         self.steps = JevOnlyPlanner(self.jev, approved_run)
         self._flash_run: str | None = None  # the run Jev handed to Flash
@@ -49,7 +52,7 @@ class JevFirstPlanner:
             self._flash_run, why = ctx.run_id, f"recovery note: {ctx.note[:80]}"
         if self._flash_run != ctx.run_id:
             plan = self.steps.next_actions(image, ctx)
-            if plan.reasoning != FAILED or not (self.handoff or plan.needs_planner):
+            if plan.reasoning != FAILED or not (self.handoff or plan.needs_planner) or not self.uses_flash:
                 return plan
             why = plan.actions[0].reason if plan.actions else "failed"
             if not self.handoff:
@@ -84,17 +87,19 @@ class JevFirstPlanner:
         self.flash.forget_plan()
 
     def classify_os(self, image: bytes) -> OSName:
-        try:
-            return self.flash.classify_os(image)
-        except Cancelled:
-            raise
-        except Exception:  # noqa: BLE001 - Jev tells it instead
-            # Flash's key was refused (401) and Mint's desktop read "unknown", which turned app launches off
-            # (2026-10-19).
-            answers = self.jev.evaluate(image, {"os": {"type": "choice", "instructions": OS_PROMPT,
-                                                       "criteria": OS_CRITERIA}}, label="os")[0]
-            os = answers["os"].get("choice")
-            return os if os in OS_NAMES else "unknown"
+        if self.uses_flash:
+            try:
+                return self.flash.classify_os(image)
+            except Cancelled:
+                raise
+            except Exception:  # noqa: BLE001 - Jev tells it instead
+                # Flash's key was refused (401) and Mint's desktop read "unknown", which turned app launches off
+                # (2026-10-19).
+                pass
+        answers = self.jev.evaluate(image, {"os": {"type": "choice", "instructions": OS_PROMPT,
+                                                   "criteria": OS_CRITERIA}}, label="os")[0]
+        os = answers["os"].get("choice")
+        return os if os in OS_NAMES else "unknown"
 
     def close(self) -> None:
         self.flash.close()

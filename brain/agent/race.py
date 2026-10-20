@@ -51,9 +51,10 @@ class RaceExecutor:
         # written or has a target Jev can't make out).
         # Each segment goes straight to Jev's step: triage's launch opened "youtube" in the launcher (no such app)
         # and its hover checks cost a step each.
-        self.jev_steps = cfg.executor == "jev"
+        self.jev_steps = cfg.executor in ("jev", "jev-only")
         if self.jev_steps:
-            self.planner = JevFirstPlanner(cfg, cancel, approved_run=self.approved_run, handoff=False)
+            self.planner = JevFirstPlanner(cfg, cancel, approved_run=self.approved_run, handoff=False,
+                                           flash=cfg.executor == "jev")
         else:
             planner = JevFirstPlanner if cfg.jev_first else JevFlashExecutor
             self.planner = planner(cfg, cancel, approved_run=self.approved_run)
