@@ -146,6 +146,10 @@ PENDING = ("Does `screen` show a web browser whose address bar names a different
 # 0.44-0.91 (0.44-0.63 on frames caught mid-resize), a drawn one 0.02-0.21 beside blank buttons (3 tries each).
 DRAWING = ("Is the control that the next step of the `goal` uses in `screen`, such as a search box, drawn as a blank "
            "grey or dark shape, without the text or icon it will show once the page has loaded?")
+# A browser a line opened may show its new tab page: a new tab key then adds another. Chrome relaunched for "make a new
+# tab" after "close out the tab" closed its window read 0.41-0.56 left there, and Ctrl+T cost 1.0 s (2026-10-20). Its
+# new tab page read 0.79-0.92 so; Docs, Gmail, YouTube, Calc and restored Brave pages 0.00-0.04 (3 tries each).
+FRESH = "Is the tab in front in `screen` a web browser's new tab page, with nothing opened in it yet?"
 # An app's box this big is the window in front: "click the third video" while YouTube's results loaded fitted the
 # page 0.44 and boxed the browser [0.01-0.99 x 0.04-0.98], and a switch clicked the middle of the page (v6-t1).
 FRONT = 0.9
@@ -400,7 +404,9 @@ class JevOnlyPlanner:
         listed = "launcher" in first and min(probability(first["launcher"].get("noul")),
                                              probability(first["present"].get("noul"))) >= GATE
         held = finished and first["next"].get("choice") in CLICKS and (ctx.history[-1:] == [doubted] or listed)
-        finished = finished and not held
+        fresh = opened and first["next"].get("choice") == "new_tab" and probability(first["fresh"].get("noul")) >= GATE \
+            and any(s.startswith("skill(open_app ") for s in ctx.history[self.since:])
+        finished = (finished or fresh) and not held
         if finished and len(answered) > 1:
             self._advance(ctx)
             answered, finished = answered[1:], False  # the next line's first step
@@ -719,7 +725,8 @@ class JevOnlyPlanner:
             | ({"opened_front": {"type": "noul", "instructions": OPENED_FRONT.format(app=json.dumps(self.opened))}}
                if self.opened else {}) if route and ctx.profile.os in OPEN_APP_KEYS else {}  # firmware has no apps
         irreversible = {"irreversible": {"type": "noul", "instructions": NEXT_IRREVERSIBLE}} if guard else {}
-        drawing = {"drawing": {"type": "noul", "instructions": DRAWING}} if opened else {}
+        drawing = {"drawing": {"type": "noul", "instructions": DRAWING},
+                   "fresh": {"type": "noul", "instructions": FRESH}} if opened else {}
         stepping = irreversible | drawing | {
             "complete": {"type": "noul", "instructions": COMPLETION_QUESTION},
             "question": {"type": "noul", "instructions": QUESTION},

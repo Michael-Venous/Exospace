@@ -25,7 +25,7 @@ class JevOnlyTests(unittest.TestCase):
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
-             lookup=.05, pending=.05, opens=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
+             lookup=.05, pending=.05, opens=.05, fresh=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
@@ -34,7 +34,7 @@ class JevOnlyTests(unittest.TestCase):
                 "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
-                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined}}
+                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined}}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
         profile = DeviceProfile(os, Rect(0, 0, 400, 300), device, 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
@@ -700,6 +700,14 @@ class JevOnlyTests(unittest.TestCase):
         evaluate.reset_mock()
         self.assertEqual(self.step("search for horses", drawing=.9, loading=.9, history=["click(1,1)"]).type, "click")
         self.assertFalse(asked())
+
+    def test_a_browser_the_line_opened_on_its_new_tab_page_needs_no_new_tab(self):
+        opened = ["skill(open_app {'name': 'chrome'})"]
+        self.assertEqual(self.step("make a new tab", next="new_tab", fresh=.9, history=opened).type, "done")
+        self.assertEqual(self.step("make a new tab", next="new_tab", fresh=.1, history=opened).brief(), "hotkey(CTRL+T)")
+        # the line didn't open it: the new tab page was there before the request asked for one
+        self.assertEqual(self.step("make a new tab", next="new_tab", fresh=.9, history=["hotkey(CTRL+W)"]).brief(),
+                         "hotkey(CTRL+T)")
 
     def test_typing_where_nothing_takes_text_clicks_first(self):
         goal = "type in hello"
