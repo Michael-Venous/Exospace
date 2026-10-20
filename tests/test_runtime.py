@@ -106,6 +106,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(controller.wait_settled(since=still), .3)  # nothing shown yet
         self.assertLess(controller.wait_settled(since=255 - still), .1)  # a tab closed before the first look
 
+    def test_a_reaction_too_small_for_the_screen_is_awaited_where_it_shows(self):
+        controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(
+            min_s=0, react_s=.05, load_stable_s=0, load_react_s=.6, stable_s=0, timeout_s=1, poll_s=.001))
+        shown_at = time.monotonic() + .2
+        self.assertGreaterEqual(controller.wait_settled(reacted=lambda f: time.monotonic() >= shown_at), .2)
+        self.assertLess(controller.wait_settled(reacted=lambda f: True), .05)
+        self.assertGreaterEqual(controller.wait_settled(reacted=lambda f: False), .6)  # never shows: as a load
+
     def test_a_moving_screen_settles_at_the_given_timeout(self):
         controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(timeout_s=5, poll_s=.001))
         frames = iter(np.full((100, 160, 3), v % 256, dtype=np.uint8) for v in range(0, 10**6, 40))
@@ -245,6 +253,7 @@ class RuntimeTests(unittest.TestCase):
                           if "loading" in c.kwargs], [(False, False), (True, True)])
 
     def test_enter_into_a_cell_skips_the_page_load_wait(self):
+        self.hid.change = False  # the screen before the Enter stays the one to compare with
         self.fast.next_actions.side_effect = [
             Plan("fill", [Action("click", x=.5, y=.5), Action("type_text", text="hello"),
                           Action("hotkey", keys=["ENTER"])], [], in_place=True),
@@ -254,6 +263,12 @@ class RuntimeTests(unittest.TestCase):
             self.agent().run("add hello to b1", self.profile)
         self.assertEqual([(c.kwargs["loading"], c.kwargs["react"]) for c in settle.call_args_list
                           if "loading" in c.kwargs], [(False, False), (False, True)])
+        click, enter = [c.kwargs["reacted"] for c in settle.call_args_list if "loading" in c.kwargs]
+        self.assertIsNone(click)  # only the Enter waits for the cell to show the entry
+        cell = self.capture.grab()
+        cell[45:55, 75:85] = 255 - cell[45:55, 75:85]  # the entry drawn at the clicked point
+        self.assertTrue(enter(cell))
+        self.assertFalse(enter(self.capture.grab()))
 
     def test_scroll_after_a_hover_skips_the_settle(self):
         self.fast.next_actions.side_effect = [

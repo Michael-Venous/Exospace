@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import cv2
@@ -14,7 +15,7 @@ from brain.cancel import Cancelled, CancelToken
 from brain.capture import Capture, frame_change, is_blank, thumbnail
 from brain.hid import HID, HID_MAX, HIDError
 from brain.keys import canonical_combo
-from brain.types import Action, ActionError, DeviceProfile
+from brain.types import Action, ActionError, DeviceProfile, Frame
 
 TYPE_CHUNK = 32  # chars per UART "type" command, so cancel lands quickly
 WAIT_S = 10.0  # longest block of the wait skill
@@ -172,16 +173,18 @@ class Controller:
     # -- settling ----------------------------------------------------------
 
     def wait_settled(self, loading: bool = False, react: bool = True, timeout_s: float | None = None,
-                     since: np.ndarray | None = None) -> float:
+                     since: np.ndarray | None = None, reacted: Callable[[Frame], bool] | None = None) -> float:
         """Block until the screen stops changing. Returns seconds waited. `loading`: the last input may
         have started a page load, so the screen must stay still longer. `react`: input was just sent, so a
         still screen may only be slow to react; False skips that wait (a run's first look). `timeout_s`
         overrides the config's. `since`: a thumbnail from before the input; a first look that already
         differs from it has seen the reaction (a tab closed by Ctrl+W showed by then, and the wait for one
-        held ~0.45 s on a still screen, 2026-10-20)."""
+        held ~0.45 s on a still screen, 2026-10-20). `reacted`: whether a frame shows the input's effect where
+        the whole screen barely changes; the wait for a reaction lasts up to load_react_s until it does (Calc
+        drew "hello" and its Enter 0.75 s after them in a new sheet, and the look before that saw nothing typed)."""
         cfg = self.settle
         stable_s = cfg.load_stable_s if loading else cfg.stable_s
-        react_s = (max(cfg.react_s, cfg.load_react_s) if loading else cfg.react_s) if react else 0.0
+        react_s = (max(cfg.react_s, cfg.load_react_s) if loading or reacted else cfg.react_s) if react else 0.0
         start = time.monotonic()
         prev = None
         still_since: float | None = None
@@ -198,6 +201,8 @@ class Controller:
                     diffs = [*diffs[1 - MOTION_POLLS:], cv2.absdiff(prev, thumb) >= MOVING_DIFF]
                 if prev is None and since is not None:
                     changed = self._change(since, thumb) >= cfg.threshold
+                if reacted is not None and not changed and reacted(frame):
+                    changed, prev = True, None  # settle from here: the reaction just showed
                 playing = self._motion(diffs) if len(diffs) == MOTION_POLLS else None
                 if playing is not None and playing.mean() > MAX_MOVING:
                     playing = None
