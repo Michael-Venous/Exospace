@@ -19,6 +19,7 @@ from pathlib import Path
 from bench.arch.triage_executor import RaceExecutor, RaceLedgerExecutor, RaceRelaxedExecutor, TriageExecutor, TriageLedgerExecutor
 from bench.arch import correction, injection, studio, vague, workstation
 from bench.arch.plan_ground import PlanGroundExecutor, PlanGroundPointerExecutor
+from bench.arch.race_pointer import RacePointerExecutor
 from bench.arch.rewrite import ParallelRewriteExecutor, RewriteExecutor, RewriteOnStuckExecutor
 from bench.arch.router import routed
 from brain.agent.executor import ModelExecutor
@@ -74,7 +75,7 @@ EXECUTORS = {"jev-flash (current)": JevFlashExecutor, "triage-first": TriageExec
              "race+ledger-verify": RaceLedgerExecutor,
              "race+ledger-verify-v2": RaceLedgerExecutor,
              "final-concrete": RaceExecutor, "final-steps-aware": RaceLedgerExecutor,
-             "runtime-race": RuntimeRaceExecutor, "runtime-jev": runtime_as("jev"),
+             "runtime-race": RuntimeRaceExecutor, "race+pointer": RacePointerExecutor, "runtime-jev": runtime_as("jev"),
              "runtime-jev-only": runtime_as("jev-only"),
              "rewrite": RewriteExecutor, "rewrite-parallel": ParallelRewriteExecutor,
              "rewrite-on-stuck": RewriteOnStuckExecutor, "plan-ground": PlanGroundExecutor,
@@ -158,12 +159,15 @@ def main() -> None:
     parser.add_argument("--executors", nargs="+", default=list(EXECUTORS))
     parser.add_argument("--scenario", choices=list(SCENARIOS), default="workstation")
     parser.add_argument("--model", default="gemini-3.8-flash", help="planner model (3.8 Flash unless quota-limited)")
+    parser.add_argument("--tag", default="", help="a fresh output folder for this comparison")
     parser.add_argument("--router", default="", help="an OpenRouter model id for every language-model call")
     parser.add_argument("--effort", default="", help="its reasoning effort; empty turns reasoning off")
     args = parser.parse_args()
     scenario = SCENARIOS[args.scenario]
     out = OUT if args.scenario == "workstation" else OUT.with_name(f"e2e_{args.scenario}")
     base = Config.load()
+    if args.tag:
+        out = out.with_name(f"{out.name}-{args.tag}")
     if args.model != parser.get_default("model"):
         out = out.with_name(f"{out.name}-{args.model}")
     if args.router:

@@ -319,15 +319,35 @@ Flash-Lite; studio 11/11 with both. These suites are almost all Jev (0-4 LLM cal
 barely matters there. The workstation misses are "reply saying…" and "send it" asking first (the PLAN §10
 rule; the fixture expects the send), plus Lite's "go to youtube" cancelled after 3 failed checks.
 
+#### Measured: Jev → Perceptron integrated into the race (2026-10-20, `race_pointer.py`, `work/arch/e2e_vague-pointer/`)
+The runtime race unchanged, except that a Flash stage target Jev refuses goes to Perceptron Mk1.5 rather
+than to a Flash visual-fallback replan. Interleaved with the runtime race, 12 segments × 3 repeats.
+
+| Executor | Success | Unsafe | Planned ok | Planned wall (27 runs) | Planned median | LLM calls | LLM s |
+|---|---|---|---|---|---|---|---|
+| runtime race | **36/36** | 0 | **27/27** | 307 s | 12.5 s | 61 | 178 |
+| race + pointer | 32/36 | 0 | 23/27 | 303 s (−1%) | 11.1 s | 58 | 168 |
+
+- **No measurable gain.** The pointer ran 5 times in 36 runs (it found 2 targets, 1.1 s median): a refused
+  target caused only 3 of race's 61 Flash plans here, and 10 of 91 in the earlier race runs.
+- The 4 misses never touched the pointer: 3 were Jev's steps-aware check passing "put on something chill"
+  at 0.52-0.62 after a typed search URL (gate 0.5), 1 a mail request cancelled after completion kept
+  scoring 0.01. Paired 0-4 against race (sign test p = 0.125): plan-choice variance, not the pointer.
+- Where race's Flash calls go (all three race runs on this fixture, 3.8 Flash and Lite, 152 plans): first plan 49, **"completion not verified" replan 63**,
+  ready/previous check failed 27, refused target 13. The derived matrix chain (0.69 s, 100/100) holds per
+  call, but refused targets are too rare in a run for it to matter.
+
 #### Recommendation from study 9 (measured on browser fixtures, not yet on the capture card)
 1. **Keep the runtime's race + Jev-first + Gemini 3.8 Flash (low).** It was best end to end (23/24 on vague
    speech, 0 unsafe). Rewrite-parallel, plan-ground and `EXECUTOR=jev` don't replace it.
 2. **The time to win is Flash's.** 61% of a planned request's wall time is Flash calls. Minimal reasoning
    is no faster than low (3.04 vs 3.06 s); Flash-Lite 3.5 is 2.2× faster a call but lost 3 of 24 runs to
    false "done", so it isn't a default until the completion check stops passing those.
-3. **Next change to measure: Jev → Perceptron Mk1.5 where Jev refuses a target**, in place of a Flash
-   visual-fallback replan (~3 s). Matrix: 100/100 hit, 0 misclicks, 0.69 s mean; in plan-ground it rescued
-   4 of 6 refused-target runs. It is a runtime change (`brain/agent/jev_flash.py`, Agent owner).
+3. **Don't port the Jev → Perceptron pointer.** Integrated, it changed nothing measurable (−1% time; its
+   5 calls in 36 runs caused no miss). The lever is the completion check: "completion not verified"
+   replans are 41% of race's Flash plans, and its false passes (0.52-0.64 at gate 0.5) are every Lite and
+   pointer-run miss on the video segments. Measure the completion question and gate on these traces
+   next (`brain/agent/jev.py`, `jev_flash.py`: Agent owner).
 4. **Policy for the team:** triage holds composed replies ("tell john I'll…") as sends before drafting.
    Safe, but the draft only starts after "yes".
 

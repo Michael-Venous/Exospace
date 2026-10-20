@@ -10,6 +10,7 @@ import numpy as np
 
 from bench.arch import model_matrix, router, vague
 from bench.arch.plan_ground import PlanGroundPlanner
+from bench.arch.race_pointer import PointerFlash
 from bench.arch.rewrite import RewritePlanner
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_only import FAILED
@@ -178,7 +179,7 @@ class PlanGroundTests(unittest.TestCase):
 
     def test_a_target_jev_refuses_is_placed_by_the_pointer_model(self):
         planner = _grounder([{"steps": [{"do": "click", "target": "the third video"}], "done_when": ""}], found=False)
-        planner.pointer = SimpleNamespace(call=lambda *a: ({"found": True, "x": 250, "y": 600}, {}))
+        planner.pointer = SimpleNamespace(point=lambda image, target: (0.25, 0.6))
         action = planner.next_actions(SCREEN, _ctx("play the third video")).actions[0]
         self.assertEqual((action.type, action.x, action.y), ("click", 0.25, 0.6))
 
@@ -199,6 +200,25 @@ class PlanGroundTests(unittest.TestCase):
         planner = _grounder([{"steps": [{"do": "type", "text": "hi"}], "done_when": ""}])
         planner.next_actions(SCREEN, _ctx("type hi"))
         self.assertEqual(planner.next_actions(SCREEN, _ctx("type hi")).actions[0].text, "hi")
+
+
+
+class RacePointerTests(unittest.TestCase):
+    def test_only_a_stage_target_jev_refused_goes_to_the_pointer(self):
+        from brain.agent.jev_flash import JevFlashExecutor
+        zoom = JevFlashExecutor._zoom
+        JevFlashExecutor._zoom = lambda self, image, targets, points, ctx: {"target": None, "field": None,
+                                                                            "destination": (0.1, 0.1)}
+        try:
+            flash = PointerFlash.__new__(PointerFlash)
+            asked = []
+            flash.pointer = SimpleNamespace(point=lambda image, target: asked.append(target) or (0.3, 0.7))
+            out = flash._zoom(SCREEN, {"target": "the Starship video", "field": "the search box",
+                                       "destination": "the trash"}, {}, None)
+        finally:
+            JevFlashExecutor._zoom = zoom
+        self.assertEqual(out, {"target": (0.3, 0.7), "field": None, "destination": (0.1, 0.1)})
+        self.assertEqual(asked, ["the Starship video"])
 
 
 if __name__ == "__main__":
