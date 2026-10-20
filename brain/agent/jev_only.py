@@ -135,6 +135,12 @@ LOADING = ("Is an app or page in `screen` still starting or loading, so the next
 # Asked right after a launch: Brave's restored YouTube Short drew its search box as a blank shape (0.90-0.95 on
 # 3 frames, 3 tries each; drawn pages 0.07-0.38 on 23), and Jev typed the search into the address bar, which
 # LOADING (0.04) let through. The box was drawn 0.6 s later (v4-t1, 2026-10-19).
+# A site the browser is going to shows under the page before it until it draws: Brave's new tab page under youtube.com
+# was clicked for YouTube's search box, the click landed on YouTube as it drew, on nothing, and "horses" was typed
+# into nothing (4.5 s, 2026-10-20). Address bar and page at odds read 0.66-0.97 on 2 such frames, LOADING 0.03-0.20;
+# 31 drawn pages 0.01-0.09 (3 tries each).
+PENDING = ("Does `screen` show a web browser whose address bar names a different website than the page shown below "
+           "it, as when it has started going to a site and still shows the page before?")
 DRAWING = ("Are any controls in `screen`, such as a search box or round buttons, drawn as blank grey or dark shapes, "
            "without the text or icons they will show once the page has loaded?")
 # An app's box this big is the window in front: "click the third video" while YouTube's results loaded fitted the
@@ -434,10 +440,11 @@ class JevOnlyPlanner:
         # "close google" waited 12 s for it (2026-10-19). What is still drawing is drawn within two looks.
         keys = answers["next"].get("choice") in (*TAB_KEYS, "close_app")
         drawing = opened and not keys and probability(answers["drawing"].get("noul")) >= GATE
-        loading = probability(answers["loading"].get("noul")) >= GATE
+        pending = not keys and probability(answers["pending"].get("noul")) >= GATE
+        loading = pending or probability(answers["loading"].get("noul")) >= GATE
         wait = self._look_again(ctx, MAX_LOADING_WAITS if loading else MAX_WAITS, anytime=True) if loading or drawing \
             else None
-        if opened and wait:
+        if (opened or pending) and wait:
             return wait
         if routing:
             # A website that names no browser is no app to search the launcher for: "youtube" found nothing there.
@@ -711,6 +718,7 @@ class JevOnlyPlanner:
             "lookup": {"type": "noul", "instructions": LOOKUP},
             "focused": {"type": "noul", "instructions": FOCUSED},
             "loading": {"type": "noul", "instructions": LOADING},
+            "pending": {"type": "noul", "instructions": PENDING},
         }
         return image, "jev", ([(routing, {"goal": line, "executed_steps": steps})] if routing else []) \
             + [(stepping, {"goal": line, "executed_steps": context})]

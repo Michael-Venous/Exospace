@@ -25,7 +25,7 @@ class JevOnlyTests(unittest.TestCase):
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
-             lookup=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
+             lookup=.05, pending=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
@@ -34,7 +34,7 @@ class JevOnlyTests(unittest.TestCase):
                 "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
-                "lookup": {"noul": lookup}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined}}
+                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined}}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
         profile = DeviceProfile(os, Rect(0, 0, 400, 300), device, 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
@@ -403,6 +403,11 @@ class JevOnlyTests(unittest.TestCase):
         self.assertTrue(self.last.needs_planner)  # text to write goes to Flash even without hand-off
         self.assertEqual(self.step("open camera", composed=.9).type, "click")  # a tap needs no text
 
+    def test_a_page_the_browser_is_still_going_to_is_waited_for_but_not_its_keys(self):
+        self.assertEqual(self.step("search for horses", pending=.7, history=["click(400,200)"]).brief(),
+                         LOOK_AGAIN.brief())
+        self.assertEqual(self.step("close this tab", run="k", pending=.7, next="close_tab").brief(), "hotkey(CTRL+W)")
+
     def test_a_kind_of_app_read_as_a_website_opens_its_app_when_the_browser_route_dead_ends(self):
         goal, kind = "open up a spreadsheet", str(spans("open up a spreadsheet").index("spreadsheet"))
         routed = dict(site=.92, browser_front=1, app_name=kind)
@@ -677,7 +682,7 @@ class JevOnlyGuardTests(unittest.TestCase):
                    "launcher": {"noul": .1}, "app": BOX, "composed": {"noul": .05}, "irreversible": {"noul": .95},
                    "site": {"noul": .05}, "submit": {"noul": .05}, "browser_named": {"noul": .05},
                    "left": {"noul": .9}, "window": {"noul": .9}, "loading": {"noul": .05}, "focused": {"noul": .95},
-                   "typed": {"noul": .95}}
+                   "typed": {"noul": .95}, "pending": {"noul": .05}}
         planner.jev.evaluate.return_value = (answers, (400, 300), (400, 300))
         ctx = StepContext("reply saying six and send it", DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1),
                           Mock(), ["type_text('six')"], 2, 10, run_id="r")
