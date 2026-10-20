@@ -581,7 +581,11 @@ class JevOnlyPlanner:
                 if held and not (looks and certain):
                     return self._next_line(image, ctx, lines, "Jev verified the completed goal")
                 if not looks:
-                    return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
+                    # On a run's first screen too: "close the spreadsheet without saving" boxed Calc's close button,
+                    # both zooms the window's 0.41-0.47, and the run failed with nothing tried (2026-10-20). A look
+                    # again takes the zooms over DOUBT.
+                    return wait or self._look_again(ctx, anytime=True) \
+                        or _fail("its target isn't clearly visible", planner=True)
                 first = _edges(answers["target"], size, padded)
                 point = min((_narrowed(p, b, first) for p, b in looks), key=lambda p: math.dist(p, point))
             if step == "copy":

@@ -146,7 +146,8 @@ class JevOnlyTests(unittest.TestCase):
 
     def test_unclear_target_fails_instead_of_guessing(self):
         self.assertEqual(self.step("click the other one", present=.4).type, "fail")
-        self.assertEqual(self.step("click the other one", looks=(None, None)).type, "fail")  # lost when zoomed
+        lost = dict(looks=(None, None), history=[LOOK_AGAIN.brief()] * 2)  # lost when zoomed, after looks again
+        self.assertEqual(self.step("click the other one", **lost).type, "fail")
         self.assertTrue(self.last.needs_planner)  # Flash takes that one step
 
     def test_a_target_not_visible_after_a_step_is_looked_for_again_twice(self):
@@ -176,7 +177,9 @@ class JevOnlyTests(unittest.TestCase):
         for looks in ((ON, STRAY), (STRAY, ON), (ON, None)):
             action = self.step("search for horse videos", present=.7, looks=looks)
             self.assertEqual((action.type, round(action.y, 2)), ("click", .3))
-        self.assertEqual(self.step("search for horse videos", present=.7, looks=(STRAY, STRAY)).type, "fail")
+        strays = dict(present=.7, looks=(STRAY, STRAY))
+        self.assertEqual(self.step("search for horse videos", **strays).brief(), LOOK_AGAIN.brief())  # once more
+        self.assertEqual(self.step("search for horse videos", **strays, history=[LOOK_AGAIN.brief()] * 2).type, "fail")
 
     def test_a_zoom_boxing_the_region_around_the_other_is_dropped(self):
         logo, field = (.52, .25), (.52, .41)  # Chrome's new tab: the logo and search box, and the search box alone
