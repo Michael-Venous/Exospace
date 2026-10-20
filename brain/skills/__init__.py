@@ -30,9 +30,10 @@ SEARCH_KEYS: dict[str, list[str]] = {"android": ["CTRL", "F"]}
 _ANDROID = {("settings",): ["GUI", "I"], ("messages", "messaging", "texts", "sms", "google messages"): ["GUI", "S"],
             ("browser", "brave", "chrome", "web browser", "internet"): ["GUI", "B"], ("contacts",): ["GUI", "C"],
             ("calendar",): ["GUI", "L"], ("email", "gmail", "mail"): ["GUI", "E"]}
-# Launchers whose search shows its result as the name is typed: Cinnamon's did by the first look after the typing
-# returned (0.09-0.19 s), changing the screen too little to wait for (0.1-1.0 inside the menu), and a wait for a
-# reaction held Enter 0.45 s (2026-10-20). shortcut: only Linux measured; add others once timed.
+# Launchers that pick their first result while handling each typed key, so an Enter sent right after is handled
+# after them: Cinnamon's menu (applet.js _onSearchTextChanged -> _doSearch). The typing changed the screen too
+# little to wait for (0.1-1.0 inside the menu), and the settle after it held Enter 0.19 s (2026-10-20).
+# shortcut: only Linux measured; add others once timed.
 INSTANT_SEARCH = {"linux"}
 APP_KEYS: dict[str, dict[str, list[str]]] = {"android": {name: keys for names, keys in _ANDROID.items() for name in names}}
 
@@ -100,7 +101,8 @@ def run_skill(
         controller.wait_settled()
     controller.cancel.check()
     controller.type_text(app.strip())
-    controller.wait_settled(react=profile.os not in INSTANT_SEARCH)
+    if profile.os not in INSTANT_SEARCH:
+        controller.wait_settled()
     controller.cancel.check()
     frame = controller.capture.grab()
     typed = thumbnail(frame) if frame is not None else None

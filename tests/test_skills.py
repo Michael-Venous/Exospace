@@ -25,11 +25,12 @@ class SkillTests(unittest.TestCase):
             with self.subTest(os=os):
                 self.controller.reset_mock()
                 run_skill("open_app", {"name": " Notes "}, self.profile(os), self.controller)
+                settle = [] if os == "linux" else [unittest.mock.call.wait_settled()]  # Cinnamon: Enter at once
                 self.assertEqual(self.controller.method_calls, [
                     unittest.mock.call.capture.grab(),
                     unittest.mock.call.hotkey(keys),
                     unittest.mock.call.type_text("Notes"),
-                    unittest.mock.call.wait_settled(react=os != "linux"),
+                    *settle,
                     unittest.mock.call.capture.grab(),
                     unittest.mock.call.hotkey(["ENTER"]),
                 ])
