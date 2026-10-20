@@ -462,6 +462,9 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), "skill(open_app {'name': 'video'})")
         self.assertTrue(self.last.blind)  # launched by name whatever plays behind it
         opened = ["skill(open_app {'name': 'video'})"]
+        # what it launched may still be coming: LibreOffice drew after a look at the bare desktop
+        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=opened).brief(), LOOK_AGAIN.brief())
+        opened += [LOOK_AGAIN.brief()] * 2
         self.assertEqual(self.step(goal, fits=.1, app_name=named, history=opened).brief(), "hotkey(GUI)")
         self.assertEqual(self.step(goal, fits=.1, app_name=named, history=opened + ["hotkey(GUI)"]).brief(),
                          "skill(wait {'s': 3.0})")

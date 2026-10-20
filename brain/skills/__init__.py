@@ -88,8 +88,10 @@ def run_skill(
     # "web browser" (2026-10-19).
     if start is not None and not controller.wait_for_change(LAUNCHER_S, since=start):
         raise ActionError("the launcher didn't open, so nothing was typed")
-    controller.wait_settled()
+    # Cinnamon's menu showed in one frame and took the name typed at once; a settle here waited 0.45 s on a
+    # still screen (2026-10-20). Android's drawer still slides in before its search key.
     if profile.os in SEARCH_KEYS:
+        controller.wait_settled()
         controller.hotkey(SEARCH_KEYS[profile.os])
         controller.wait_settled()
     controller.cancel.check()

@@ -776,6 +776,10 @@ class JevOnlyPlanner:
         # Blind: a launch goes by name, so a Short playing behind it discarded "open up discord" twice (2026-10-19).
         if launch.brief() not in steps:
             return Plan("Open the app", [launch], [], blind=True)
+        # The app just launched is still coming: LibreOffice's splash ended the launch's wait and its window drew
+        # after a look at the bare desktop, which pressed the launcher key over it (2026-10-20).
+        if _just_opened(ctx.history) and (look := self._look_again(ctx)):
+            return look
         if launcher.brief() not in steps:
             return Plan("Open the app launcher", [launcher], [], blind=True)
         if ctx.history[-1] != WAIT.brief():  # the launcher, its results or the chosen app still appearing
