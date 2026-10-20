@@ -227,7 +227,8 @@ class Agent:
                                 times["t_execute"] += time.monotonic() - stamp
                             history.append(action.brief())  # before settling: a restart lands there
                             if settles:
-                                settled_s = ctl.wait_settled(loading=_may_load(action) and not keys_next,
+                                load = _may_load(action) and not keys_next and not plan.in_place
+                                settled_s = ctl.wait_settled(loading=load,
                                                              react=not keys_next or action.type == "hotkey",
                                                              since=None if base is None else thumbnail(base))
                                 times["t_settle"] += settled_s

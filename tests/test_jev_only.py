@@ -651,6 +651,7 @@ class JevOnlyTests(unittest.TestCase):
         horses = str(spans(goal).index("horses"))
         actions = self.plan(goal, next="click", text=horses, input=.95, submit=.9)
         self.assertEqual([a.type for a in actions], ["click", "type_text", "hotkey"])
+        self.assertFalse(self.last.in_place)  # a search's Enter loads its results
         for unsure in ({"input": .7}, {"text": "none"}):  # a tile that opens a document, or nothing to type
             self.assertEqual([a.type for a in self.plan(goal, **{"next": "click", "text": horses} | unsure)], ["click"])
 
@@ -659,6 +660,7 @@ class JevOnlyTests(unittest.TestCase):
         hello = str(spans(goal).index("hello"))
         actions = self.plan(goal, next="click", text=hello, input=.95, commit=.9)
         self.assertEqual([a.type for a in actions], ["click", "type_text", "hotkey"])
+        self.assertTrue(self.last.in_place)  # no page load after a cell's Enter
         self.assertEqual([a.type for a in self.plan(goal, next="click", text=hello, input=.95, commit=.6)],
                          ["click", "type_text"])  # a terminal in front of a spreadsheet: Enter would run it
 

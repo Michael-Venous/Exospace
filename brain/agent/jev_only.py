@@ -616,6 +616,7 @@ class JevOnlyPlanner:
                 actions.append(Action(step if step in CLICKS else "click", x=point[0], y=point[1]))
         if step in ("copy", "paste"):
             actions.append(Action("hotkey", keys=(mod, CLIPBOARD[step])))
+        in_place = False
         if step in ("type", "fill", "address", "erase"):
             if text is None:
                 # "open up a google doc template" on a new tab: Jev chose the address bar with no words to type
@@ -640,9 +641,13 @@ class JevOnlyPlanner:
                 if step == "address" and ctx.profile.os in DOTCOM_OS and not re.search(r"\s", text) \
                         and probability(answers["dotcom"].get("noul")) >= GATE:
                     actions.append(Action("hotkey", keys=("CTRL", "ENTER")))
-                elif step == "address" or probability(answers["submit"].get("noul")) >= GATE \
-                        or probability(answers["commit"].get("noul")) >= self.jev.min_presence:
+                elif step == "address" or probability(answers["submit"].get("noul")) >= GATE:
                     actions.append(Action("hotkey", keys=("ENTER",)))
+                elif probability(answers["commit"].get("noul")) >= self.jev.min_presence:
+                    # Calc's Enter after "hello" moved too little to count as a reaction, so the settle held the full
+                    # 1 s a page load may take to start, and the run's last look came 1.1 s after it (2026-10-20).
+                    actions.append(Action("hotkey", keys=("ENTER",)))
+                    in_place = True
         if step in TAB_KEYS:
             actions.append(Action("hotkey", keys=(mod, TAB_KEYS[step])))
         if step == "close_app":
@@ -684,7 +689,8 @@ class JevOnlyPlanner:
             self.clicked = image, point, actions[0].brief()
         if step in CLICKS and not settled:
             self.doubted = actions[0].brief()
-        return Plan(f"Jev next step: {step}", actions, [], blind=step in ("address", "new_tab"))
+        return Plan(f"Jev next step: {step}", actions, [], blind=step in ("address", "new_tab"),
+                    in_place=in_place)
 
     def _look_again(self, ctx: StepContext, limit: int = MAX_WAITS, anytime: bool = False) -> Plan | None:
         """A target not visible yet is often a page still loading: right after a launch, YouTube's search box

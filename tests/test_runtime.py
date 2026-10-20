@@ -242,6 +242,17 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([(c.kwargs["loading"], c.kwargs["react"]) for c in settle.call_args_list
                           if "loading" in c.kwargs], [(False, False), (True, True)])
 
+    def test_enter_into_a_cell_skips_the_page_load_wait(self):
+        self.fast.next_actions.side_effect = [
+            Plan("fill", [Action("click", x=.5, y=.5), Action("type_text", text="hello"),
+                          Action("hotkey", keys=["ENTER"])], [], in_place=True),
+            Plan("verified", [Action("done", summary="Entered")], []),
+        ]
+        with patch.object(self.controller, "wait_settled", wraps=self.controller.wait_settled) as settle:
+            self.agent().run("add hello to b1", self.profile)
+        self.assertEqual([(c.kwargs["loading"], c.kwargs["react"]) for c in settle.call_args_list
+                          if "loading" in c.kwargs], [(False, False), (False, True)])
+
     def test_scroll_after_a_hover_skips_the_settle(self):
         self.fast.next_actions.side_effect = [
             Plan("scroll", [Action("skill", name="hover", args={"x": .5, "y": .5}), Action("scroll", dy=5)], []),
