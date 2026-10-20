@@ -11,7 +11,7 @@ import numpy as np
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_first import JevFirstPlanner
-from brain.agent.jev_only import FAILED, LOOK_AGAIN, JevOnlyPlanner
+from brain.agent.jev_only import FAILED, LOOK_AGAIN, MAX_WAITS, JevOnlyPlanner
 from brain.agent.triage import spans
 from brain.cancel import CancelToken
 from brain.config import Config
@@ -299,6 +299,13 @@ class JevOnlyTests(unittest.TestCase):
     def test_a_big_target_is_clicked_without_a_closer_look(self):
         action = self.step("click the third video", target=BIG, looks=(STRAY, STRAY))
         self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))
+        # a doubtful big box (Start Center's recent documents, 0.06 sure) is looked at again, not clicked or zoomed
+        doubtful = BIG | {"confidence": .06}
+        self.assertEqual(self.step("add hello to b1", target=doubtful, opens=.97, history=["hotkey(GUI)"]),
+                         LOOK_AGAIN)
+        self.zoom.assert_not_called()
+        self.assertEqual(self.step("add hello to b1", target=doubtful, opens=.97, run="s",
+                                   history=["hotkey(GUI)"] + [LOOK_AGAIN.brief()] * MAX_WAITS).type, "fail")
 
     def test_typed_text_is_a_run_of_the_goals_words(self):
         goal = 'type "hello world", then press enter'

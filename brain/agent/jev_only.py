@@ -178,6 +178,11 @@ COPY_CONTROL = "the text that the first line of the `goal` copies (a later line 
 # Jev is sure of it: "copy the header" boxed four rows of Wikipedia's citations 0.54 sure, and the select at its
 # centre clicked a citation's link (2026-10-19).
 BIG_TARGET = 0.1  # of the screen's width and height
+# Nor when the box itself is doubtful: Jev's sureness can be that what the step works in isn't open yet. On
+# LibreOffice's Start Center "add hello to b1" boxed the recent documents 0.06-0.23 sure, opens 0.6-0.97, and the
+# clicks opened one of them (2026-10-20); big boxes that held their target were 0.37-0.66 (14 clicks). A look
+# again on that screen boxed Calc's small entry 5 times in 6.
+BIG_SURE = 0.3
 # A zoom shows the whole target with this margin: one cutting YouTube's search box to its last letter left Jev
 # 0.26 sure it was there (4/4), one holding all of it 0.75.
 ZOOM_MARGIN = 1.15
@@ -564,6 +569,8 @@ class JevOnlyPlanner:
                 point = self._copy_spot(image, ctx, lines, seen)
                 if point is None:
                     return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
+            elif min(width, height) >= BIG_TARGET and probability(answers["target"].get("confidence")) < BIG_SURE:
+                return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
             elif min(width, height) < BIG_TARGET or sure < self.jev.min_presence:
                 # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
                 # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
