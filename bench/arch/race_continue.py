@@ -23,6 +23,9 @@ from brain.cancel import CancelToken
 from brain.config import Config
 
 NOT_DONE = "Completion not verified"  # the reason JevFlashExecutor replans with when its stages are done
+# Jev's steps in a row for one Flash plan. Uncapped, Jev's step behind the consent popup (a click it had no
+# effect with, or a look again) repeated until the run ended in 4 of the 6 runs of 36 it lost (2026-10-20).
+MAX_CONTINUE = 2
 
 
 class _HandBack(Exception):
@@ -41,6 +44,7 @@ class ContinueFlash(JevFlashExecutor):
 class ContinuePlanner(JevFirstPlanner):
     flash: ContinueFlash
     jev_step: list[str] | None = None  # the step Jev took for Flash's request, until it is acknowledged
+    streak = 0  # Jev's steps since Flash last planned
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
         if self._flash_run != ctx.run_id:
@@ -48,10 +52,13 @@ class ContinuePlanner(JevFirstPlanner):
         try:
             return self.flash.next_actions(image, ctx)
         except _HandBack:
-            plan = self.steps.next_actions(image, ctx)
-            if plan.reasoning != FAILED:
+            # A note says the last step had no effect or was discarded: Flash replans from this screen.
+            plan = self.steps.next_actions(image, ctx) if self.streak < MAX_CONTINUE and not ctx.note else None
+            if plan is not None and plan.reasoning != FAILED:
+                self.streak += 1
                 self.jev_step = [a.brief() for a in plan.actions]
                 return replace(plan, reasoning=f"{plan.reasoning} [Jev continued Flash's request]")
+        self.streak = 0
         self.flash.hand_back = False  # Jev can't: Flash replans now, as the runtime does
         try:
             return self.flash.next_actions(image, ctx)

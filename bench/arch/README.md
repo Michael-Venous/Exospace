@@ -388,6 +388,38 @@ studio ×2) was recorded with the screen it judged and the fixture's state then 
   question without the planner's evidence (4). Finished planner work bottoms out at 0.60 ("get me back to
   my mail…"), so 0.6 is the highest gate with no rejections here; one request type supplies every false pass.
 
+**Measured: study 5's own screens through the runtime check, 3 times each** (`--study5`): gate 0.5 accepts
+10/12 finished and 0/18 traps; 0.6 accepts 9/12 and 0/18 (one finished task scored 0.54). Held-out: 12/15
+and 0/15 at both gates (its weak case, "taxes folder created", 0.12-0.22, fails either way).
+
+**Measured: the candidates end to end** (vague ×3, interleaved with the runtime race; `work/arch/e2e_vague-cont*`)
+
+| Run | Executor | Success | Planned wall | Flash calls / s | False "done" |
+|---|---|---|---|---|---|
+| A | runtime race | 35/36 | 342 s | 64 / 210 s | 1 |
+| A | race-gate0.6 | 35/36 | 287 s | 57 / 163 s | 1 |
+| A | race+continue (uncapped) | 30/36 | 289 s | 31 / 97 s | 2 |
+| B | runtime race | 30/36 | 279 s | 58 / 163 s | 4 |
+| B | race+continue (≤ 2 Jev steps a Flash plan) | 28/36 | 325 s | 41 / 154 s | 3 |
+
+- Letting Jev take the next step when Flash's stage ends halves Flash calls, but not the time or the misses:
+  uncapped, Jev repeated a no-effect click behind the consent popup until the run ended; capped, it saved
+  nothing (325 vs 279 s). Rejected.
+- The runtime race itself varies between interleaved runs (35/36 and 30/36 here; 23/24 and 36/36 before),
+  and its misses are nearly all the same false "done" on "put on something chill" (1, 4, 1, 0, 3 runs).
+  The 0.6 gate didn't change that in its one end-to-end run (1 vs 1): the trap screen scored ≥ 0.6 there.
+
+#### Proposal from study 10 (for the Agent owner; runtime files `brain/agent/jev_flash.py`, `race.py`)
+1. **Raise the planner's completion gate from 0.5 to 0.6.** Replayed 4 times on 129 labelled calls: false
+   "done" 5-7 → 1-3 of 65, no finished work rejected (0/36); study 5: −1 finished (an extra replan), no new
+   false done. Small, safe, and only a partial fix: one end-to-end run showed no difference.
+2. **Don't expect the gate to cut Flash calls.** Every planner rejection was correct (60/60). Repeated Flash
+   calls come from 1-stage plans (21/21 with 3.8 Flash): the lever is the planner prompt or model, not the
+   check. Handing the next step to Jev instead was measured and rejected (above).
+3. **Direct-click check (`race._goal_met`, 0.55):** 4 of 28 finished clicks rejected ("take it back out",
+   "actually go back"), each a planner call; its only executed step is "click on the control for:
+   <utterance>". Unmeasured fix to try: name what was clicked in that step.
+
 ### Streaming (study 2, `stream_study.py`)
 - Schema-enforced streaming is valid but only ~0.4 s faster (2.38 vs 2.79 s), because Flash
   plans **one stage per observation point** even when told to look ahead. That's sensible:

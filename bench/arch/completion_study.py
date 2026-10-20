@@ -12,6 +12,7 @@ the screen was taken. Only segments whose oracle is the goal itself count (kinds
 
   PYTHONPATH=. .venv/bin/python -m bench.arch.completion_study            # logged calls only, no API calls
   PYTHONPATH=. .venv/bin/python -m bench.arch.completion_study --replay   # + Jev replays
+  PYTHONPATH=. .venv/bin/python -m bench.arch.completion_study --study5   # study 5's screens, both gates
 """
 
 from __future__ import annotations
@@ -141,12 +142,39 @@ def report(rows: list[dict]) -> None:
         print(f"| {g} | {fp} | {rj} |")
 
 
+def study5(repeats: int) -> None:
+    """Study 5's finished-task and trap screens (and its held-out set) through the runtime's own check."""
+    from bench.arch import verify_study
+
+    cfg = Config.load()
+    jev = JevVision(cfg.typesafe_api_key, CancelToken(), OUT / "study5.jsonl", cfg.jev_model, 30)
+    sets = {"study 5": (verify_study.CASES, verify_study.render()),
+            "study 5 held-out": (verify_study.HELDOUT, verify_study.render(verify_study.heldout_screens()))}
+    for name, (cases, shots) in sets.items():
+        jobs = [(case, r) for case in cases for r in range(repeats)]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            scores = list(pool.map(lambda job: jev.completion(shots[job[0][1]], job[0][0], job[0][2],
+                                                              evidence=job[0][3]), jobs))
+        for gate in (COMPLETION_GATE, 0.6):
+            accepted = sum(s >= gate for (case, _), s in zip(jobs, scores) if case[4])
+            traps = sum(s >= gate for (case, _), s in zip(jobs, scores) if not case[4])
+            print(f"{name}, gate {gate}: accepts finished {accepted}/{sum(c[4] for c, _ in jobs)}, "
+                  f"false done {traps}/{sum(not c[4] for c, _ in jobs)}")
+        near = sorted(round(s, 2) for (case, _), s in zip(jobs, scores) if case[4] and s < 0.7)
+        print(f"  finished scores below 0.7: {near}")
+    jev.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--replay", action="store_true", help="ask Jev again on the saved screens")
+    parser.add_argument("--study5", action="store_true", help="study 5's screens through the runtime check")
     parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
+    if args.study5:
+        study5(args.repeats)
+        return
     saved = OUT / "rows.json"
     rows = calls()
     if args.replay:

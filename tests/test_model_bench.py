@@ -262,7 +262,7 @@ def _continuing(jev_fails: bool) -> ContinuePlanner:
     flash.next_actions = flash_step
     flash.acknowledge = lambda executed: flash.seen.append("flash ack")
     planner.__dict__.update(flash=flash, steps=_Steps("go" if jev_fails else "never"), _flash_run="r1",
-                            jev_step=None)
+                            jev_step=None, streak=0)
     planner.steps.acknowledge = lambda executed: None
     return planner
 
@@ -275,6 +275,16 @@ class RaceContinueTests(unittest.TestCase):
         planner.acknowledge(True)
         self.assertEqual(planner.flash.executed, ["hotkey CTRL+L", "click(500,500)"])
         self.assertNotIn("flash ack", planner.flash.seen)
+
+    def test_jev_continues_at_most_twice_in_a_row_and_never_after_a_step_with_no_effect(self):
+        planner = _continuing(jev_fails=False)
+        for _ in range(2):
+            planner.next_actions(SCREEN, _ctx("go to youtube and play lofi"))
+            planner.acknowledge(True)
+        self.assertEqual(planner.next_actions(SCREEN, _ctx("go to youtube and play lofi")).reasoning, "Flash replan")
+        noted = _continuing(jev_fails=False)
+        self.assertEqual(noted.next_actions(SCREEN, _ctx("play lofi", note="Screen unchanged; try something different.")).reasoning,
+                         "Flash replan")
 
     def test_flash_replans_only_when_jev_cannot(self):
         planner = _continuing(jev_fails=True)
