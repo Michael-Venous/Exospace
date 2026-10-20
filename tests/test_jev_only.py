@@ -24,13 +24,13 @@ class JevOnlyTests(unittest.TestCase):
     def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
-             target=BOX, run="r", drawing=.05, browser_front=.05, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
+             target=BOX, run="r", drawing=.05, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
              lookup=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
                 "app": {"box": dict(zip(("left", "right", "top", "bottom"), app))}, "site": {"noul": site},
-                "submit": {"noul": submit}, "browser_named": {"noul": .05}, "browser_front": {"noul": browser_front}, "left": {"noul": left},
+                "submit": {"noul": submit}, "browser_named": {"noul": .05}, "browser_front": {"noul": browser_front}, "opened_front": {"noul": opened_front}, "left": {"noul": left},
                 "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
@@ -55,6 +55,8 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("close google", complete=.46, next="close_tab", run="s").brief(), "hotkey(CTRL+W)")
         clicked = self.step("click the link", complete=.88, history=["click(300,300)"], run="t", left=.9)
         self.assertNotEqual(clicked.type, "done")  # after its own step only the line-done check ends it
+        # Brave in front of "open up chrome": a doubtful line-done (0.58) ends no line before its first step
+        self.assertNotEqual(self.step("open up chrome", left=.42, next="click", run="u").type, "done")
 
     def test_unfinished_goals_are_not_done(self):
         self.assertEqual(self.step("go to wikipedia", complete=.63).type, "click")
@@ -509,11 +511,11 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step(goal, left=.1, fits=.1, next="new_tab", history=closed, run="s",
                                    browser_front=.99).brief(), "hotkey(CTRL+T)")  # another browser window in front
 
-    def test_a_new_tab_with_no_browser_in_front_reopens_the_last_app(self):
+    def test_a_line_naming_no_app_with_another_app_in_front_reopens_the_last_app(self):
         goal = "open up chrome and close out the tab\nmake a new tab"
         closed = ["skill(open_app {'name': 'chrome'})", "hotkey(CTRL+W)"]
-        # the spreadsheet left in front fits the line (its sheet tabs)
-        plan = self.step(goal, left=.1, fits=.97, next="new_tab", history=closed)
+        # the spreadsheet left in front fits the line (its sheet tabs), and its add-sheet button is the step
+        plan = self.step(goal, left=.1, fits=.97, next="click", opened_front=.01, history=closed)
         self.assertEqual(plan.brief(), "skill(open_app {'name': 'chrome'})")
         self.assertTrue(self.last.blind)
 

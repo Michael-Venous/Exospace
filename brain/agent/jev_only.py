@@ -141,6 +141,7 @@ DRAWING = ("Are any controls in `screen`, such as a search box or round buttons,
 # page 0.44 and boxed the browser [0.01-0.99 x 0.04-0.98], and a switch clicked the middle of the page (v6-t1).
 FRONT = 0.9
 WINDOW = "Is an app window open in `screen`, rather than only the desktop or home screen?"
+OPENED_FRONT = "Is the window in front in `screen` the app {app}, rather than another app or only the desktop?"
 LAUNCHER_OPEN = "Is an app launcher or start menu open in `screen`, with a search field for typing an app's name?"
 QUESTION = ("Does the `goal` ask for information, an answer or an explanation, rather than for something to be "
             "done on the device?")
@@ -398,11 +399,10 @@ class JevOnlyPlanner:
             # goes on in the app the request last opened, by name, since a visible app suited to the line can be
             # another browser.
             closed = probability(answers["window"].get("noul")) < GATE
-            # Nor does a new tab with no browser in front: Calc behind the closed Chrome fitted "make a new tab" 0.97
-            # (its sheet tabs), browser_front 0.01, and Ctrl+T went to Calc (2026-10-19).
-            tabless = answers["next"].get("choice") == "new_tab" \
-                and probability(answers["browser_front"].get("noul")) < GATE
-            again = self.opened if (closed or tabless) and not name else None
+            # Nor does another app in front: Calc behind the closed Chrome fitted "make a new tab" 0.97 (its sheet
+            # tabs), and the step went to Calc, as Ctrl+T and as a click on its add-sheet button (2026-10-19).
+            elsewhere = "opened_front" in answers and probability(answers["opened_front"].get("noul")) < GATE
+            again = self.opened if (closed or elsewhere) and not name else None
             # The open_app skill knows each launcher's keys (a phone's drawer needs Ctrl+F before typing). Once per
             # app in a clause: one line can name two ("open up discord, close discord, and open a terminal").
             launch = Action("skill", name="open_app", args={"name": name or again})
@@ -416,7 +416,7 @@ class JevOnlyPlanner:
             # again for each line of "search for horses and click the third video" on a DeX phone (2026-10-19).
             if ctx.profile.input == "touch" and name and not fits and launch.brief() not in steps:
                 return Plan("Open the app", [launch], [], blind=True)
-            if (not fits or tabless) and again and launch.brief() not in steps:
+            if (not fits or elsewhere) and again and launch.brief() not in steps:
                 return wait or Plan("Open the app again", [launch], [], blind=True)
             # Only a request that names an app or a site is routed: gibberish ("asdkjh qwe zxcv") opened the launcher.
             if not fits and name:
@@ -629,7 +629,8 @@ class JevOnlyPlanner:
                    "browser_front": {"type": "noul", "instructions": BROWSER_FRONT},
                    "launcher": {"type": "noul", "instructions": LAUNCHER_OPEN},
                    "window": {"type": "noul", "instructions": WINDOW}} \
-            if route and ctx.profile.os in OPEN_APP_KEYS else {}  # firmware has no apps
+            | ({"opened_front": {"type": "noul", "instructions": OPENED_FRONT.format(app=json.dumps(self.opened))}}
+               if self.opened else {}) if route and ctx.profile.os in OPEN_APP_KEYS else {}  # firmware has no apps
         irreversible = {"irreversible": {"type": "noul", "instructions": NEXT_IRREVERSIBLE}} if guard else {}
         drawing = {"drawing": {"type": "noul", "instructions": DRAWING}} if opened else {}
         stepping = irreversible | drawing | {
@@ -848,7 +849,9 @@ def _finished(answers: dict, steps: list[str], done: float, seen: bool, gate: fl
     # shortcut: a copy made through a menu still reads untaken while Jev picks copy; count menu copies if it matters.
     untaken = answers["next"].get("choice") in CLIPBOARD \
         and not any(re.fullmatch(rf"hotkey\(.*\+[{''.join(CLIPBOARD.values())}]\)", s, re.I) for s in steps)
-    return done >= gate and not unsent and not idle and not untaken
+    # A line that took no step of its own is held to ALREADY: "open up chrome" with Brave in front read done 0.58
+    # and the request went on in the user's Brave (2026-10-19).
+    return done >= (gate if steps else max(gate, ALREADY)) and not unsent and not idle and not untaken
 
 
 def _is_the_request(text: str, line: str) -> bool:
