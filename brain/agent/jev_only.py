@@ -365,7 +365,13 @@ class JevOnlyPlanner:
         raw = ctx.goal.splitlines()
         while True:
             lines = self._lines(ctx.goal)
-            if not lines[self.line]:  # its words went on the line before it, which is done
+            if self.line in self.joined:
+                # Its words went on a line an earlier run finished: that line is judged again with them. "In d 5"
+                # clicked its cell and ended, and "type hello." said after it, joined on, ended untyped (2026-10-20).
+                j = max((k for k in range(self.line) if lines[k]), default=0)
+                self.line, self.since, self.finished = j, self.prev, "\n".join(raw[:j])
+                continue
+            if not lines[self.line]:  # an approval
                 return self._next_line(image, ctx, lines, "Jev verified the completed goal")
             before = lines[self.line - 1] if self.line else ""
             asks = [(lines[self.line], ctx.history[self.since:], _seen(ctx.history, before, self.prev, self.since),
@@ -851,6 +857,8 @@ class JevOnlyPlanner:
 
     def _next_line(self, image: bytes, ctx: StepContext, lines: list[str], why: str) -> Plan:
         """The line Jev sees is done: go on to the next one, or the request is done."""
+        while self.line + 1 in self.joined:  # judged done with the line they joined
+            self.line += 1
         if self.line + 1 < len(lines):
             self._advance(ctx)
             self.seen = False

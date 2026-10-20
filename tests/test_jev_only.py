@@ -137,6 +137,10 @@ class JevOnlyTests(unittest.TestCase):
         rests = [c for c in self.planner.jev.evaluate.call_args_list if "joined" in c.args[1]]
         self.assertEqual(len(rests), 1)  # asked once
         self.assertEqual(rests[0].kwargs["state"], {"goal": "Close this browser\nbrowser."})
+        # the rest of a line an earlier run finished is still to do once joined on
+        self.assertEqual(self.step("In d 5", left=.1, run="t").type, "done")
+        self.assertNotEqual(self.step("In d 5\nUser correction: type hello.", joined="one", run="u").type, "done")
+        self.assertEqual(self.planner.current_line, "In d 5 type hello.")
         # a request of its own is a line of its own
         self.step("open up youtube\nUser correction: search for horses", left=.1, next="click", run="s")
         self.assertEqual(self.planner.current_line, "search for horses")
