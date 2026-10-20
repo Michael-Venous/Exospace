@@ -28,7 +28,7 @@ import numpy as np
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import COMPLETION_QUESTION, IRREVERSIBLE_KINDS, JevVision, probability
-from brain.agent.triage import (GATE, ZOOM_WINDOW, beside, box_center, box_contains, box_size, encloses, mark, refine,
+from brain.agent.triage import (GATE, ZOOM_WINDOW, Box, beside, box_center, box_contains, box_size, encloses, mark, refine,
                                 spans, zoom)
 from brain.skills import OPEN_APP_KEYS
 from brain.types import Action
@@ -162,6 +162,10 @@ BIG_TARGET = 0.1  # of the screen's width and height
 # A zoom shows the whole target with this margin: one cutting YouTube's search box to its last letter left Jev
 # 0.26 sure it was there (4/4), one holding all of it 0.75.
 ZOOM_MARGIN = 1.15
+# A zoom's box this many times the first look's along an axis boxed a run of controls along it: of a desktop's
+# LockDown Browser and Chrome icons, one above the other, both zooms boxed the two, 2.1 times the first box's height,
+# and the double click at its centre landed between them (2026-10-20). Along it the click goes where the boxes overlap.
+SPAN = 1.5
 NEXT_IRREVERSIBLE = "Would the next step of the `goal`, after the `executed_steps`, " + IRREVERSIBLE_KINDS
 WAIT = Action("skill", name="wait", args={"s": 3.0})  # the app or its results still appearing
 LOOK_AGAIN = Action("skill", name="wait", args={"s": 1.0})  # a page still drawing; a drawn one waited 10 s
@@ -219,6 +223,13 @@ CLIPBOARD = {"copy": "C", "paste": "V"}  # the key each clipboard step presses w
 # The agent joins words said mid-run on as "User correction: ..." lines (loop.py, app.py). Jev read "add hello to b1"
 # so marked as a fix to "open up libre office" and waited on its Start Center (3/3); unmarked it clicked Calc (2/2).
 CORRECTION = "User correction: "
+# Each pause of 0.2 s ends a segment, sent as such a line: "Click on eras and ages" came as "Click on errors" and
+# "ages.", and two "close this browser" runs closed it, then went on to a tail of their own, failing on it or
+# opening Brave again (2026-10-20). Asked so, Jev read 7 such cut sentences one (4/4 each) and 5 of 7 requests two:
+# 2 joined it "and"-led, the one the page sends whole anyway.
+JOIN = ("Speech to text split the goal into two lines at a pause. Did the pause cut one sentence in two (the first "
+        "line stops before its sentence ends, or the second line only finishes it), or did the user say two separate "
+        "requests?")
 MAX_SPANS = 250  # Jev's choice budget (bench/interpreter_screen.py)
 FAILED = "Jev can't take the next step"
 Ask = tuple[bytes, str, list[tuple[dict, dict]]]  # an image, its trace label, and question sets with their state
@@ -253,12 +264,22 @@ class JevOnlyPlanner:
         # Launches the skill refused (no launcher showed): never in the history, each was tried again, 2 s apiece
         # ("open google" three times on a desktop whose launcher key showed only the panel, 2026-10-20).
         self.refused: list[str] = []
+        self.joined: set[int] = set()  # the goal's lines Jev read as the rest of the line before: each is joined on
+        self.judged = 1  # the goal's lines Jev read so: the first line is no rest
 
     @property
     def current_line(self) -> str:
         """The line of the request Jev's last step was for."""
-        lines = self.goal.splitlines()
-        return lines[self.line].removeprefix(CORRECTION) if self.line < len(lines) else self.goal
+        lines = self._lines(self.goal)
+        return lines[self.line] if self.line < len(lines) else self.goal
+
+    def _lines(self, goal: str) -> list[str]:
+        """The goal's lines, each joined on the line before it is the rest of, its own line left empty."""
+        lines = [line.removeprefix(CORRECTION) for line in goal.splitlines()]
+        for i in sorted(self.joined):
+            j = max((k for k in range(i) if lines[k]), default=0)
+            lines[j], lines[i] = f"{lines[j]} {lines[i]}", ""
+        return lines
 
     def acknowledge(self, executed: bool) -> None:
         if not executed:
@@ -278,10 +299,10 @@ class JevOnlyPlanner:
             self.refused = []
             if not ctx.goal.startswith(self.goal + "\n"):
                 self.opened = None  # a new request: what an earlier one opened isn't its app
+                self.joined, self.judged = set(), 1
         # A run that failed starts again with the words said since joined on, its history empty: "make a new tab"
         # after closing Chrome's last tab found no app to reopen (v11-t4).
         self.goal, self.opened = ctx.goal, _last_opened(ctx.history) or self.opened
-        lines = [line.removeprefix(CORRECTION) for line in ctx.goal.splitlines()]
         clicked, self.clicked = self.clicked, None
         doubted, self.doubted = self.doubted, None
         self.idle = ctx.history[-1:] == [LOOK_AGAIN.brief()] and self.screen is not None and _same(self.screen, image)
@@ -303,17 +324,31 @@ class JevOnlyPlanner:
         # shortcut: a correction said mid-line waits for that line to finish; show Jev the later lines too if
         # corrections need to cut in.
         # The next line is asked alongside, so its first step needs no look of its own once this line is done.
-        before = lines[self.line - 1] if self.line else ""
-        asks = [(lines[self.line], ctx.history[self.since:], _seen(ctx.history, before, self.prev, self.since),
-                 not self.routed)]
-        if self.line + 1 < len(lines):
-            asks.append((lines[self.line + 1], [], _seen(ctx.history, lines[self.line], self.since), True))
-        typed = _typed_into_field(ctx.history[self.since:], self.typed)
-        looks = [self._line_done(mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED) if clicked
-                 else self._line_done(image, ctx, lines)]
-        shown = [self._shown(image, ctx, lines[self.line], typed)] if typed else []
-        replies = self._evaluate_all(ctx, looks + shown + [self._ask(image, ctx, *ask, guard, opened) for ask in asks])
-        answered = replies[len(looks) + len(shown):]
+        # Lines new to Jev are asked too whether each is the rest of the line before; one that is asks again, joined.
+        raw = ctx.goal.splitlines()
+        while True:
+            lines = self._lines(ctx.goal)
+            if not lines[self.line]:  # its words went on the line before it, which is done
+                return self._next_line(image, ctx, lines, "Jev verified the completed goal")
+            before = lines[self.line - 1] if self.line else ""
+            asks = [(lines[self.line], ctx.history[self.since:], _seen(ctx.history, before, self.prev, self.since),
+                     not self.routed)]
+            if self.line + 1 < len(lines) and lines[self.line + 1]:
+                asks.append((lines[self.line + 1], [], _seen(ctx.history, lines[self.line], self.since), True))
+            typed = _typed_into_field(ctx.history[self.since:], self.typed)
+            looks = [self._line_done(mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED) if clicked
+                     else self._line_done(image, ctx, lines)]
+            shown = [self._shown(image, ctx, lines[self.line], typed)] if typed else []
+            rests = [i for i in range(self.judged, len(raw)) if raw[i].startswith(CORRECTION)]
+            self.judged = len(raw)
+            replies = self._evaluate_all(ctx, looks + shown + [self._ask(image, ctx, *ask, guard, opened) for ask in asks]
+                                         + [self._rest(image, raw, i) for i in rests])
+            joined = {i for i, (answers, _, _) in zip(rests, replies[len(replies) - len(rests):])
+                      if answers["joined"].get("choice") == "one"}
+            if not joined:
+                break
+            self.joined |= joined
+        answered = replies[len(looks) + len(shown):len(replies) - len(rests)]
         missing = bool(shown) and probability(replies[len(looks)][0]["typed"].get("noul")) < MISSING
         left = max(1 - probability(answers["left"].get("noul")) for answers, _, _ in replies[:len(looks)])
         # An input that changed nothing finished nothing: a Brave Search result clicked 1.3 s after the results drew
@@ -525,7 +560,8 @@ class JevOnlyPlanner:
                     return self._next_line(image, ctx, lines, "Jev verified the completed goal")
                 if not looks:
                     return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
-                point = min((p for p, _ in looks), key=lambda p: math.dist(p, point))
+                first = _edges(answers["target"], size, padded)
+                point = min((_narrowed(p, b, first) for p, b in looks), key=lambda p: math.dist(p, point))
             if step == "copy":
                 actions.append(Action("skill", name="select", args={"x": round(point[0], 3), "y": round(point[1], 3)}))
             else:
@@ -668,9 +704,19 @@ class JevOnlyPlanner:
 
     def _line_done(self, image: bytes, ctx: StepContext, lines: list[str], question: str = LINE_LEFT) -> Ask:
         """Whether the line Jev sees is left to do ("left"), asked with the line before it in view."""
-        shown = "\n".join(lines[max(self.line - 1, 0):self.line + 1])
+        shown = "\n".join(filter(None, lines[max(self.line - 1, 0):self.line + 1]))
         return image, "line-done", [({"left": {"type": "noul", "instructions": question}},
                                      {"goal": shown, "executed_steps": ctx.history[self.prev:]})]
+
+    def _rest(self, image: bytes, raw: list[str], i: int) -> Ask:
+        """Whether the goal's line `i` is the rest of the sentence on the line before it ("joined": one)."""
+        first, rest = (line.removeprefix(CORRECTION) for line in raw[i - 1:i + 1])
+        said = f"{first} {rest.rstrip('.')}"
+        readings = {"one": f"One request: {json.dumps(said, ensure_ascii=False)}",
+                    "two": f"Two requests: first {json.dumps(first, ensure_ascii=False)}, "
+                           f"then {json.dumps(rest, ensure_ascii=False)}"}
+        return image, "join", [({"joined": {"type": "choice", "instructions": JOIN, "criteria": readings}},
+                                {"goal": f"{first}\n{rest}"})]
 
     def _shown(self, image: bytes, ctx: StepContext, line: str, text: str) -> Ask:
         """Whether the text the line typed shows where it was typed ("typed")."""
@@ -861,6 +907,30 @@ def _finished(answers: dict, steps: list[str], done: float, seen: bool, gate: fl
     # A line that took no step of its own is held to ALREADY: "open up chrome" with Brave in front read done 0.58
     # and the request went on in the user's Brave (2026-10-19).
     return done >= (gate if steps else max(gate, ALREADY)) and not unsent and not idle and not untaken
+
+
+def _edges(answer: dict, size: tuple[int, int], padded: tuple[int, int]) -> Box | None:
+    """A box answer as (left, top, right, bottom, 0-1 of the image), as a zoom gives its box."""
+    box = answer.get("box") or {}
+    try:
+        left, right, top, bottom = (probability(box.get(k)) for k in ("left", "right", "top", "bottom"))
+    except ValueError:
+        return None
+    (w, h), (pw, ph) = size, padded
+    return left * pw / w, top * ph / h, right * pw / w, bottom * ph / h
+
+
+def _narrowed(point: tuple[float, float], box: Box | None, first: Box | None) -> tuple[float, float]:
+    """A zoom's `point`, along each axis on which its `box` is over SPAN times as long as the `first` look's, in the
+    middle of where the two overlap: inside the zoom's box still."""
+    if box is None or first is None:
+        return point
+    moved = list(point)
+    for axis in (0, 1):
+        low, high = max(box[axis], first[axis]), min(box[axis + 2], first[axis + 2])
+        if box[axis + 2] - box[axis] > SPAN * (first[axis + 2] - first[axis]) and low < high:
+            moved[axis] = (low + high) / 2
+    return moved[0], moved[1]
 
 
 def _is_the_request(text: str, line: str) -> bool:

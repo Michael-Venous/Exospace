@@ -25,7 +25,7 @@ class JevOnlyTests(unittest.TestCase):
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
-             lookup=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse"):
+             lookup=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
@@ -34,7 +34,7 @@ class JevOnlyTests(unittest.TestCase):
                 "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
-                "lookup": {"noul": lookup}, "copy_present": {"noul": .5}, "copied": copied}
+                "lookup": {"noul": lookup}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined}}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
         profile = DeviceProfile(os, Rect(0, 0, 400, 300), device, 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
@@ -122,6 +122,27 @@ class JevOnlyTests(unittest.TestCase):
         ctx = StepContext(self.planner.goal, DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1), Mock(), [], 2, 10,
                           run_id="r")
         self.assertEqual(self.planner.line_done(b"img", ctx).actions[0].type, "done")  # Flash finished its last line
+
+    def test_the_rest_of_a_sentence_said_after_a_pause_joins_its_line(self):
+        goal = "Close this browser\nUser correction: browser."
+        self.assertEqual(self.step(goal, joined="one", left=.9, next="close_app").brief(), "hotkey(ALT+F4)")
+        self.assertEqual(self.planner.current_line, "Close this browser browser.")
+        # once its line is done the request is: the rest is no request of its own
+        self.assertEqual(self.step(goal, left=.3, next="click", history=["hotkey(ALT+F4)"]).type, "done")
+        rests = [c for c in self.planner.jev.evaluate.call_args_list if "joined" in c.args[1]]
+        self.assertEqual(len(rests), 1)  # asked once
+        self.assertEqual(rests[0].kwargs["state"], {"goal": "Close this browser\nbrowser."})
+        # a request of its own is a line of its own
+        self.step("open up youtube\nUser correction: search for horses", left=.1, next="click", run="s")
+        self.assertEqual(self.planner.current_line, "search for horses")
+
+    def test_a_zoom_boxing_a_column_of_controls_clicks_the_row_of_the_first_look(self):
+        # LockDown Browser above Chrome on a desktop: both zooms boxed the two icons (2026-10-20)
+        first = {"box": {"left": .02, "right": .07, "top": .68, "bottom": .76}, "confidence": .2}
+        column = (.06, .5658, .0989, .7354)
+        action = self.step("open up a browser", next="double_click", target=first, looks=((.0794, .6506), (.0794, .6506)),
+                           boxes=(column, column))
+        self.assertEqual((round(action.x, 3), round(action.y, 3)), (.079, .708))  # Chrome's, not the gap above it
 
     def test_unclear_target_fails_instead_of_guessing(self):
         self.assertEqual(self.step("click the other one", present=.4).type, "fail")
