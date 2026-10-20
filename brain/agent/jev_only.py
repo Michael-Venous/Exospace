@@ -398,7 +398,11 @@ class JevOnlyPlanner:
             # goes on in the app the request last opened, by name, since a visible app suited to the line can be
             # another browser.
             closed = probability(answers["window"].get("noul")) < GATE
-            again = self.opened if closed and not name else None
+            # Nor does a new tab with no browser in front: Calc behind the closed Chrome fitted "make a new tab" 0.97
+            # (its sheet tabs), browser_front 0.01, and Ctrl+T went to Calc (2026-10-19).
+            tabless = answers["next"].get("choice") == "new_tab" \
+                and probability(answers["browser_front"].get("noul")) < GATE
+            again = self.opened if (closed or tabless) and not name else None
             # The open_app skill knows each launcher's keys (a phone's drawer needs Ctrl+F before typing). Once per
             # app in a clause: one line can name two ("open up discord, close discord, and open a terminal").
             launch = Action("skill", name="open_app", args={"name": name or again})
@@ -411,9 +415,9 @@ class JevOnlyPlanner:
             # The demo phone ignored taps; its keyboard launcher works. Not for the app in front: Brave was launched
             # again for each line of "search for horses and click the third video" on a DeX phone (2026-10-19).
             if ctx.profile.input == "touch" and name and not fits and launch.brief() not in steps:
-                return Plan("Open the app", [launch], [])
-            if not fits and again and launch.brief() not in steps:
-                return wait or Plan("Open the app again", [launch], [])
+                return Plan("Open the app", [launch], [], blind=True)
+            if (not fits or tabless) and again and launch.brief() not in steps:
+                return wait or Plan("Open the app again", [launch], [], blind=True)
             # Only a request that names an app or a site is routed: gibberish ("asdkjh qwe zxcv") opened the launcher.
             if not fits and name:
                 # An app still opening is the one just launched: clicking its panel icon minimised it.
@@ -768,10 +772,11 @@ class JevOnlyPlanner:
             # shortcut: one click opens taskbar, dock and launcher entries but not desktop icons; double-click
             # when the app box is a desktop icon if those get missed.
             return Plan("Switch to the app for the request", [switch], [])
+        # Blind: a launch goes by name, so a Short playing behind it discarded "open up discord" twice (2026-10-19).
         if launch.brief() not in steps:
-            return Plan("Open the app", [launch], [])
+            return Plan("Open the app", [launch], [], blind=True)
         if launcher.brief() not in steps:
-            return Plan("Open the app launcher", [launcher], [])
+            return Plan("Open the app launcher", [launcher], [], blind=True)
         if ctx.history[-1] != WAIT.brief():  # the launcher, its results or the chosen app still appearing
             return Plan("Waiting for the app", [WAIT], [])
         return _fail("no app suited to the request is visible")

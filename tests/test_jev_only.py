@@ -458,6 +458,7 @@ class JevOnlyTests(unittest.TestCase):
         goal = "find a video about horses"
         named = str(spans(goal, 250).index("video"))
         self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), "skill(open_app {'name': 'video'})")
+        self.assertTrue(self.last.blind)  # launched by name whatever plays behind it
         opened = ["skill(open_app {'name': 'video'})"]
         self.assertEqual(self.step(goal, fits=.1, app_name=named, history=opened).brief(), "hotkey(GUI)")
         self.assertEqual(self.step(goal, fits=.1, app_name=named, history=opened + ["hotkey(GUI)"]).brief(),
@@ -505,8 +506,16 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step(goal, left=.1, fits=.1, window=.1, next="new_tab", history=closed).brief(),
                          "skill(open_app {'name': 'chrome'})")
         self.setUp()  # a planner that hasn't seen the first line done
-        self.assertEqual(self.step(goal, left=.1, fits=.1, next="new_tab", history=closed, run="s").brief(),
-                         "hotkey(CTRL+T)")
+        self.assertEqual(self.step(goal, left=.1, fits=.1, next="new_tab", history=closed, run="s",
+                                   browser_front=.99).brief(), "hotkey(CTRL+T)")  # another browser window in front
+
+    def test_a_new_tab_with_no_browser_in_front_reopens_the_last_app(self):
+        goal = "open up chrome and close out the tab\nmake a new tab"
+        closed = ["skill(open_app {'name': 'chrome'})", "hotkey(CTRL+W)"]
+        # the spreadsheet left in front fits the line (its sheet tabs)
+        plan = self.step(goal, left=.1, fits=.97, next="new_tab", history=closed)
+        self.assertEqual(plan.brief(), "skill(open_app {'name': 'chrome'})")
+        self.assertTrue(self.last.blind)
 
     def test_a_failed_request_continued_in_a_new_run_reopens_the_app_it_opened(self):
         goal = "open up chrome and close out the tab"

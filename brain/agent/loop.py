@@ -93,12 +93,14 @@ class Agent:
                     break
                 times = dict(t_capture=0.0, t_upload=0.0, t_model=0.0, t_execute=0.0, t_settle=0.0)
                 try:
+                    limit = ctl.settle.timeout_s
                     if settled_s is None:  # otherwise the previous step's last action already settled
-                        settled_s = ctl.wait_settled(react=False)  # no input was just sent
+                        limit = ctl.settle.look_s
+                        settled_s = ctl.wait_settled(react=False, timeout_s=limit)  # no input was just sent
                         times["t_settle"] += settled_s
                     # A screen still moving at the settle timeout (a live camera preview, a video) differs at
                     # every grab: judging it stale discarded nearly every plan (measured on Android's camera).
-                    moving = settled_s >= ctl.settle.timeout_s
+                    moving = settled_s >= limit
                     settled_s = None
                     stamp = time.monotonic()
                     frame = ctl.capture.grab()

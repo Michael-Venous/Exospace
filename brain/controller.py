@@ -44,6 +44,9 @@ class SettleConfig:
     load_react_s: float = 1.0
     stable_s: float = 0.12  # screen must stay still this long
     timeout_s: float = 2.5  # stop waiting on spinners and animations
+    # A run's first look, with no input of ours to show: a Short playing behind held it 1.4-1.7 s (2026-10-19);
+    # a still screen settles in ~0.15 s.
+    look_s: float = 0.4
     poll_s: float = 0.03
     threshold: float = 1.5  # mean thumbnail change (0-255) that counts as "still"
 
@@ -154,10 +157,11 @@ class Controller:
 
     # -- settling ----------------------------------------------------------
 
-    def wait_settled(self, loading: bool = False, react: bool = True) -> float:
+    def wait_settled(self, loading: bool = False, react: bool = True, timeout_s: float | None = None) -> float:
         """Block until the screen stops changing. Returns seconds waited. `loading`: the last input may
         have started a page load, so the screen must stay still longer. `react`: input was just sent, so a
-        still screen may only be slow to react; False skips that wait (a run's first look)."""
+        still screen may only be slow to react; False skips that wait (a run's first look). `timeout_s`
+        overrides the config's."""
         cfg = self.settle
         stable_s = cfg.load_stable_s if loading else cfg.stable_s
         react_s = (max(cfg.react_s, cfg.load_react_s) if loading else cfg.react_s) if react else 0.0
@@ -181,7 +185,7 @@ class Controller:
                     changed = changed or prev is not None
                     still_since = None
                 prev = thumb
-            if elapsed >= cfg.timeout_s:
+            if elapsed >= (cfg.timeout_s if timeout_s is None else timeout_s):
                 return elapsed
             self.cancel.sleep(cfg.poll_s)
 

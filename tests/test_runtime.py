@@ -96,6 +96,12 @@ class RuntimeTests(unittest.TestCase):
         self.assertLess(controller.wait_settled(react=False), .1)
         self.assertGreaterEqual(controller.wait_settled(), .3)  # input just sent may be slow to show
 
+    def test_a_moving_screen_settles_at_the_given_timeout(self):
+        controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(timeout_s=5, poll_s=.001))
+        frames = iter(np.full((100, 160, 3), v % 256, dtype=np.uint8) for v in range(0, 10**6, 40))
+        self.capture.grab = lambda: next(frames)  # a video: every grab differs
+        self.assertLess(controller.wait_settled(react=False, timeout_s=.05), .5)
+
     def test_words_said_mid_run_join_the_request_at_the_next_step(self):
         goals = []
         executor = Mock()
