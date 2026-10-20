@@ -123,6 +123,19 @@ class RuntimeTests(unittest.TestCase):
         self.assertLess(controller.wait_settled(react=False), 1)  # a 5 s timeout otherwise
         self.assertFalse(controller.wait_for_change(.05))
 
+    def test_a_video_playing_in_a_still_page_settles_on_the_first_look(self):
+        controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(timeout_s=5, poll_s=.001))
+        tick = iter(range(10**6))
+
+        def video(part):  # a part of the screen plays; the rest is still
+            frame = np.zeros((360, 640, 3), dtype=np.uint8)
+            frame[:int(360 * part), :int(640 * part)] = next(tick) * 40 % 256
+            return frame
+        self.capture.grab = lambda: video(.25)
+        self.assertLess(controller.wait_settled(), 1)  # a 5 s timeout otherwise
+        self.capture.grab = lambda: video(.8)  # most of the screen moving is a page drawn or scrolled
+        self.assertGreaterEqual(controller.wait_settled(timeout_s=.3), .3)
+
     def test_words_said_mid_run_join_the_request_at_the_next_step(self):
         goals = []
         executor = Mock()
