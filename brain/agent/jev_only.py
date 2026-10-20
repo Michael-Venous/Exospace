@@ -226,10 +226,13 @@ CORRECTION = "User correction: "
 # Each pause of 0.2 s ends a segment, sent as such a line: "Click on eras and ages" came as "Click on errors" and
 # "ages.", and two "close this browser" runs closed it, then went on to a tail of their own, failing on it or
 # opening Brave again (2026-10-20). Asked so, Jev read 7 such cut sentences one (4/4 each) and 5 of 7 requests two:
-# 2 joined it "and"-led, the one the page sends whole anyway.
-JOIN = ("Speech to text split the goal into two lines at a pause. Did the pause cut one sentence in two (the first "
-        "line stops before its sentence ends, or the second line only finishes it), or did the user say two separate "
-        "requests?")
+# 2 joined it "and"-led, the one the page sends whole anyway. Yet "Close this" + "browser." read two (0.8, 4/4), "Close
+# this" whole on its own; told a line naming no action finishes the one before, 12/12 such cuts read one (0.89+) and
+# 6/6 requests two, a correction ("no, firefox instead") one: joined it is read whole, never done twice (2026-10-20).
+JOIN = ("Speech to text split the goal into two lines at a pause. Did the pause cut one sentence in two, or did the "
+        "user say two separate requests? A line is a request of its own only if it says an action of its own to take; "
+        "a line that names no action (only a thing, place or word) finishes the sentence on the line before, even when "
+        "that line could stand alone.")
 MAX_SPANS = 250  # Jev's choice budget (bench/interpreter_screen.py)
 FAILED = "Jev can't take the next step"
 Ask = tuple[bytes, str, list[tuple[dict, dict]]]  # an image, its trace label, and question sets with their state
