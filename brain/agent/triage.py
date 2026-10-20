@@ -15,7 +15,7 @@ from typing import Literal
 import cv2
 import numpy as np
 
-from brain.agent.jev import IRREVERSIBLE_KINDS, JevVision, probability
+from brain.agent.jev import IRREVERSIBLE_KINDS, JEV_SIDE, JevVision, probability
 from brain.cancel import CancelToken
 
 Mode = Literal["act", "plan", "none", "scroll", "launch"]
@@ -298,7 +298,11 @@ def _crop_around(jpeg: bytes, point: tuple[float, float],
     cx = min(max(point[0] * w, half_w), w - half_w)
     cy = min(max(point[1] * h, half_h), h - half_h)
     x0, y0, x1, y1 = int(cx - half_w), int(cy - half_h), int(cx + half_w), int(cy + half_h)
-    crop = cv2.resize(image[y0:y1, x0:x1], None, fx=ZOOM_SCALE, fy=ZOOM_SCALE, interpolation=cv2.INTER_CUBIC)
+    # No larger than Jev takes: a wide target's crop (Gmail's first email) blew up to 2560 px for Jev to shrink back,
+    # 0.18 s for its two zooms on the Pi, 0.07 s at Jev's size (2026-10-20).
+    scale = min(ZOOM_SCALE, JEV_SIDE / max(x1 - x0, y1 - y0))
+    crop = cv2.resize(image[y0:y1, x0:x1], None, fx=scale, fy=scale,
+                      interpolation=cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA)
     ok, buf = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
     if not ok:
         raise ValueError("crop encoding failed")

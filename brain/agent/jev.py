@@ -43,14 +43,17 @@ def probability(value: object) -> float:
     return float(value)
 
 
+# Jev's longest side. A 1080p screen sent at 1280 px was 0.3 s faster a step but fitted "close discord" to
+# Discord in front 0.46-0.58 (0.75-0.86 at 1568, 4 tries each) and boxed part of YouTube's search box.
+JEV_SIDE = 1568
+
+
 def prepare_image(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
     image = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError('Invalid image')
     h, w = image.shape[:2]
-    # Jev's longest side. A 1080p screen sent at 1280 px was 0.3 s faster a step but fitted "close discord" to
-    # Discord in front 0.46-0.58 (0.75-0.86 at 1568, 4 tries each) and boxed part of YouTube's search box.
-    scale = min(1.0, 1568 / max(h, w))
+    scale = min(1.0, JEV_SIDE / max(h, w))
     w, h = max(1, round(w * scale)), max(1, round(h * scale))
     image = cv2.resize(image, (w, h), interpolation=cv2.INTER_AREA)
     pw, ph = max(w, 280), max(h, 280)
