@@ -27,6 +27,11 @@ RESUMABLE = frozenset({"target disconnected", "video lost"})
 # Plans in a row discarded for a change where they aimed before the spot counts as moving: a preview YouTube played
 # under the pointer discarded 48 clicks on "the third video" until the step limit (2026-10-19).
 MAX_DISCARDS = 2
+# How much the area a plan aims at must change before the plan is discarded. Of 8 discards (2026-10-18..20), the 6
+# whose replan clicked the same spot changed it 1.56-2.64 (a search box restyling as YouTube drew, a hover highlight),
+# each costing a ~1.1 s replan; the 2 whose target moved changed it 133-173. The settle threshold (1.5) is a whole-screen
+# measure. shortcut: 8 samples; recheck with the discard listing if a kept plan clicks a moved target.
+AREA_MOVED = 6.0
 
 
 @dataclass(frozen=True)
@@ -150,10 +155,10 @@ class Agent:
                         # Only what the first action aims at must be where the plan saw it: Google's results
                         # drawing in below the address bar a plan clicked discarded that plan (2026-10-18).
                         first = plan.actions[0]
-                        changed = (area_change(frame, latest, profile.rect, first.x, first.y)
-                                   if first.x is not None and first.y is not None
-                                   else frame_change(before, thumbnail(latest)))
-                        if not moving and changed >= ctl.settle.threshold and discarded < MAX_DISCARDS:
+                        moved = (area_change(frame, latest, profile.rect, first.x, first.y) >= AREA_MOVED
+                                 if first.x is not None and first.y is not None
+                                 else frame_change(before, thumbnail(latest)) >= ctl.settle.threshold)
+                        if not moving and moved and discarded < MAX_DISCARDS:
                             discarded += 1
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
                             progress_at += times["t_model"]  # a plan never tried: its thinking time isn't a stall

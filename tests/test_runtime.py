@@ -375,6 +375,16 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.agent(self.fast).run("Go to a site", self.profile).status, "ask_user")
         self.assertIn("click", [command["op"] for command in self.hid.commands])
 
+    def test_a_slight_redraw_at_the_target_keeps_the_plan(self):
+        def next_actions(image, ctx):
+            if ctx.step == 1:
+                self.capture.frame[:] = self.capture.frame + 3  # the search box restyles as the page finishes
+                return Plan("search box", [Action("click", x=.5, y=.1)], [])
+            return Plan("ask", [Action("ask_user", question="Next?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.assertEqual(self.agent(self.fast).run("Search", self.profile).status, "ask_user")
+        self.assertIn("click", [command["op"] for command in self.hid.commands])
+
     def test_a_click_is_judged_on_the_screen_it_was_sent_to(self):
         notes = []
         def next_actions(image, ctx):
