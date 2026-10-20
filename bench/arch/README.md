@@ -194,7 +194,7 @@ GPT-6 Luna is not faster (planning slower) and acted unsafely twice (e.g. "no wa
 one"). The faster models are unsafe on messy speech. Flash 3.8 stays the planner; the two Flash
 rows differ only by sampling noise (21 vs 25 of 36). Direct commands don't wait on any LLM.
 
-### Vague speech and the Jev → Flash hand-off (study 9, 2026-10-20: built, not yet run)
+### Vague speech and the Jev → Flash hand-off (study 9, 2026-10-20)
 **Hypotheses** (read from the code) are marked as such below; **measured results** are in the
 "Measured" subsections, with their run dates and raw folders.
 
@@ -313,6 +313,23 @@ Same fixture with **Gemini 3.5 Flash-Lite** as the language model (interleaved p
 - Flash-Lite cut each call from 3.3 to 1.5 s, but 3 of race's 4 misses were a false "done": after a typed
   YouTube search URL the fixture showed the home page, and Jev's steps-aware check passed "put on something
   chill" at 0.64 with nothing playing (the HANDOFF "false done" issue, triggered more often by Lite's plans).
+
+Regression, 1 repeat each (`work/arch/e2e*`, `e2e_studio*`): workstation 8/10 with 3.8 Flash, 7/10 with
+Flash-Lite; studio 11/11 with both. These suites are almost all Jev (0-4 LLM calls a suite), so the model
+barely matters there. The workstation misses are "reply saying…" and "send it" asking first (the PLAN §10
+rule; the fixture expects the send), plus Lite's "go to youtube" cancelled after 3 failed checks.
+
+#### Recommendation from study 9 (measured on browser fixtures, not yet on the capture card)
+1. **Keep the runtime's race + Jev-first + Gemini 3.8 Flash (low).** It was best end to end (23/24 on vague
+   speech, 0 unsafe). Rewrite-parallel, plan-ground and `EXECUTOR=jev` don't replace it.
+2. **The time to win is Flash's.** 61% of a planned request's wall time is Flash calls. Minimal reasoning
+   is no faster than low (3.04 vs 3.06 s); Flash-Lite 3.5 is 2.2× faster a call but lost 3 of 24 runs to
+   false "done", so it isn't a default until the completion check stops passing those.
+3. **Next change to measure: Jev → Perceptron Mk1.5 where Jev refuses a target**, in place of a Flash
+   visual-fallback replan (~3 s). Matrix: 100/100 hit, 0 misclicks, 0.69 s mean; in plan-ground it rescued
+   4 of 6 refused-target runs. It is a runtime change (`brain/agent/jev_flash.py`, Agent owner).
+4. **Policy for the team:** triage holds composed replies ("tell john I'll…") as sends before drafting.
+   Safe, but the draft only starts after "yes".
 
 ### Streaming (study 2, `stream_study.py`)
 - Schema-enforced streaming is valid but only ~0.4 s faster (2.38 vs 2.79 s), because Flash
