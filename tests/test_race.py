@@ -247,6 +247,13 @@ class RaceTests(unittest.TestCase):
             race = RaceExecutor(Mock(executor="jev", jev_first=True), CancelToken())
         self.addCleanup(race.close)
         self.assertFalse(planner.call_args.kwargs["handoff"])
+        self.assertTrue(planner.call_args.kwargs["flash"])
+
+    def test_executor_jev_only_never_builds_a_flash_step(self):
+        with patch("brain.agent.race.JevFirstPlanner") as planner:
+            race = RaceExecutor(Mock(executor="jev-only", jev_first=True), CancelToken())
+        self.addCleanup(race.close)
+        self.assertFalse(planner.call_args.kwargs["flash"])
 
     def test_correction_carries_the_request_it_corrects(self):
         goal = "reply to john and send it saying five\nUser correction: actually make it six"

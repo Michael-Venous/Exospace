@@ -673,7 +673,7 @@ class JevFirstTests(unittest.TestCase):
     def setUp(self):
         self.planner = object.__new__(JevFirstPlanner)
         self.planner.flash, self.planner.steps, self.planner._flash_run = Mock(), Mock(), None
-        self.planner.handoff = True
+        self.planner.handoff, self.planner.uses_flash = True, True
         self.planner.flash.next_actions.return_value = Plan("Stage 1/1: planned", [Action("hotkey", keys=("TAB",))], [])
 
     def ctx(self, run):
@@ -694,6 +694,17 @@ class JevFirstTests(unittest.TestCase):
         for ctx in (self.ctx("a"), note):
             self.assertEqual(self.planner.next_actions(b"img", ctx).actions[0].type, "fail")
         self.planner.flash.next_actions.assert_not_called()
+
+    def test_jev_only_never_calls_flash(self):
+        self.planner.handoff, self.planner.uses_flash = False, False
+        self.planner.steps.next_actions.return_value = Plan(FAILED, [Action("fail", reason="composed")], [],
+                                                            needs_planner=True)
+        self.assertEqual(self.planner.next_actions(b"img", self.ctx("a")).actions[0].type, "fail")
+        self.planner.jev = Mock()
+        self.planner.jev.evaluate.return_value = ({"os": {"choice": "linux", "confidence": .9}}, (4, 3), (0, 0))
+        self.assertEqual(self.planner.classify_os(b"jpeg"), "linux")
+        self.planner.flash.next_actions.assert_not_called()
+        self.planner.flash.classify_os.assert_not_called()
 
     def test_without_handoff_text_jev_cant_write_still_goes_to_flash(self):
         self.planner.handoff = False

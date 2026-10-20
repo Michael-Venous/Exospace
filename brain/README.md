@@ -47,8 +47,8 @@ scripts are in [`scripts/pi/`](../scripts/pi/).
 503/429, and the planner model (`.env.example`).
 
 Other executors: `EXECUTOR=direct` makes one vision-model call per step (p50 2.5 s on GLM; once a run has sent
-input, a `done` claim costs one more call that must see the goal on screen); `jev-flash` runs the planner
-alone; `legacy-dual` is the older fast-executor + separate-planner pair.
+input, a `done` claim costs one more call that must see the goal on screen); `jev-only` is `jev` with no Flash call at all
+(no language-model key needed); `jev-flash` runs the planner alone; `legacy-dual` is the older fast-executor + separate-planner pair.
 
 The loop is the single HID writer. It discards a plan when the screen moved during inference (unless the screen
 never settles, like a video), skips the rest of a batch when a click changed the screen, cancels after 3 failed
