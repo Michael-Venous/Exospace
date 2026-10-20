@@ -1,5 +1,6 @@
 """The model study's fixture, scoring, OpenRouter client and rewrite planner, without browsers or API calls."""
 
+import json
 import unittest
 from types import SimpleNamespace
 
@@ -9,7 +10,10 @@ import cv2
 import numpy as np
 
 from bench.arch import model_matrix, router, vague
+from bench.arch.completion_log import CompletionLog
+from bench.arch.completion_study import errors
 from bench.arch.plan_ground import PlanGroundPlanner
+from bench.arch.race_continue import ContinuePlanner, _HandBack
 from bench.arch.race_pointer import PointerFlash
 from bench.arch.rewrite import RewritePlanner
 from brain.agent.executor import Plan, StepContext
@@ -219,6 +223,64 @@ class RacePointerTests(unittest.TestCase):
             JevFlashExecutor._zoom = zoom
         self.assertEqual(out, {"target": (0.3, 0.7), "field": None, "destination": (0.1, 0.1)})
         self.assertEqual(asked, ["the Starship video"])
+
+
+
+class CompletionRecordTests(unittest.TestCase):
+    def test_each_call_keeps_its_screen_and_the_state_after_the_last_input(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as folder:
+            states = iter([{"view": "inbox"}, {"view": "youtube"}])
+            jev = SimpleNamespace(completion=lambda jpeg, goal, executed, **k: 0.7)
+            log = CompletionLog(Path(folder), jev, lambda: next(states))
+            log.input_sent()
+            self.assertEqual(jev.completion(SCREEN, "go to youtube", ["key ENTER"], evidence="YouTube shown"), 0.7)
+            log.save()
+            saved = json.loads((Path(folder) / "completion.json").read_text())
+            self.assertEqual((saved[0]["state"], saved[0]["evidence"]), ({"view": "youtube"}, "YouTube shown"))
+            self.assertTrue((Path(folder) / "completion-0.jpg").exists())
+
+    def test_errors_count_at_each_callers_own_gate(self):
+        rows = [{"score": 0.52, "gate": 0.5, "done": False}, {"score": 0.52, "gate": 0.55, "done": True},
+                {"score": 0.9, "gate": 0.5, "done": True}]
+        self.assertEqual(errors(rows, "score"), (1, 1, 1, 2))
+        self.assertEqual(errors(rows, "score", 0.6), (0, 1, 1, 2))
+
+
+
+def _continuing(jev_fails: bool) -> ContinuePlanner:
+    planner = ContinuePlanner.__new__(ContinuePlanner)
+    flash = SimpleNamespace(hand_back=True, executed=["hotkey CTRL+L"], seen=[])
+
+    def flash_step(image, ctx):
+        flash.seen.append(flash.hand_back)
+        if flash.hand_back:
+            raise _HandBack
+        return Plan("Flash replan", [], [])
+
+    flash.next_actions = flash_step
+    flash.acknowledge = lambda executed: flash.seen.append("flash ack")
+    planner.__dict__.update(flash=flash, steps=_Steps("go" if jev_fails else "never"), _flash_run="r1",
+                            jev_step=None)
+    planner.steps.acknowledge = lambda executed: None
+    return planner
+
+
+class RaceContinueTests(unittest.TestCase):
+    def test_jev_takes_the_next_step_when_flashs_stages_are_done(self):
+        planner = _continuing(jev_fails=False)
+        plan = planner.next_actions(SCREEN, _ctx("go to youtube and play lofi"))
+        self.assertTrue(plan.reasoning.endswith("[Jev continued Flash's request]"))
+        planner.acknowledge(True)
+        self.assertEqual(planner.flash.executed, ["hotkey CTRL+L", "click(500,500)"])
+        self.assertNotIn("flash ack", planner.flash.seen)
+
+    def test_flash_replans_only_when_jev_cannot(self):
+        planner = _continuing(jev_fails=True)
+        self.assertEqual(planner.next_actions(SCREEN, _ctx("go to youtube")).reasoning, "Flash replan")
+        self.assertEqual(planner.flash.seen, [True, False])
+        self.assertTrue(planner.flash.hand_back)
 
 
 if __name__ == "__main__":

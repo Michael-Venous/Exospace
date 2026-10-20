@@ -351,6 +351,43 @@ than to a Flash visual-fallback replan. Interleaved with the runtime race, 12 se
 4. **Policy for the team:** triage holds composed replies ("tell john I'll…") as sends before drafting.
    Safe, but the draft only starts after "yes".
 
+### Completion check on real runs (study 10, 2026-10-20, `completion_study.py`)
+Every Jev completion call of 114 race runs (vague ×3 with 3.8 Flash and with Flash-Lite, workstation and
+studio ×2) was recorded with the screen it judged and the fixture's state then (`completion_log.py`,
+`work/arch/*-cl*/`). 129 calls belong to segments whose oracle is the goal itself: 64 on finished work, 65 not.
+
+**Measured: the logged verdicts, at each caller's gate** (planner 0.5 with expected evidence, direct 0.55)
+
+| Caller | Calls | False pass (not done, passed) | Finished work rejected |
+|---|---|---|---|
+| planner stages (`jev_flash.py`, gate 0.5) | 101 | **5 / 65** | **0 / 36** |
+| direct click (`race._goal_met`, gate 0.55) | 28 | – (all 28 were done) | **4 / 28** |
+
+- All 5 false passes are "put on something chill" on YouTube's home page after a typed search or the
+  consent popup, nothing playing (0.50-0.68). The 4 rejections are direct clicks whose only executed step
+  is "click on the control for: <utterance>": "take it back out" (cart emptied, 0.03-0.04) and "actually go
+  back" (0.41-0.46); each sends the request to the planner.
+- **The planner's 60 rejections were all correct.** "Completion not verified" replans are not the gate
+  turning down finished work: 3.8 Flash planned exactly 1 stage in 21 of 21 first plans, so every stage
+  that leaves the goal undone is another Flash call (33 of 61 plans, 103 of 202 Flash s). Flash-Lite planned
+  2-4 stages but failed 29 `ready` checks.
+
+**Measured: replay of the same 129 screens, 3 times each** (`work/arch/completion/rows.json`, ~770 Jev calls)
+
+| Planner gate | False pass / 65 (logged; replays 1-3) | Finished rejected / 36 (logged; replays 1-3) |
+|---|---|---|
+| 0.5 (runtime) | 5; 7, 6, 5 | 0; 0, 0, 0 |
+| 0.55 | 4; 4, 3, 3 | 0; 0, 0, 0 |
+| **0.6** | **1; 1, 3, 3** | **0; 0, 0, 0** |
+| 0.65 | 1; 1, 1, 1 | 2; 0, 1, 1 |
+| 0.7 | 0; 1, 0, 1 | 2; 3, 4, 2 |
+
+- Verdicts are stable (2 of 129 flipped between replays), so medians of repeated calls don't help.
+- A generic extra question in the same call ("is this the end result the goal asks for, not a page on the
+  way to it?", required with the runtime answer) didn't separate them: 5-6 false passes. Nor did the plain
+  question without the planner's evidence (4). Finished planner work bottoms out at 0.60 ("get me back to
+  my mail…"), so 0.6 is the highest gate with no rejections here; one request type supplies every false pass.
+
 ### Streaming (study 2, `stream_study.py`)
 - Schema-enforced streaming is valid but only ~0.4 s faster (2.38 vs 2.79 s), because Flash
   plans **one stage per observation point** even when told to look ahead. That's sensible:
