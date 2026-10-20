@@ -567,7 +567,10 @@ class JevOnlyPlanner:
                 certain = max(z for _, z, _ in zooms) >= CLICK_SURE
                 settled = max(z for _, z, _ in zooms) >= HOLD_SURE
                 again = ctx.history[-1:] == [LOOK_AGAIN.brief()]
-                if not looks and again:
+                # Three looks on one spot agree: both zooms on cell B1 read 0.46-0.49, inside Jev's box, and the look
+                # again they cost (2.2 s) placed the same click (2026-10-20).
+                agree = len(zooms) == 2 and all(p and box_contains(answers["target"], size, padded, p) for p, _, _ in zooms)
+                if not looks and (again or agree):
                     # A page that drew no closer view in a look again won't: both zooms on Wikipedia's [b] read
                     # 0.41-0.53 twice, and Flash, handed it after 7 s, clicked [b] (2026-10-19). As a doubted click.
                     looks = [(p, b) for p, z, b in zooms if p and z >= DOUBT]

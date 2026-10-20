@@ -202,6 +202,13 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("click it", present=.7, looks=(STRAY, STRAY), boxes=(far, far),
                                    history=["click(1,1)", wait.brief()], run="t").type, "skill")
 
+    def test_doubtful_zooms_that_land_in_jevs_box_place_the_click_without_a_look_again(self):
+        action = self.step("add hello to B1", present=.77, zoomed=.46)  # cell B1, 2026-10-20
+        self.assertEqual((action.type, round(action.y, 2)), ("click", .3))
+        self.assertEqual(self.step("add hello to B1", present=.77, zoomed=.46, looks=(ON, STRAY)).brief(),
+                         LOOK_AGAIN.brief())  # one strays
+        self.assertEqual(self.step("add hello to B1", present=.77, zoomed=.3).brief(), LOOK_AGAIN.brief())
+
     def test_two_zooms_that_agree_move_a_sure_click(self):
         action = self.step("open a new tab and search cats", looks=(STRAY, STRAY))
         self.assertEqual((action.type, action.y), ("click", .95))
@@ -269,11 +276,12 @@ class JevOnlyTests(unittest.TestCase):
             self.assertEqual(again.brief(), "click(600,600)")
             click = self.step(goal, run="x").brief()
             self.assertEqual(self.step(goal, history=[click], left=.1, run="x").type, "done")
-        # zooms that half see it: a look again first, then the click, doubted
-        wait = self.step(goal, zoomed=.45, history=["click(1,1)"], run="u").brief()
+        # zooms that half see it beside Jev's box: a look again first, then the click, doubted
+        note = dict(zoomed=.45, looks=((.345, .3), (.345, .3)))
+        wait = self.step(goal, **note, history=["click(1,1)"], run="u").brief()
         self.assertEqual(wait, "skill(wait {'s': 1.0})")
-        click = self.step(goal, zoomed=.45, history=["click(1,1)", wait], run="u")
-        self.assertEqual(click.brief(), "click(300,300)")
+        click = self.step(goal, **note, history=["click(1,1)", wait], run="u")
+        self.assertEqual(click.brief(), "click(345,300)")
         self.assertEqual(self.planner.doubted, click.brief())
         self.assertEqual(self.step(goal, zoomed=.2, history=["click(1,1)", wait], run="v").type, "skill")
 
