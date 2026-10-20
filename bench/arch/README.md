@@ -406,7 +406,8 @@ and 0/15 at both gates (its weak case, "taxes folder created", 0.12-0.22, fails 
   uncapped, Jev repeated a no-effect click behind the consent popup until the run ended; capped, it saved
   nothing (325 vs 279 s). Rejected.
 - The runtime race itself varies between interleaved runs (35/36 and 30/36 here; 23/24 and 36/36 before),
-  and its misses are nearly all the same false "done" on "put on something chill" (1, 4, 1, 0, 3 runs).
+  and its misses are mostly the same false "done" on "put on something chill", with or without the popup:
+  7 of its 9 misses in 168 runs over five interleaved runs (1, 0, 1, 1, 4).
   The 0.6 gate didn't change that in its one end-to-end run (1 vs 1): the trap screen scored ≥ 0.6 there.
 
 #### Proposal from study 10 (for the Agent owner; runtime files `brain/agent/jev_flash.py`, `race.py`)
