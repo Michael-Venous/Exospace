@@ -18,7 +18,7 @@ from brain.cancel import Cancelled, CancelToken
 from brain.capture import Capture, CommandCapture, ScreenCapture, V4L2Capture, active_rect
 from brain.config import Config
 from brain.controller import Controller
-from brain.device import detect_profile
+from brain.device import detect_profile, shows_os
 from brain.errors import describe
 from brain.display.recordings import RECORDINGS, Recorder, RecordingsServer
 from brain.display.server import Command, DisplayServer
@@ -288,7 +288,10 @@ def _connected_profile(monitor: ConnectionMonitor, capture: Capture, executor: E
             status("Waiting for target…")
         current = monitor.wait_connected()
         token.reset()
-        if profile is not None and current == generation:
+        # An "unknown" OS is asked again each request: Mint's desktop once read unknown at start, which turned app
+        # launches off ("open a terminal" failed) until the agent restarted (2026-10-19).
+        if profile is not None and current == generation and (
+                profile.os != "unknown" or os_override is not None or not shows_os(capture, executor, profile)):
             return profile, generation
         try:
             detected = detect_profile(capture, executor, os_override, cancel=token, pointer=pointer,

@@ -678,6 +678,12 @@ class JevFirstTests(unittest.TestCase):
         return StepContext("summarize this page", DeviceProfile("linux", Rect(0, 0, 4, 3), "mouse", 1), Mock(), [], 1,
                            10, run_id=run)
 
+    def test_jev_tells_the_os_when_flash_cant(self):
+        self.planner.flash.classify_os.side_effect = RuntimeError("401 UNAUTHENTICATED")
+        self.planner.jev = Mock()
+        self.planner.jev.evaluate.return_value = ({"os": {"choice": "linux", "confidence": .9}}, (4, 3), (0, 0))
+        self.assertEqual(self.planner.classify_os(b"jpeg"), "linux")
+
     def test_without_handoff_a_step_jev_cant_take_ends_the_request_at_once(self):
         self.planner.handoff = False
         self.planner.steps.next_actions.return_value = Plan(FAILED, [Action("fail", reason="needs new text")], [])

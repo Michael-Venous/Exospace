@@ -42,6 +42,13 @@ def detect_profile(capture: Capture, executor: Executor, override_os: OSName | N
     raise RuntimeError("No usable video frame; check the capture card and target display")
 
 
+def shows_os(capture: Capture, executor: Executor, profile: DeviceProfile) -> bool:
+    """Whether a target detected as "unknown" now shows an OS: one model call, no probe or calibration."""
+    frame = capture.grab()
+    return frame is not None and not is_blank(frame) \
+        and _classify(executor, prepare(frame, profile.rect, grid=False)) != "unknown"
+
+
 def _probe(capture: Capture, executor: Executor, rect, press: Callable[[list[str]], None],
            token: CancelToken) -> OSName:
     """A screen that shows nothing to tell the OS by (a black, empty desktop) gets the OS key once: a

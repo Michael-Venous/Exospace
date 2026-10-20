@@ -13,12 +13,23 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 
-from brain.agent.executor import Plan, StepContext
+from brain.agent.executor import OS_PROMPT, Plan, StepContext
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.jev_only import FAILED, JevOnlyPlanner
-from brain.cancel import CancelToken
+from brain.cancel import Cancelled, CancelToken
 from brain.config import Config
-from brain.types import OSName
+from brain.types import OS_NAMES, OSName
+
+# By their marks: with only the names, Linux Mint's taskbar read "windows" (3/3).
+OS_CRITERIA = {
+    "windows": "Windows: its four-pane logo on the Start button.",
+    "macos": "macOS: the Apple logo at the left of a menu bar along the top, a Dock.",
+    "linux": "A Linux desktop: Cinnamon (Linux Mint's leaf logo), GNOME, KDE, XFCE or Ubuntu.",
+    "chromeos": "ChromeOS: a shelf with a round launcher button.",
+    "android": "Android: a phone or tablet status bar and navigation buttons or pill, or Samsung DeX.",
+    "ios": "iOS or iPadOS: an iPhone or iPad screen.",
+    "unknown": "No operating system shows (boot, firmware).",
+}
 
 
 class JevFirstPlanner:
@@ -72,7 +83,17 @@ class JevFirstPlanner:
         self.flash.forget_plan()
 
     def classify_os(self, image: bytes) -> OSName:
-        return self.flash.classify_os(image)
+        try:
+            return self.flash.classify_os(image)
+        except Cancelled:
+            raise
+        except Exception:  # noqa: BLE001 - Jev tells it instead
+            # Flash's key was refused (401) and Mint's desktop read "unknown", which turned app launches off
+            # (2026-10-19).
+            answers = self.jev.evaluate(image, {"os": {"type": "choice", "instructions": OS_PROMPT,
+                                                       "criteria": OS_CRITERIA}}, label="os")[0]
+            os = answers["os"].get("choice")
+            return os if os in OS_NAMES else "unknown"
 
     def close(self) -> None:
         self.flash.close()

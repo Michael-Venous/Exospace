@@ -574,6 +574,17 @@ class RuntimeTests(unittest.TestCase):
                 monitor, self.capture, self.fast, None, self.cancel, None, -1, self.messages.append)
         self.assertEqual((profile, generation), (self.profile, 2))
 
+    def test_an_unknown_os_is_detected_again_once_the_screen_shows_one(self):
+        monitor = SimpleNamespace(connected=True, generation=1, wait_connected=lambda: 1)
+        unknown = DeviceProfile("unknown", self.profile.rect, "mouse", 0.0)
+        self.fast.classify_os = Mock(return_value="unknown")
+        with patch("brain.app.detect_profile", return_value=self.profile) as detect:
+            args = (monitor, self.capture, self.fast, None, self.cancel, unknown, 1, self.messages.append)
+            self.assertIs(_connected_profile(*args)[0], unknown)
+            self.fast.classify_os.return_value = "linux"
+            self.assertIs(_connected_profile(*args)[0], self.profile)
+        self.assertEqual(detect.call_count, 1)
+
     def test_errors_show_hardware_detail_but_hide_provider_detail(self):
         with patch("brain.errors.ERROR_LOG", self.root / "errors.log"):
             self.assertEqual(describe(HIDError("Pico did not acknowledge key"), "task"),
