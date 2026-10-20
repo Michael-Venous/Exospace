@@ -410,13 +410,36 @@ and 0/15 at both gates (its weak case, "taxes folder created", 0.12-0.22, fails 
   7 of its 9 misses in 168 runs over five interleaved runs (1, 0, 1, 1, 4).
   The 0.6 gate didn't change that in its one end-to-end run (1 vs 1): the trap screen scored ≥ 0.6 there.
 
+**Measured: planning further ahead** (`race+lookahead`: Flash's prompt asks for every stage it can foresee to
+the end of the goal instead of stopping at the next observation point; interleaved with the race, vague ×3;
+`work/arch/e2e_vague-look*`)
+
+| Run | Executor | Success | Planned wall | Flash calls (per planned request) | Flash plans: first / not done / ready failed / target refused |
+|---|---|---|---|---|---|
+| C | runtime race | 34/36 | 285 s | 57 (2.11) | 21 / 28 / 7 / 1 |
+| C | race+lookahead | 34/36 | 283 s | **53 (1.96)** | 21 / **9** / 14 / 9 |
+| D | runtime race | 33/36 | 309 s | 58 (2.15) | 21 / 30 / 5 / 2 |
+| D | race+lookahead+pointer | **36/36** | 351 s | 63 (2.33) | 21 / 14 / 15 / 12 |
+
+- Lookahead does what it asks: 2-3-stage first plans in 15 of 21 requests (race: 0-2 of 21), and "not done"
+  replans fall 28 → 9. But its later stages, planned before their screens exist, fail Jev's `ready` check
+  or name targets Jev refuses (7+1 → 14+9), so net Flash calls fall only 7% and wall time not at all.
+- With the pointer behind it, the refused later-stage targets mostly weren't there yet: the pointer found 2
+  of 14. That run had no misses (36/36, 0 false "done" vs 2), but 14% more wall time; one run, within the
+  race's own 30-36/36 spread.
+
 #### Proposal from study 10 (for the Agent owner; runtime files `brain/agent/jev_flash.py`, `race.py`)
 1. **Raise the planner's completion gate from 0.5 to 0.6.** Replayed 4 times on 129 labelled calls: false
    "done" 5-7 → 1-3 of 65, no finished work rejected (0/36); study 5: −1 finished (an extra replan), no new
    false done. Small, safe, and only a partial fix: one end-to-end run showed no difference.
-2. **Don't expect the gate to cut Flash calls.** Every planner rejection was correct (60/60). Repeated Flash
-   calls come from 1-stage plans (21/21 with 3.8 Flash): the lever is the planner prompt or model, not the
-   check. Handing the next step to Jev instead was measured and rejected (above).
+2. **Repeated Flash calls: the gate isn't the cause, and prompt or step-hand-off changes alone don't cut
+   them enough.** Every planner rejection was correct (60/60); 3.8 Flash plans one stage at a time (21/21).
+   Measured, interleaved: lookahead −7% Flash calls (57 → 53), the same success and time, so it's the only
+   measured reduction and a small one: adopt it only together with a fix for later stages, which now
+   fail as early checks instead (7+1 → 14+9 replans). Jev hand-back (−52% calls, −5 to −2 runs) and the pointer
+   (+9% calls) are rejected. The larger saving needs a faster planner call (each is 3.1 s, ~2.6 s of it before
+   the first token), not fewer stages: that is an option scan (fast text models choosing from an on-screen
+   element list), not more tuning of this path.
 3. **Direct-click check (`race._goal_met`, 0.55):** 4 of 28 finished clicks rejected ("take it back out",
    "actually go back"), each a planner call; its only executed step is "click on the control for:
    <utterance>". Unmeasured fix to try: name what was clicked in that step.
