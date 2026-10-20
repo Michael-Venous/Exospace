@@ -6,7 +6,7 @@ new text or a key Jev doesn't offer fails there, and that request continues on t
 planner for the rest of its run, so Flash is called only when Jev is stuck. With handoff off
 (EXECUTOR=jev) the request ends there instead, unless the step needs text written for it or
 has a target Jev can't make out: Flash takes that one step. With flash off (EXECUTOR=jev-only) Flash is never
-called, so a request runs with no language-model key at all.
+built, so a request runs with no language-model key at all.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from brain.agent.executor import OS_PROMPT, Plan, StepContext
+from brain.agent.jev import JevVision
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.jev_only import FAILED, JevOnlyPlanner
 from brain.cancel import Cancelled, CancelToken
@@ -39,10 +40,12 @@ class JevFirstPlanner:
     def __init__(self, cfg: Config, cancel: CancelToken,
                  approved_run: Callable[[StepContext], bool] | None = None, handoff: bool = True,
                  flash: bool = True) -> None:
-        self.flash = JevFlashExecutor(cfg, cancel, approved_run)
+        # Built only when used: Flash's language model needs a key that EXECUTOR=jev-only runs without.
+        self.flash = JevFlashExecutor(cfg, cancel, approved_run) if flash else None
         self.handoff = handoff
-        self.uses_flash = flash
-        self.jev = self.flash.jev
+        self.jev = self.flash.jev if self.flash else JevVision(
+            cfg.typesafe_api_key, cancel, cfg.model_log, cfg.jev_model, cfg.jev_timeout_s, cfg.jev_min_presence,
+            cfg.jev_min_confidence)
         self.steps = JevOnlyPlanner(self.jev, approved_run)
         self._flash_run: str | None = None  # the run Jev handed to Flash
 
@@ -52,7 +55,7 @@ class JevFirstPlanner:
             self._flash_run, why = ctx.run_id, f"recovery note: {ctx.note[:80]}"
         if self._flash_run != ctx.run_id:
             plan = self.steps.next_actions(image, ctx)
-            if plan.reasoning != FAILED or not (self.handoff or plan.needs_planner) or not self.uses_flash:
+            if plan.reasoning != FAILED or not (self.handoff or plan.needs_planner) or not self.flash:
                 return plan
             why = plan.actions[0].reason if plan.actions else "failed"
             if not self.handoff:
@@ -81,13 +84,15 @@ class JevFirstPlanner:
 
     def acknowledge(self, executed: bool) -> None:
         self.steps.acknowledge(executed)
-        self.flash.acknowledge(executed)
+        if self.flash:
+            self.flash.acknowledge(executed)
 
     def forget_plan(self) -> None:
-        self.flash.forget_plan()
+        if self.flash:
+            self.flash.forget_plan()
 
     def classify_os(self, image: bytes) -> OSName:
-        if self.uses_flash:
+        if self.flash:
             try:
                 return self.flash.classify_os(image)
             except Cancelled:
@@ -102,4 +107,4 @@ class JevFirstPlanner:
         return os if os in OS_NAMES else "unknown"
 
     def close(self) -> None:
-        self.flash.close()
+        (self.flash or self.jev).close()

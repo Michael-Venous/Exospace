@@ -1,6 +1,9 @@
 """Jev's own next step (ported from origin/jev-only) and the Jev-first planner that falls back to Flash."""
 
+import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import cv2
@@ -10,6 +13,8 @@ from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_first import JevFirstPlanner
 from brain.agent.jev_only import FAILED, LOOK_AGAIN, JevOnlyPlanner
 from brain.agent.triage import spans
+from brain.cancel import CancelToken
+from brain.config import Config
 from brain.types import Action, DeviceProfile, Rect
 
 BOX = {"box": {"left": .28, "right": .32, "top": .28, "bottom": .32}, "confidence": .9}  # small: looked at closer
@@ -771,7 +776,7 @@ class JevFirstTests(unittest.TestCase):
     def setUp(self):
         self.planner = object.__new__(JevFirstPlanner)
         self.planner.flash, self.planner.steps, self.planner._flash_run = Mock(), Mock(), None
-        self.planner.handoff, self.planner.uses_flash = True, True
+        self.planner.handoff = True
         self.planner.flash.next_actions.return_value = Plan("Stage 1/1: planned", [Action("hotkey", keys=("TAB",))], [])
 
     def ctx(self, run):
@@ -793,16 +798,22 @@ class JevFirstTests(unittest.TestCase):
             self.assertEqual(self.planner.next_actions(b"img", ctx).actions[0].type, "fail")
         self.planner.flash.next_actions.assert_not_called()
 
-    def test_jev_only_never_calls_flash(self):
-        self.planner.handoff, self.planner.uses_flash = False, False
-        self.planner.steps.next_actions.return_value = Plan(FAILED, [Action("fail", reason="composed")], [],
-                                                            needs_planner=True)
-        self.assertEqual(self.planner.next_actions(b"img", self.ctx("a")).actions[0].type, "fail")
-        self.planner.jev = Mock()
-        self.planner.jev.evaluate.return_value = ({"os": {"choice": "linux", "confidence": .9}}, (4, 3), (0, 0))
-        self.assertEqual(self.planner.classify_os(b"jpeg"), "linux")
-        self.planner.flash.next_actions.assert_not_called()
-        self.planner.flash.classify_os.assert_not_called()
+    def test_jev_only_runs_without_a_language_model_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = replace(Config.load(), gemini_api_key="", zai_api_key="", typesafe_api_key="offline",
+                          model_log=Path(tmp) / "calls.jsonl")
+            planner = JevFirstPlanner(cfg, CancelToken(), handoff=False, flash=False)
+        self.addCleanup(planner.close)
+        self.assertIsNone(planner.flash)
+        planner.steps = Mock()
+        planner.steps.next_actions.return_value = Plan(FAILED, [Action("fail", reason="composed")], [],
+                                                       needs_planner=True)
+        self.assertEqual(planner.next_actions(b"img", self.ctx("a")).actions[0].type, "fail")
+        planner.acknowledge(False)
+        planner.forget_plan()
+        planner.jev = Mock()
+        planner.jev.evaluate.return_value = ({"os": {"choice": "linux", "confidence": .9}}, (4, 3), (0, 0))
+        self.assertEqual(planner.classify_os(b"jpeg"), "linux")
 
     def test_without_handoff_text_jev_cant_write_still_goes_to_flash(self):
         self.planner.handoff = False
