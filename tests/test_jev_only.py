@@ -392,6 +392,14 @@ class JevOnlyTests(unittest.TestCase):
         opening = self.step("paste it in", next="paste", focused=.2, history=["click(500,300)"], run="u")
         self.assertEqual(opening.brief(), "skill(wait {'s': 1.0})")  # the click's document may still be opening
 
+    def test_a_line_begun_on_enter_looks_again_before_it_scrolls(self):
+        goal = "search for horses\nUser correction: click the third video"
+        self.planner.run_id, self.planner.line, self.planner.since = "r", 1, 1
+        self.assertEqual(self.step(goal, next="scroll_down", history=["hotkey(ENTER)"]).brief(), LOOK_AGAIN.brief())
+        self.planner.line, self.planner.since = 1, 1
+        scrolled = self.plan(goal, next="scroll_down", history=["hotkey(ENTER)", "scroll(5)"])
+        self.assertEqual(scrolled[-1].brief(), "scroll(5)")  # its own steps came after the Enter
+
     def test_a_scroll_first_moves_the_pointer_over_what_it_scrolls(self):
         actions = self.plan("scroll down to the comments", next="scroll_down")
         self.assertEqual([a.brief() for a in actions], ["skill(hover {'x': 0.3, 'y': 0.3})", "scroll(5)"])

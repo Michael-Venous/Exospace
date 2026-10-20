@@ -624,6 +624,10 @@ class JevOnlyPlanner:
         if step == "enter":
             actions.append(Action("hotkey", keys=("ENTER",)))
         if step in ("scroll_down", "scroll_up"):
+            # A line begun on Enter sees the page Enter left: "click the third video" after a YouTube search scrolled
+            # YouTube's home page under its suggestions twice while the results loaded (2.7 s, 2026-10-20).
+            if not steps and ctx.history and _ENTER.fullmatch(ctx.history[-1]) and (look := self._look_again(ctx)):
+                return look
             if ctx.profile.input == "mouse":
                 # The wheel scrolls what is under the pointer: a toolbar scrolled nothing on a Mac, and the screen's
                 # middle was the desktop beside a half-screen Chrome, so its apps panel never scrolled (3 runs).
