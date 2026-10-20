@@ -158,11 +158,15 @@ class Agent:
                         # Only what the first action aims at must be where the plan saw it: Google's results
                         # drawing in below the address bar a plan clicked discarded that plan (2026-10-18).
                         first = plan.actions[0]
-                        moved = (area_change(frame, latest, profile.rect, first.x, first.y) >= AREA_MOVED
-                                 if first.x is not None and first.y is not None
-                                 else ctl.changed(before, thumbnail(latest)))
+                        aimed = first.x is not None and first.y is not None
+                        change = area_change(frame, latest, profile.rect, first.x, first.y) if aimed else None
+                        moved = change >= AREA_MOVED if change is not None else ctl.changed(before, thumbnail(latest))
                         if not moving and moved and discarded < MAX_DISCARDS:
                             discarded += 1
+                            if self.events is not None:  # the screen it was discarded for is otherwise never kept
+                                kept = self.events.set_frame(prepare(latest, profile.rect, grid=False), keep=True)
+                                self._emit("discard", step=step, frame=kept,
+                                           change=None if change is None else round(change, 2))
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
                             progress_at += times["t_model"]  # a plan never tried: its thinking time isn't a stall
                             continue

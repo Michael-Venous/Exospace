@@ -66,8 +66,8 @@ class Recorder:
                 frame_id, jpeg = self.bus.frame()  # may be newer than the notice: the newest is what's on screen
                 self._live += self._save(frame_id, jpeg, time.time())
             return
-        if event["ev"] == "plan" and event.get("frame"):
-            # The screen it was decided on, in case this recorder fell behind its notice
+        if event["ev"] in ("plan", "discard") and event.get("frame"):
+            # The screen it was decided (or discarded) on, in case this recorder fell behind its notice
             self._save(event["frame"], self.bus.kept_frame(event["frame"]), event["t"] - event.get("t_model", 0))
         self._write(event)
         if event["ev"] == "result":
