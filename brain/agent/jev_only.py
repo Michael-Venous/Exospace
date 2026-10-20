@@ -159,6 +159,12 @@ COMPOSED = ("Does what remains of the `goal`, after the `executed_steps`, need t
 # documents half the time; the control that creates or opens what the step works in, 0.88-0.92 on Calc's entry.
 OPENER = "When what it works in isn't open yet, that control is the one that creates or opens it."
 STEP_CONTROL = "the spot that the next step of the `goal`, after the `executed_steps`, clicks"
+# Asked apart: on LibreOffice's Start Center "add hello to b1" read its control clear 0.41-0.77 in live runs and 0.26-0.39
+# offline, failing one run, where this read 0.89-0.92 (a tooltip over a recent file or not); Calc's open sheet, YouTube's
+# home and results pages 0.01-0.11. Its zooms saw Calc's entry 0.22-0.33 as the step's spot, 0.89-0.94 as its opener.
+OPENS = ("Is what the next step of the `goal` works in (a document, sheet, page or window) not open yet in `screen`, "
+         "while a control that creates or opens it is visible?")
+OPENER_CONTROL = f"{STEP_CONTROL}: when what it works in isn't open yet, the control that creates or opens it"
 COPY_CONTROL = "the text that the first line of the `goal` copies (a later line names it by what it pastes)"
 # A box this big holds the spot it was drawn on without a closer look, and a zoom loses where it sits among
 # its neighbours: on "click the third video" zooms chose the second or fourth of YouTube's Shorts row. Only when
@@ -535,7 +541,9 @@ class JevOnlyPlanner:
         certain = settled = True  # of the click's target: only a doubtful zoom says otherwise
         if step in ("click", "double_click", "right_click", "fill", "copy") or focus:
             point = box_center(answers["target"], size, padded)
-            sure = probability(answers["present"].get("noul"))
+            opens = probability(answers["opens"].get("noul"))
+            sure = max(probability(answers["present"].get("noul")), opens if opens >= GATE else 0.0)
+            control = OPENER_CONTROL if opens >= GATE else STEP_CONTROL
             if held and (point is None or sure < GATE):
                 return self._next_line(image, ctx, lines, "Jev verified the completed goal")
             # Not a copy's: on the citation a footnote jump marked, "copy the header" was 0.22-0.35 sure of it, waited,
@@ -557,7 +565,7 @@ class JevOnlyPlanner:
                 # the crop's side is a fraction of the screen's longer side, and its height 0.66 of its width
                 window = max(ZOOM_WINDOW, ZOOM_MARGIN * max(width * size[0], height * size[1] / 0.66) / max(size))
                 with ThreadPoolExecutor(2) as pool:
-                    zooms = list(pool.map(lambda _: zoom(self.jev, image, state, STEP_CONTROL, point, window,
+                    zooms = list(pool.map(lambda _: zoom(self.jev, image, state, control, point, window,
                                                           ctx.run_id, ctx.step), range(2)))
                 # A zoom boxing the other's box with room around it boxed the region it sits in: "search up genghis
                 # khan" on Chrome's new tab had one zoom on the search box, one on it and the logo above, nearer the
@@ -734,6 +742,7 @@ class JevOnlyPlanner:
             "focused": {"type": "noul", "instructions": FOCUSED},
             "loading": {"type": "noul", "instructions": LOADING},
             "pending": {"type": "noul", "instructions": PENDING},
+            "opens": {"type": "noul", "instructions": OPENS},
         }
         return image, "jev", ([(routing, {"goal": line, "executed_steps": steps})] if routing else []) \
             + [(stepping, {"goal": line, "executed_steps": context})]

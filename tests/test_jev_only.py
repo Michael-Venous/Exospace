@@ -25,7 +25,7 @@ class JevOnlyTests(unittest.TestCase):
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
-             lookup=.05, pending=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
+             lookup=.05, pending=.05, opens=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
@@ -34,7 +34,7 @@ class JevOnlyTests(unittest.TestCase):
                 "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
-                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined}}
+                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined}}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
         profile = DeviceProfile(os, Rect(0, 0, 400, 300), device, 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
@@ -208,6 +208,12 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step("add hello to B1", present=.77, zoomed=.46, looks=(ON, STRAY)).brief(),
                          LOOK_AGAIN.brief())  # one strays
         self.assertEqual(self.step("add hello to B1", present=.77, zoomed=.3).brief(), LOOK_AGAIN.brief())
+
+    def test_a_control_that_opens_what_the_step_works_in_is_clicked_though_the_step_target_is_unclear(self):
+        action = self.step("add hello to b1", present=.41, opens=.9)  # LibreOffice's Start Center, Calc's entry
+        self.assertEqual((action.type, round(action.y, 2)), ("click", .3))
+        self.assertIn("creates or opens", self.zoom.call_args.args[3])
+        self.assertEqual(self.step("add hello to b1", present=.41, opens=.1, run="s").type, "fail")
 
     def test_two_zooms_that_agree_move_a_sure_click(self):
         action = self.step("open a new tab and search cats", looks=(STRAY, STRAY))
