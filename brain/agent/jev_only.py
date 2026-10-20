@@ -247,6 +247,7 @@ class JevOnlyPlanner:
         self.since = 0  # where that line's steps start in the run's history
         self.prev = 0  # where the line before it started: Jev sees its steps too ("delete hello" after typing it)
         self.routed = False  # Jev has seen the app in front can take the line's next step
+        self.kind: str | None = None  # the kind of app the line names, routed to the browser as a website
         self.seen = False  # Jev planned the line's next step at an earlier step: it wasn't done then
         # History length and screen when an input changed nothing: its retry may repeat it.
         self.unmoved: tuple[int, bytes] | None = None
@@ -298,6 +299,7 @@ class JevOnlyPlanner:
             continued = bool(self.finished) and ctx.goal.startswith(self.finished + "\n")
             self.run_id, self.line, self.since = ctx.run_id, self.finished.count("\n") + 1 if continued else 0, 0
             self.prev, self.routed, self.clicked, self.seen, self.typed, self.unmoved = 0, False, None, False, None, None
+            self.kind = None
             self.doubted = self.screen = None
             self.refused = []
             if not ctx.goal.startswith(self.goal + "\n"):
@@ -397,6 +399,11 @@ class JevOnlyPlanner:
             # "go to google docs" (0.55) when the address bar takes a site's name as the request gives it.
             # "work out 12 times 9": Jev pressed keypad keys one per step and missed one (41.7 s; Flash typed
             # "12*9=" in one step, 12.2 s).
+            # A kind of app read as a website has its app to open: "open up a spreadsheet" with Google Docs in front
+            # read a site (0.92), and Chrome's new tab had no words of the request to type (2026-10-20).
+            launch = Action("skill", name="open_app", args={"name": self.kind})
+            if self.kind and launch.brief() not in steps + self.refused:
+                return Plan("Open the app the line names", [launch], [], blind=True)
             return _fail("the rest needs text the request doesn't give word for word", planner=True)
         if finished:
             return self._next_line(image, ctx, lines, "Jev verified the completed goal")
@@ -438,6 +445,9 @@ class JevOnlyPlanner:
                 and probability(answers["browser_named"].get("noul")) < GATE
             choice = answers["app_name"].get("choice")
             name = BROWSER if site else texts[int(choice)] if choice in named else None
+            # Not a site's own name, which no launcher lists ("youtube" found nothing on Cinnamon).
+            self.kind = texts[int(choice)] if site and choice in named \
+                and probability(answers["dotcom"].get("noul")) < GATE else None
             # "make a new tab" after closing Chrome's last tab: a line that names no app, with no app window open,
             # goes on in the app the request last opened, by name, since a visible app suited to the line can be
             # another browser.
@@ -789,7 +799,7 @@ class JevOnlyPlanner:
         return self.unmoved is not None and all(done == LOOK_AGAIN.brief() for done in history[self.unmoved[0]:])
 
     def _advance(self, ctx: StepContext) -> None:
-        self.line, self.prev, self.since, self.routed = self.line + 1, self.since, len(ctx.history), False
+        self.line, self.prev, self.since, self.routed, self.kind = self.line + 1, self.since, len(ctx.history), False, None
         self.finished = "\n".join(ctx.goal.splitlines()[:self.line])
 
     def _search(self, answers: dict, ctx: StepContext, name: str | None, steps: list[str]) -> Plan | None:

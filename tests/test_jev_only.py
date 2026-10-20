@@ -403,6 +403,18 @@ class JevOnlyTests(unittest.TestCase):
         self.assertTrue(self.last.needs_planner)  # text to write goes to Flash even without hand-off
         self.assertEqual(self.step("open camera", composed=.9).type, "click")  # a tap needs no text
 
+    def test_a_kind_of_app_read_as_a_website_opens_its_app_when_the_browser_has_no_words_to_go_by(self):
+        goal, kind = "open up a spreadsheet", str(spans("open up a spreadsheet").index("spreadsheet"))
+        self.assertEqual(self.step(goal, site=.92, browser_front=1, app_name=kind, next="new_tab").brief(), "hotkey(CTRL+T)")
+        typed = dict(composed=.6, next="type", history=["hotkey(CTRL+T)"])
+        self.assertEqual(self.step(goal, **typed).brief(), "skill(open_app {'name': 'spreadsheet'})")
+        self.assertEqual(self.step(goal, **typed | {"history": ["hotkey(CTRL+T)", self.last.actions[0].brief()]}).type,
+                         "fail")  # once
+        # a site's own name is no app to search the launcher for
+        self.step("go to youtube", run="y", site=.92, browser_front=1, dotcom=.9, next="new_tab",
+                  app_name=str(spans("go to youtube").index("youtube")))
+        self.assertEqual(self.step("go to youtube", run="y", **typed).type, "fail")
+
     def test_reasoning_fails_over(self):
         self.assertEqual(self.step("summarize this page", next="stuck").type, "fail")
 
