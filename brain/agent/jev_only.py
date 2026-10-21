@@ -132,6 +132,9 @@ MISSING = 0.2  # below this the text typed isn't there: it is typed again, so on
 # already done scored 0.86-0.98 there, all but a click credited to the line before; lines not yet done 0.46 at most.
 ALREADY = 0.7
 # Jev chose "type" on Google Docs' home page, before any document was open (0.34 here; 0.85 in a blank document).
+# With Wikipedia in front and YouTube behind it, "Close the YouTube tab." 0.94; "Close this tab." 0.07-0.17,
+# "Close the tab." 0.16-0.18, and the tab in front named 0.02-0.06 (2026-10-21).
+OTHER_TAB = "Does the `goal` name a tab other than the tab in front in `screen`, which its next step acts on?"
 FOCUSED = ("Would text typed right now go into the input field, cell or document where the next step of the `goal` "
            "types it?")
 # The routing questions ask about the next step: with "open discord, close discord, and open a terminal" the
@@ -313,6 +316,7 @@ class JevOnlyPlanner:
         self.opened: str | None = None  # the app the request last opened, also in an earlier run it continues
         self.clicked: tuple[bytes, tuple[float, float], str] | None = None  # the last plan's click: screen, point, step
         self.doubted: str | None = None  # the last plan's click, as its step reads, when Jev wasn't sure of its target
+        self.switched: str | None = None  # the last click on a tab the line names, to act on next
         # Jev's last typing, as its step reads: Flash's went where its own focus check saw a field. Flash clicked
         # the address bar and typed "docs.new\n"; on the document it opened that text was nowhere (0.09), and it
         # was typed again into the document (2026-10-19).
@@ -364,7 +368,7 @@ class JevOnlyPlanner:
             self.run_id, self.line, self.since = ctx.run_id, self.finished.count("\n") + 1 if continued else 0, 0
             self.prev, self.routed, self.clicked, self.seen, self.typed, self.unmoved = 0, False, None, False, None, None
             self.kind = None
-            self.doubted = self.screen = self.placing = None
+            self.doubted = self.screen = self.placing = self.switched = None
             self.refused = []
             if not ctx.goal.startswith(self.goal + "\n"):
                 self.opened = None  # a new request: what an earlier one opened isn't its app
@@ -464,7 +468,9 @@ class JevOnlyPlanner:
         held = finished and first["next"].get("choice") in CLICKS and (ctx.history[-1:] == [doubted] or listed)
         fresh = opened and first["next"].get("choice") == "new_tab" and probability(first["fresh"].get("noul")) >= GATE \
             and any(s.startswith("skill(open_app ") for s in ctx.history[self.since:])
-        finished = (finished or fresh) and not held
+        # Nor the switch to a tab the line closes: on the YouTube tab it brought in front, "Close the YouTube tab."
+        # read done (0.17-0.18 left) with close_tab next on it, and so did the GitHub tab after a wait (2026-10-21).
+        finished = (finished or fresh) and not held and inputs[-1:] != [self.switched]
         if finished and len(answered) > 1:
             self._advance(ctx)
             answered, finished = answered[1:], False  # the next line's first step
@@ -582,6 +588,11 @@ class JevOnlyPlanner:
         if step == "address" and probability(answers["lookup"].get("noul")) >= GATE \
                 and probability(answers["submit"].get("noul")) < GATE:
             return _fail("the request describes a page to look for, and names no website", planner=True)
+        # "Close the YouTube tab." with Wikipedia in front closed Wikipedia (3/3, 2026-10-21): the tab named, which
+        # Jev boxes, is clicked first.
+        switch = step == "close_tab" and probability(answers["other_tab"].get("noul")) >= GATE
+        if switch:
+            step = "click"
         if step == "address" and (text is None or _is_the_request(text, line)):
             # "go to email" on Chrome's new tab: Jev chose the address bar with nothing to type (6/6), and boxed
             # the page's Gmail link as the step's control.
@@ -633,7 +644,9 @@ class JevOnlyPlanner:
             elif min(width, height) >= BIG_TARGET and sure >= self.jev.min_presence \
                     and probability(answers["target"].get("confidence")) < BIG_SURE:
                 return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
-            elif (min(width, height) < BIG_TARGET or sure < self.jev.min_presence) and not labelled:
+            # Not a tab's: zooms for "Close the YouTube tab." boxed close buttons, once the Wikipedia tab's beside
+            # it, and closed Wikipedia; Jev's box was on the YouTube tab (2026-10-21).
+            elif (min(width, height) < BIG_TARGET or sure < self.jev.min_presence) and not labelled and not switch:
                 # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
                 # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
                 # shortcuts). Keeping the zoom nearer the first box is a majority of the three looks. No tighter
@@ -681,6 +694,10 @@ class JevOnlyPlanner:
                 point = min((_narrowed(p, b, first) for p, b in looks), key=lambda p: math.dist(p, point))
             elif labelled:
                 point = self._by_labels(image, ctx, line, answers, size, padded, texts, point) or point
+            elif switch and (edges := _edges(answers["target"], size, padded)):
+                # Its title, left of its close button: the switch is held as not done, so a closed tab's neighbour
+                # would be closed next.
+                point = edges[0] + (edges[2] - edges[0]) / 4, point[1]
             if step == "copy":
                 actions.append(Action("skill", name="select", args={"x": round(point[0], 3), "y": round(point[1], 3)}))
             else:
@@ -756,8 +773,11 @@ class JevOnlyPlanner:
             return self._look_again(ctx) or _fail("it would repeat the step it just took")
         if guard and probability(answers["irreversible"].get("noul")) >= GATE:
             return Plan("Irreversible step needs approval", [], [], held=f'the next step of "{line}"')
-        if step in CLICKS and certain:
+        # Nor a tab switch's: marked, the click on the YouTube tab read closing it (0.36-0.42 left), and the tab stayed.
+        if step in CLICKS and certain and not switch:
             self.clicked = image, point, actions[0].brief()
+        if switch:
+            self.switched = actions[0].brief()
         if step in CLICKS and not settled:
             self.doubted = actions[0].brief()
         if labelled:
@@ -851,6 +871,7 @@ class JevOnlyPlanner:
             "dotcom": {"type": "noul", "instructions": DOTCOM},
             "lookup": {"type": "noul", "instructions": LOOKUP},
             "focused": {"type": "noul", "instructions": FOCUSED},
+            "other_tab": {"type": "noul", "instructions": OTHER_TAB},
             "loading": {"type": "noul", "instructions": LOADING},
             "pending": {"type": "noul", "instructions": PENDING},
             "opens": {"type": "noul", "instructions": OPENS},

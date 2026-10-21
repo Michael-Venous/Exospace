@@ -31,13 +31,13 @@ class JevOnlyTests(unittest.TestCase):
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, text_odds=None, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
              lookup=.05, pending=.05, opens=.05, fresh=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two",
-             labelled=.05, on=.95, way="same", far="1", place="none"):
+             labelled=.05, other_tab=.05, on=.95, way="same", far="1", place="none"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text, "probabilities": text_odds or {}}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
                 "app": {"box": dict(zip(("left", "right", "top", "bottom"), app))}, "site": {"noul": site},
                 "submit": {"noul": submit}, "browser_named": {"noul": .05}, "browser_front": {"noul": browser_front}, "opened_front": {"noul": opened_front}, "left": {"noul": left},
-                "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
+                "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused}, "other_tab": {"noul": other_tab},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
                 "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined},
@@ -732,6 +732,12 @@ class JevOnlyTests(unittest.TestCase):
     def test_tabs_and_apps_close_by_keyboard(self):
         self.assertEqual(self.step("make a new tab", next="new_tab").brief(), "hotkey(CTRL+T)")
         self.assertEqual(self.step("close out the tab", next="close_tab", os="macos").brief(), "hotkey(GUI+W)")
+        goal = "close the youtube tab"
+        switch = self.step(goal, next="close_tab", other_tab=.94).brief()
+        self.assertEqual(switch, "click(290,300)")  # behind the tab in front: its tab first, left of its close button
+        self.assertEqual(self.step(goal, left=.17, next="close_tab", history=[switch, "skill(wait {'s': 1.0})"]).brief(),
+                         "hotkey(CTRL+W)")
+        self.assertEqual(self.step(goal, left=.17, history=[switch, "hotkey(CTRL+W)"]).type, "done")
         self.assertEqual(self.step("close discord", next="close_app").brief(), "hotkey(ALT+F4)")
         self.assertEqual(self.step("close discord", next="close_app", os="macos").brief(), "hotkey(GUI+Q)")
 
