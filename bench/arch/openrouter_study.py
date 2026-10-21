@@ -54,33 +54,40 @@ def parse_json(text: str) -> dict:
 
 
 class OpenRouterJSON:
-    """`effort` "" turns reasoning off; `fastest` routes to the provider with the lowest latency."""
+    """`effort` "" turns reasoning off; `fastest` routes to the provider with the lowest latency, `only` to that
+    provider alone; `schema` off leaves the schema to the prompt (providers without structured output)."""
 
-    def __init__(self, model: str, key: str, effort: str = "low", fastest: bool = False) -> None:
-        self.model = model
+    def __init__(self, model: str, key: str, effort: str = "low", fastest: bool = False, only: str = "",
+                 schema: bool = True) -> None:
+        self.model, self.schema = model, schema
         self.reasoning = {"effort": effort} if effort else {"enabled": False}
-        self.provider = {"sort": "latency"} if fastest else None
+        self.provider = ({"order": [only], "allow_fallbacks": False} if only
+                         else {"sort": "latency"} if fastest else None)
         self.client = httpx.Client(timeout=90, headers={"Authorization": f"Bearer {key}"})
 
-    def call(self, image: bytes, prompt: str, system: str, schema: dict) -> tuple[dict, dict]:
+    def call(self, image: bytes | None, prompt: str, system: str, schema: dict) -> tuple[dict, dict]:
+        """`image` None: a text-only call."""
+        picture = [{"type": "image_url", "image_url": {
+            "url": "data:image/jpeg;base64," + base64.b64encode(image).decode()}}] if image else []
         body = {
             "model": self.model, "stream": True, "temperature": 0,
             "reasoning": self.reasoning,
             "messages": [
                 {"role": "system", "content": system + "\nReply with a single JSON object only."},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(image).decode()}},
-                    {"type": "text", "text": prompt}]},
+                {"role": "user", "content": [*picture, {"type": "text", "text": prompt}]},
             ],
             "usage": {"include": True},
         }
         if self.provider:
             body["provider"] = self.provider
-        body["response_format"] = {"type": "json_schema",
-                                   "json_schema": {"name": "reply", "schema": schema, "strict": False}}
+        if self.schema:
+            body["response_format"] = {"type": "json_schema",
+                                       "json_schema": {"name": "reply", "schema": schema, "strict": False}}
+        else:
+            body["messages"][0]["content"] += "\nIts JSON schema: " + json.dumps(schema)
         started = time.monotonic()
         first = None
-        text, usage = "", {}
+        text, usage, served = "", {}, ""
         with self.client.stream("POST", OPENROUTER, json=body) as response:
             if response.status_code != 200:
                 raise RuntimeError(f"HTTP {response.status_code}: {response.read()[:200]!r}")
@@ -89,6 +96,7 @@ class OpenRouterJSON:
                     continue
                 chunk = json.loads(line[6:])
                 usage = chunk.get("usage") or usage
+                served = chunk.get("provider") or served
                 for choice in chunk.get("choices", []):
                     piece = (choice.get("delta") or {}).get("content") or ""
                     if piece and first is None:
@@ -97,7 +105,9 @@ class OpenRouterJSON:
         total = time.monotonic() - started
         out_tokens = usage.get("completion_tokens") or 0
         gen_time = max(1e-6, total - (first or total))
+        details = usage.get("completion_tokens_details") or {}
         return parse_json(text), {"ttft": first, "total": total, "out_tokens": out_tokens,
+                                  "reasoning_tokens": details.get("reasoning_tokens"), "provider": served,
                                   "tok_s": out_tokens / gen_time if first else None, "cost": usage.get("cost")}
 
 
@@ -112,14 +122,15 @@ class DirectGemini:
         self.types = types
         self.client = genai.Client(api_key=cfg.gemini_api_key, http_options=types.HttpOptions(timeout=90_000))
 
-    def call(self, image: bytes, prompt: str, system: str, schema: dict) -> tuple[dict, dict]:
+    def call(self, image: bytes | None, prompt: str, system: str, schema: dict) -> tuple[dict, dict]:
         t = self.types
         config = t.GenerateContentConfig(system_instruction=system, response_mime_type="application/json",
                                          response_json_schema=schema,
                                          thinking_config=t.ThinkingConfig(thinking_level=self.thinking) if self.thinking else None)
         started = time.monotonic()
         response = self.client.models.generate_content(
-            model=self.model, contents=[t.Part.from_bytes(data=image, mime_type="image/jpeg"), prompt], config=config)
+            model=self.model, config=config,
+            contents=[t.Part.from_bytes(data=image, mime_type="image/jpeg"), prompt] if image else [prompt])
         total = time.monotonic() - started
         out = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
         return json.loads(response.text or "{}"), {"ttft": None, "total": total, "out_tokens": out, "tok_s": None}

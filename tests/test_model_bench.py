@@ -12,6 +12,7 @@ import numpy as np
 from bench.arch import model_matrix, router, vague
 from bench.arch.completion_log import CompletionLog
 from bench.arch.completion_study import errors
+from bench.arch.option_scan import listing, ocr_point
 from bench.arch.plan_ground import PlanGroundPlanner
 from bench.arch.race_continue import LOOKAHEAD_PROMPT, ContinuePlanner, _HandBack
 from bench.arch.race_pointer import PointerFlash
@@ -297,6 +298,19 @@ class RaceContinueTests(unittest.TestCase):
         self.assertEqual(planner.next_actions(SCREEN, _ctx("go to youtube")).reasoning, "Flash replan")
         self.assertEqual(planner.flash.seen, [True, False])
         self.assertTrue(planner.flash.hand_back)
+
+
+
+class OptionScanTests(unittest.TestCase):
+    ELEMENTS = [("t1", "Starship flight 9 full launch replay", (0.76, 0.42)), ("t2", "Python in 100 seconds", (0.4, 0.73)),
+                ("t3", "YouTube", (0.04, 0.02))]
+
+    def test_ocr_grounding_takes_the_line_sharing_most_words_and_refuses_ties(self):
+        self.assertEqual(ocr_point("the Starship launch replay video", self.ELEMENTS), (0.76, 0.42))
+        self.assertIsNone(ocr_point("the guitar chords video", self.ELEMENTS))
+
+    def test_a_listing_gives_ids_text_and_position_in_thousandths(self):
+        self.assertEqual(listing(self.ELEMENTS[:1]), "t1: Starship flight 9 full launch replay @ 760,420")
 
 
 if __name__ == "__main__":

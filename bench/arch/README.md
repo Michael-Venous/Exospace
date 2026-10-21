@@ -444,6 +444,70 @@ the end of the goal instead of stopping at the next observation point; interleav
    "actually go back"), each a planner call; its only executed step is "click on the control for:
    <utterance>". Unmeasured fix to try: name what was clicked in that step.
 
+### Option scan before optimizing one path (study 11, 2026-10-20, `option_scan.py`)
+Fast-inference providers OpenRouter serves (Inception, Groq, Cerebras, SambaNova, Together, Fireworks) next
+to study 9's best, with Google's own API for the same Gemini models. 2,649 calls ($0.57 OpenRouter) plus
+260 floor calls and a 200-call pointing run; `work/arch/options/`, `work/arch/matrix/rows-fastvision.json`.
+Element lists are inventories of synthetic pages, not real-screen perception (see "dom" and "ocr" below).
+
+**Measured: where a call's time goes** (10 calls each; text = a tiny JSON reply, screen = one question
+about a 1280 px screenshot)
+
+| Model (provider) | Text p50 / p90 | Screen p50 / p90 | Reasoning tokens (screen) |
+|---|---|---|---|
+| Llama 3.1 8B (Groq) | **0.21** / 0.31 | – | – |
+| Qwen 3.8 27B (Cerebras) | 0.26 / 0.75 | 0.49 / 0.77 | 0 |
+| gpt-oss-120b (Cerebras / Groq) | 0.33 / 1.41, 0.47 / 0.70 | – | – |
+| Mercury 3 (Inception) | 0.49 / 0.60 | – | – |
+| DeepSeek V4.1 Flash (fastest) | 0.54 / 0.87 | **0.44** / 0.57 | 0 |
+| Jev (one question) | – | **0.27** / 0.43 | – |
+| Gemini 3.5 Flash-Lite, OpenRouter / Google | 0.75 / 3.03, 0.71 / 0.99 | 0.97 / 1.11, 1.12 / 1.20 | 0 |
+| Gemini 3.8 Flash, OpenRouter / Google | 1.54 / 2.46, 1.54 / 3.82 | 4.20 / 14.7, 3.84 / 6.49 | **349** |
+
+- **OpenRouter adds no measurable latency** (same model through Google: 0.75 vs 0.71 s, 1.54 vs 1.54 s).
+- **Gemini 3.8 Flash's time is its reasoning**, not network or output speed: 349 reasoning tokens on a
+  trivial screen question; the same call with 0 reasoning tokens took 1.3 s. It can't be turned off there.
+- **No hosted model answers in 0.1 s**: the network-and-queue floor is ~0.2 s (Llama 8B on Groq).
+- CPU OCR (RapidOCR, this laptop) takes 1.0-1.4 s a screen: not a fast perception path on a CPU.
+
+**Measured: speech to command** (study 1's 32 segments × 2: act + target / plan / none)
+
+| Model | From page element list ("dom", best case): ok / unsafe | From OCR list (pixels) | From screenshot | p50 s |
+|---|---|---|---|---|
+| DeepSeek V4.1 Flash | **64/64 / 0** | **62/64 / 0** | 56/64 / 6 | 0.59 |
+| Gemini 3.5 Flash-Lite, Google | 64/64 / 0 | 63/64 / 0 | 60/64 / 2 | 0.78 |
+| Gemini 3.5 Flash-Lite, OpenRouter | 63/64 / 0 | 59/64 / 0 | 58/64 / 4 | 0.74 |
+| Qwen 3.8 27B (Cerebras) | 62/64 / 0 | 60/64 / 0 | 36/64 / **25** | **0.31** |
+| Gemini 3.8 Flash, Google | 64/64 / 0 | 63/64 / 0 | 62/64 / 0 | 2.27 |
+| gpt-oss-120b (Cerebras) | 56/64 / 4 | 56/64 / 2 | – | 0.31 |
+| Mercury 3 (Inception) | 57/64 / 3 | 58/64 / 4 | – | 0.46 |
+| Llama 3.3 70B / 3.1 8B (Groq) | 58/60 / 2, 48/62 / 6 | 51/60, 37/61 | – | 0.51, 0.33 |
+
+(Study 1, screenshot: Jev triage 60/64 at 0.27 s, Gemini 3.8 Flash 31/32 at 2.46 s.)
+
+**Measured: planning a first step from the dom list** (study 3's 18 × 2): Gemini 3.8 Flash 31-32/36
+(4-5 wrong), DeepSeek 29/36, Flash-Lite 28-29/36, gpt-oss-120b 28/36, Mercury 25/36, Qwen 27B 24/36.
+From screenshots (study 9 matrix, grounded by Jev) every model scored 18-27/36.
+
+**Measured: faster pointing** (study 9's 100 controls, 2 repeats, the same run as Jev and Gemini):
+**Qwen 3.8 27B 98 hit / 1 wrong at 0.50 s p50** (ModelRun, via OpenRouter's lowest-latency routing);
+Gemma 4 31B 88 / 12 at 0.44 s; Gemini 3.8 Flash 97 / 3 at 2.66 s; Flash-Lite 92 / 8 at 0.99 s; Jev 65 / 1
+(34 refused) at 0.47 s. OCR text matching alone, no model: 18 of 27 hit, 0 wrong, 9 refused (icons, BIOS tabs).
+
+**Not measured:** speech-to-text latency (no Deepgram key in the hub or `.env`); any GPU path (the second PC's
+3080 Ti is reserved for drift: coordinate before use); any of these models end to end in the runtime.
+
+#### Proposals from study 11 (unmeasured end to end)
+1. **Speech → command from an element list, ~0.3-0.8 s, instead of a 3-4 s Flash call**: DeepSeek V4.1 Flash
+   or Flash-Lite were exact on the dom list and 62-63/64 with 0 unsafe on CPU-OCR lists. The open
+   question is perception: a real screen parser sees less than the dom list, and CPU OCR is 1 s.
+2. **Qwen 3.8 27B as the pointer** (0.5 s, 98/100) where Jev refuses or for small targets, but never for
+   intent (25 unsafe from screenshots).
+3. **Planning from an element list** lifted Gemini 3.8 Flash from ~20 to 31-32 of 36 first steps; worth an
+   end-to-end test with a real parser before anything else.
+4. **0.1 s needs a local model** (GPU parser + small model); hosted floors are 0.2 s. Measure on the 3080 Ti
+   only after coordinating with drift.
+
 ### Streaming (study 2, `stream_study.py`)
 - Schema-enforced streaming is valid but only ~0.4 s faster (2.38 vs 2.79 s), because Flash
   plans **one stage per observation point** even when told to look ahead. That's sensible:
