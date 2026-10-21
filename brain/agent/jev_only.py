@@ -215,6 +215,11 @@ OPENER_CONTROL = f"{STEP_CONTROL}: when what it works in isn't open yet, the con
 # Its last line: past the end of a paragraph's first line, which ran to the column's edge, the triple click followed
 # the "mountain range" link there, 3 runs in 3 (2026-10-21). Zooms on the last line took its row 14 times in 14.
 COPY_CONTROL = "the last line of the text that the first line of the `goal` copies (a later line names it by what it pastes)"
+# Real ends read 0.76-0.95; "Dr. Smith" 0.14-0.20, "5 p.m. tomorrow" 0.35-0.44, "King Jr. on" 0.52-0.58 (2026-10-21).
+SENTENCE_END = ("In the `goal`, does one request end with {before} and the next request start with {after}? Answer no "
+                "when the {mark} is part of an abbreviation (such as a title, an initial, a time or a name suffix) "
+                "inside one request.")
+SENTENCE_GATE = 0.65
 # A box this big holds the spot it was drawn on without a closer look, and a zoom loses where it sits among
 # its neighbours: on "click the third video" zooms chose the second or fourth of YouTube's Shorts row. Only when
 # Jev is sure of it: "copy the header" boxed four rows of Wikipedia's citations 0.54 sure, and the select at its
@@ -334,6 +339,7 @@ class JevOnlyPlanner:
         self.line = 0  # the goal's first line not yet done: the one Jev sees
         self.since = 0  # where that line's steps start in the run's history
         self.prev = 0  # where the line before it started: Jev sees its steps too ("delete hello" after typing it)
+        self.split = ("", "")  # the last goal split into sentences, and its split
         self.routed = False  # Jev has seen the app in front can take the line's next step
         self.kind: str | None = None  # the kind of app the line names, routed to the browser as a website
         self.seen = False  # Jev planned the line's next step at an earlier step: it wasn't done then
@@ -384,7 +390,7 @@ class JevOnlyPlanner:
             self.refused += [step for step in self.planned[1] if step.startswith("skill(open_app ")]
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
-        ctx = replace(ctx, goal=_sentences(ctx.goal))
+        ctx = replace(ctx, goal=self._sentences(image, ctx))
         plan = self._plan(image, ctx)
         # A kind of app read as a website has its app to open: "open up a spreadsheet" with Google Docs in front read
         # a site (0.92), and on Chrome's new tab Jev had no words of the request to type, or no control (2026-10-20).
@@ -1037,17 +1043,20 @@ class JevOnlyPlanner:
         x, center, box, size, padded = max(ends, key=lambda end: end[0])
         if step == "paste":
             # "Copy the first line, paste after the last line." boxed both lines, and a click on its middle row,
-            # or a zoom's, pasted after the first (2026-10-21). Not at the box's end: past "eggs" the click hit Docs'
-            # comment bubble beside the copied line's selection, and the paste went after that line (2026-10-21).
-            _, top, _, bottom = _edges(box, size, padded)
+            # or a zoom's, pasted after the first (2026-10-21). At the box's left edge: past "eggs", and on its middle
+            # too, the click hit Docs' comment bubble beside the copied line's selection, and the paste went after that
+            # line (2026-10-21).
+            left, top, _, bottom = _edges(box, size, padded)
             own = sum(probability(answers["own_line"].get("noul")) for answers, _, _ in replies) / len(replies)
-            return center[0], bottom - (bottom - top) / 4, own >= OWN_LINE_GATE
+            return left + COPY_PAST, bottom - (bottom - top) / 4, own >= OWN_LINE_GATE
         bottom = _edges(box, size, padded)[3]
         point, _, last = zoom(self.jev, image, state, control, (center[0], bottom), COPY_WINDOW, ctx.run_id, ctx.step)
         # Only in the box: a zoom off it went to the address bar above it (1 in 16). Past the last line's end, short of
-        # the box's: one zoom in 3 on Einstein's lead ran its last line into the infobox beside it.
+        # the box's: one zoom in 3 on Einstein's lead ran its last line into the infobox beside it. In its upper
+        # quarter: zooms on "Hello gang" (0.367-0.382) boxed to 0.39-0.40, the gap above the next line, and their
+        # middle, 0.388, selected that line (2026-10-21).
         if point and last and box_contains(box, size, padded, point):
-            x, y = min(x, last[2]), point[1]
+            x, y = min(x, last[2]), last[1] + (last[3] - last[1]) / 4
         else:
             y = center[1]
         return min(1.0, x + COPY_PAST), y, False
@@ -1074,9 +1083,24 @@ class JevOnlyPlanner:
         return [({k: v for i, questions in part for k, v in replies[i][0].items() if k in questions},
                  *replies[part[0][0]][1:]) for part in parts]
 
+    def _sentences(self, image: bytes, ctx: StepContext) -> str:
+        """The goal with each request in it on a line of its own, as speech's pauses put them: typed whole, "...type
+        hello world. Delete world, replace with gang. ... Search up genghis khan, ..." read the search's Enter as
+        asked (submit 0.65-0.84) after each text typed into the document, its later sentences' words were past the
+        text choices' budget, and its paste back in the document's tab was never routed there (2026-10-21). Jev
+        reads which marks end a request, once per goal: an abbreviation's period ("Dr. Smith") ends none. A mark
+        it doesn't answer for splits."""
+        if self.split[0] != ctx.goal:
+            questions = _mark_questions(ctx.goal)
+            answers = self.jev.evaluate(image, questions, run_id=ctx.run_id, step=ctx.step, state={"goal": ctx.goal},
+                                        label="sentences")[0] if questions else {}
+            ends = iter([probability(answers[k].get("noul")) >= SENTENCE_GATE if k in answers else True for k in questions])
+            self.split = ctx.goal, _SENTENCE_END.sub(lambda m: "\n" if next(ends) else m.group(), ctx.goal)
+        return self.split[1]
+
     def line_done(self, image: bytes, ctx: StepContext) -> Plan:
         """Another planner finished the line Jev is on: Jev's step for the next one, or the request is done."""
-        ctx = replace(ctx, goal=_sentences(ctx.goal))
+        ctx = replace(ctx, goal=self._sentences(image, ctx))
         return self._next_line(image, ctx, ctx.goal.splitlines(), "Flash verified the line done")
 
     def _next_line(self, image: bytes, ctx: StepContext, lines: list[str], why: str) -> Plan:
@@ -1147,13 +1171,15 @@ class JevOnlyPlanner:
         return _fail("no app suited to the request is visible")
 
 
-def _sentences(goal: str) -> str:
-    """The goal with each sentence on a line of its own, as speech's pauses put them: typed whole, "...type hello
-    world. Delete world, replace with gang. ... Search up genghis khan, ..." read the search's Enter as asked
-    (submit 0.65-0.84) after each text typed into the document, its later sentences' words were past the text
-    choices' budget, and its paste back in the document's tab was never routed there (2026-10-21).
-    shortcut: an abbreviation's period ("Dr. Smith") splits too; keep such words together if requests use them."""
-    return _SENTENCE_END.sub("\n", goal)
+def _mark_questions(goal: str) -> dict[str, dict]:
+    """For each mark that may end a sentence in the goal, whether a request ends there, asked with its words around."""
+    questions = {}
+    for i, mark in enumerate(_SENTENCE_END.finditer(goal)):
+        before, after = goal[:mark.start()].split()[-6:], goal[mark.end():].split()[:3]
+        questions[f"end{i}"] = {"type": "noul", "instructions": SENTENCE_END.format(
+            mark=before[-1][-1], before=json.dumps(" ".join(before), ensure_ascii=False),
+            after=json.dumps(" ".join(after), ensure_ascii=False))}
+    return questions
 
 
 def _clause_tails(line: str) -> list[str]:
