@@ -48,6 +48,7 @@ LOG_TAIL = 20
 MAX_LINES = 24  # a reply longer than this is degenerate (one repeated "type text" for 120 s, study 16)
 CLICK_SETTLE_S = 1.2  # before Jev looks for a click's target
 LOOK_SETTLE_S = 2.5  # at a look, for a page to finish drawing
+MIN_REPEAT = 3  # actions in a reply before an exact repeat of the last reply counts as a loop
 SURE_BOX = 0.7  # Jev's box confidence at which a target its presence check refused gets a zoomed look anyway
 CALL_SETTLE_S = 1.0  # a call right after the executor's input waits up to this for the screen to settle  # executor log entries each call sees
 PROMPT = """You operate a computer for a user who speaks to you. You see its screen; you act only through
@@ -379,7 +380,9 @@ class Brain(threading.Thread):
         dozen times widened a Blender house to 7e14 m, study 16.)"""
         batch = [json.dumps({k: v for k, v in line.items() if k != "at_s"}, sort_keys=True)
                  for line in record["lines"] if "skipped" not in line and "say" not in line and "ask" not in line]
-        if batch and batch == self.last_batch:
+        if len(batch) >= MIN_REPEAT and batch == self.last_batch and not self.unchanged:
+            # Only a whole recipe sent again after it visibly did something: one that had no effect is a fair retry,
+            # and a short one ("click Save" in a print dialog, then in the file dialog it opens) is often right.
             self.repeats += 1
             record["repeat"] = self.repeats
             with self.cond:
@@ -407,10 +410,11 @@ class Brain(threading.Thread):
             return
         if not isinstance(action, dict) or not action:
             return
-        if "look" in action and self.looked_only >= 1 and not any(
+        if "look" in action and self.looked_only >= 1 and self.unchanged and not any(
                 not {"skipped", "say", "ask"} & line.keys() for line in record["lines"]):
-            # A reply that only looks again right after one that only looked: the model is stuck, not waiting (looks
-            # repeated until the watchdog stopped a finished Blender house, study 16); a page still loading has wait.
+            # A reply that only looks again, right after one that only looked, at a screen that hasn't changed: the model
+            # is stuck (looks repeated until the watchdog stopped a finished Blender house, study 16). Either alone ended
+            # turns early: a material panel filling in reads as unchanged; a wallpaper turn looked twice.
             record["lines"].append({"at_s": round(time.monotonic() - started, 3), "skipped": action})
             return
         record["lines"].append({"at_s": round(time.monotonic() - started, 3), **action})

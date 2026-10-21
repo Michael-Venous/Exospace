@@ -242,7 +242,9 @@ def _house(test: Test) -> tuple[bool, str]:
 DOWNLOADS = " && ".join([pdf("exo_report_q3.pdf", "-3 days"), pdf("exo_lease.pdf", "-40 days"),
                          pdf("exo_boarding_pass.pdf", "now"), pdf("exo_invoice_0412.pdf", "-9 days"),
                          pdf("exo_invoice_0519.pdf", "-5 days")])
-CLEAN_FILES = "rm -f ~/Downloads/exo_* ~/Downloads/youtube_thumbnail.jpg; rm -rf ~/Documents/taxes; rm -f ~/Desktop/groceries*"
+CLEAN_FILES = ("rm -f ~/Downloads/exo_* ~/Downloads/youtube_thumbnail.jpg; rm -rf ~/Documents/taxes; "
+               # Whatever a test saved on the Desktop (empty before the tests), under any name it chose.
+               "[ -f /tmp/exo_test_start ] && find ~/Desktop -mindepth 1 -maxdepth 1 -newer /tmp/exo_test_start -exec rm -rf {} +")
 TESTS = [
     Test("open youtube", ["open youtube"],
          "cp /usr/share/wallpapers/Next/contents/images/1920x1080.png ~/Downloads/youtube_thumbnail.jpg 2>/dev/null || "
