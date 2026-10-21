@@ -339,6 +339,28 @@ class JevOnlyTests(unittest.TestCase):
         actions = self.plan(goal, next="type", text=text, focused=.1, history=["hotkey(CTRL+T)", WAIT.brief()])
         self.assertEqual([a.type for a in actions], ["click", "type_text"])
 
+    def test_a_scroll_back_over_a_scroll_back_takes_the_lines_clipboard_step(self):
+        hover = "skill(hover {'x': 0.5, 'y': 0.5})"
+        rocked = ["click(695,491)", hover, "scroll(5)", hover, "scroll(-5)"]
+        goal = "click his birthplace and copy the first paragraph"
+        copied = self.plan(goal, next="scroll_down", clipboard=.9, history=rocked)
+        self.assertEqual(copied[-1].brief(), "hotkey(CTRL+C)")
+        pasted = self.plan("paste it after the last line", next="scroll_down", clipboard=.9,
+                           history=["hotkey(CTRL+C)", *rocked], run="p")
+        self.assertEqual(pasted[-1].brief(), "hotkey(CTRL+V)")
+        self.assertEqual(self.plan(goal, next="scroll_up", clipboard=.9, history=rocked, run="u")[-1].brief(), "scroll(-5)")
+        self.assertEqual(self.plan(goal, next="scroll_down", history=rocked, run="n")[-1].brief(), "scroll(5)")
+
+    def test_a_word_selected_is_typed_over_or_erased_alone(self):
+        goal = "Delete brown, replace with red."
+        selected = self.plan(goal, next="select", history=["type_text('the quick brown fox')"])
+        self.assertEqual([a.type for a in selected], ["double_click"])
+        after = [a.brief() for a in selected]
+        typed = self.plan(goal, next="type", text=str(spans(goal, 250).index("red")), replace=.9, history=after, run="t")
+        self.assertEqual([a.brief() for a in typed], ["type_text('red')"])
+        erased = self.plan(goal, next="erase", history=["type_text('the quick brown fox')", *after], run="e")
+        self.assertEqual([a.brief() for a in erased], ["hotkey(BACKSPACE)"])
+
     def test_filled_box_is_selected_before_typing(self):
         actions = self.plan("search for cats", next="type", text=str(spans("search for cats").index("cats")), replace=.9,
                             history=["click(300,300)"])
@@ -362,7 +384,7 @@ class JevOnlyTests(unittest.TestCase):
                          wait)
         # a paste that changed nothing clicks its place first, at once
         pasted = self.plan("paste it in", next="paste", note=unchanged, history=["hotkey(CTRL+V)"], left=.1, run="e")
-        self.assertEqual([a.brief() for a in pasted], ["click(395,350)", "hotkey(END)", "hotkey(CTRL+V)"])
+        self.assertEqual([a.brief() for a in pasted], ["click(300,350)", "hotkey(END)", "hotkey(CTRL+V)"])
         self.assertEqual(self.step("paste it in", next="paste", note=unchanged, history=["hotkey(CTRL+V)", *[
             a.brief() for a in pasted]], run="e").type, "fail")
         # a copy that changed nothing selected nothing: it copies again at once, though Jev reads it done
@@ -430,26 +452,33 @@ class JevOnlyTests(unittest.TestCase):
         pasted = self.plan("paste it in", next="paste", run="s")
         self.assertEqual([a.brief() for a in pasted], ["hotkey(CTRL+V)"])
         unfocused = self.plan("paste it in", next="paste", focused=.2, target=BIG, run="t")
-        # just inside the end of the place it pastes into, the caret then put after its text
-        self.assertEqual([a.brief() for a in unfocused], ["click(395,350)", "hotkey(END)", "hotkey(CTRL+V)"])
+        # in the middle of the place it pastes into, the caret then put after its text
+        self.assertEqual([a.brief() for a in unfocused], ["click(300,350)", "hotkey(END)", "hotkey(CTRL+V)"])
         selected = ["skill(select {'x': 0.605, 'y': 0.3})", "hotkey(CTRL+C)"]  # focused, but on the selection
         after = self.plan("paste it after the last line", next="paste", history=selected, run="x")
-        self.assertEqual([a.brief() for a in after], ["click(395,350)", "hotkey(END)", "hotkey(CTRL+V)"])
+        self.assertEqual([a.brief() for a in after], ["click(300,350)", "hotkey(END)", "hotkey(CTRL+V)"])
         # on the last row of a box over two lines, and on a line of its own after the line it names
         two = {"box": {"left": .2, "right": .4, "top": .26, "bottom": .34}}
         below = self.plan("paste it after the last line", next="paste", copied=two, own_line=.4, history=selected,
                           run="o")
-        self.assertEqual([a.brief() for a in below], ["click(395,320)", "hotkey(END)", "hotkey(ENTER)", "hotkey(CTRL+V)"])
+        self.assertEqual([a.brief() for a in below], ["click(300,320)", "hotkey(END)", "hotkey(ENTER)", "hotkey(CTRL+V)"])
         # a click into text Jev picks between the line's copy and its paste is the paste
         clicked = self.plan("copy the first line, paste after the last line", next="click", input=.98, clipboard=.9,
                             history=selected, run="c")
-        self.assertEqual([a.brief() for a in clicked], ["click(395,350)", "hotkey(END)", "hotkey(CTRL+V)"])
+        self.assertEqual([a.brief() for a in clicked], ["click(300,350)", "hotkey(END)", "hotkey(CTRL+V)"])
+        # a copy on an earlier line, after one pasted, too; not once it is pasted
+        earlier = ["hotkey(CTRL+V)", *selected, "click(80,20)"]
+        clicked = self.plan("paste after the last line", next="click", input=.98, clipboard=.9, history=earlier, run="e")
+        self.assertEqual(clicked[-1].brief(), "hotkey(CTRL+V)")
+        pasted = self.plan("click the title", next="click", input=.98, clipboard=.9, history=earlier[1:] + ["hotkey(CTRL+V)"],
+                           run="p")
+        self.assertEqual([a.type for a in pasted], ["click"])
         # in another tab the line names: its tab first, then the paste there
         doc = "paste it after the last line in the doc"
         switch = self.step(doc, next="paste", other_tab=.97, history=selected, run="y").brief()
         self.assertEqual(switch, "click(290,300)")
-        self.assertEqual(self.plan(doc, next="paste", other_tab=.8, history=[*selected, switch], run="y")[-1].brief(),
-                         "hotkey(CTRL+V)")
+        back = self.plan(doc, next="paste", other_tab=.8, history=[*selected, switch], run="y")
+        self.assertEqual([a.brief() for a in back], ["click(300,350)", "hotkey(END)", "hotkey(CTRL+V)"])  # placed anew
         # sure of the tab it names, though not of the place behind it; on the row a zoom on the tab finds
         self.assertEqual(self.step(doc, next="paste", other_tab=.9, present=.31, history=selected, run="z",
                                    looks=((.3, .02),)).brief(), "click(290,20)")
@@ -462,6 +491,11 @@ class JevOnlyTests(unittest.TestCase):
         search = "click his birthplace and copy the first paragraph"
         self.assertEqual(self.step(search, next="scroll_down", left=.1, clipboard=.9, history=["click(53,179)"],
                                    run="b").type, "skill")
+        # its asking read once holds the line for the rest of it
+        self.assertEqual(self.step(search, next="click", left=.1, clipboard=.4, history=["click(53,179)", "scroll(5)"],
+                                   run="b").type, "click")
+        self.assertEqual(self.step(search, next="click", left=.1, clipboard=.4, history=["click(53,179)", "scroll(5)"],
+                                   run="g").type, "done")
         # a copy that ends its line ends it, though the screen can't show it done
         copy = ["skill(select {'x': 0.555, 'y': 0.53})", "hotkey(CTRL+C)", "skill(wait {'s': 1.0})"]
         self.assertEqual(self.step(search, next="stuck", left=.8, clipboard=.9, after_copy=.3, history=copy,
