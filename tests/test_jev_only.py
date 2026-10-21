@@ -697,12 +697,19 @@ class JevOnlyTests(unittest.TestCase):
         self.assertTrue(self.last.in_place)
         # placed where the zooms on its column's and row's labels, told the words that name it, cross
         named = self.plan(goal, next="fill", text=hello, labelled=.85, place=str(spans(goal).index("d 5")),
-                          looks=((.2, .9), (.8, .4)), run="n")
+                          looks=((.2, .9), (.8, .4)), boxes=((.15, .0, .25, .05), (.0, .35, .05, .45)), run="n")
         self.assertEqual([a.brief() for a in named], ["click(200,400)"])
         self.assertIn('"d 5"', self.zoom.call_args_list[0].args[3])
         self.plan(goal, next="click", labelled=.85, run="s")
         with patch("brain.agent.jev_only.mark", return_value=b"marked"):  # the sure click is judged marked
             self.assertEqual(self.step(goal, on=.1, way="same", history=["click(300,300)"], run="s").type, "fail")
+
+    def test_a_first_look_already_in_the_labelled_cell_keeps_its_point(self):
+        goal = "click the city in the third row of the table"  # a link's text, not the column's centre
+        place = str(spans(goal).index("third row"))
+        kept = self.plan(goal, labelled=.85, place=place, looks=((.2, .9), (.8, .4)),
+                         boxes=((.25, .0, .35, .05), (.0, .25, .05, .35)))
+        self.assertEqual([a.brief() for a in kept], ["click(300,300)"])
 
     def test_text_typed_into_a_cell_is_entered_in_the_same_step(self):
         goal = "add hello to b1"
