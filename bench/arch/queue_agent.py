@@ -32,7 +32,6 @@ from brain.agent.jev import JevVision, probability
 from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.triage import GATE, refine
 from brain.cancel import CancelToken
-from brain.capture import thumbnail
 from brain.controller import Controller
 from brain.hid import HIDError
 from brain.imaging import shrink
@@ -44,10 +43,6 @@ STATES = {"running": "running your actions", "paused": "stopped, waiting for you
           "idle": "finished all the actions you queued"}
 SLEEP_S = 8.0  # no speech and nothing to do for this long: screen changes stop calling the model
 LOG_TAIL = 20  # executor log entries each call sees
-# Settling: the screen once two screenshots in a row match, at most this long (a playing video never matches).
-CLICK_SETTLE_S = 0.8  # before Jev looks for a click's target
-LOOK_SETTLE_S = 2.0  # at a look or done, for a page or app to finish drawing
-CALL_SETTLE_S = 0.8  # a call right after the executor's input: a menu it opened is still drawing
 SURE_BOX = 0.7  # Jev's box confidence at which a target its presence check refused still gets a zoomed look
 PROMPT = """You operate a computer for a user who speaks to you. You see its screen; you act only through
 its keyboard and mouse. Never open a terminal or type shell commands unless the user explicitly asks for one:
@@ -63,7 +58,7 @@ Reply with actions, ONE JSON object per line, nothing else. They run in order as
                                     top right"); also "double_click", "right_click"
   {"drag": ["the file report.pdf", "the Documents folder in the sidebar"]}   press on one spot, release on another
   {"scroll": 3, "at": "the list of results"}   mouse-wheel notches, positive down ("at" optional)
-  {"wait": 1.5}                     seconds
+  {"wait": 1.5}                     seconds, when something you expect is still loading or drawing
   {"look": "the search results page"}   stop and show me the screen again; say what you expect to see, and
                                     the log will say whether the screen shows it
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
@@ -164,19 +159,10 @@ class Executor(threading.Thread):
         except (ActionError, HIDError, ValueError, TypeError, KeyError, StopIteration) as exc:
             return "error", f"{type(exc).__name__}: {exc}"[:160]
 
-    def settle(self, limit_s: float):
-        """The screen once two screenshots in a row match, or after `limit_s` whatever still moves."""
-        deadline = time.monotonic() + limit_s
-        frame = self.controller.capture.grab()
-        while time.monotonic() < deadline:
-            following = self.controller.capture.grab()
-            if not self.controller.changed(thumbnail(frame), thumbnail(following)):
-                return following
-            frame = following
-        return frame
-
-    def _jpeg(self, limit_s: float) -> bytes:
-        return cv2.imencode(".jpg", self.settle(limit_s), [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+    def _jpeg(self) -> bytes:
+        """The screen as it is now: no waiting for it to settle, so motion on screen (a video) costs nothing; the
+        model says `wait` when it expects something still to draw."""
+        return cv2.imencode(".jpg", self.controller.capture.grab(), [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
 
     def _input(self, send) -> None:
         self.inputs.append(time.monotonic())
@@ -184,7 +170,7 @@ class Executor(threading.Thread):
 
     def _shown(self, expected: str) -> str:
         """Jev's answer to whether the screen shows what the model expected at this look."""
-        answers, _, _ = self.jev.evaluate(self._jpeg(LOOK_SETTLE_S), {"shown": {"type": "noul", "instructions":
+        answers, _, _ = self.jev.evaluate(self._jpeg(), {"shown": {"type": "noul", "instructions":
                                           f"Does `screen` show this: {expected}?"}}, label="look")
         p = probability(answers["shown"].get("noul"))
         return f"Jev: the screen {'shows' if p >= GATE else 'does not show'} that ({p:.2f})"
@@ -195,14 +181,14 @@ class Executor(threading.Thread):
             goal = self.shared.goal
             steps = [json.dumps(r.action) for r in self.shared.log[self.shared.turn_start:]
                      if r.result == "done" and not {"look", "wait"} & r.action.keys()]
-        score = self.jev.completion(self._jpeg(LOOK_SETTLE_S), goal, steps, evidence=claim)
+        score = self.jev.completion(self._jpeg(), goal, steps, evidence=claim)
         if score >= COMPLETION_GATE:
             return "verified", f"Jev sees the request done ({score:.2f})"
         return "not_verified", f"Jev does not see the request done on the screen ({score:.2f}): it isn't done yet"
 
     def _find(self, target: str) -> tuple[float, float] | None:
-        """Jev places the target on the screen as it is now (after it settles), zoomed in once and again."""
-        jpeg = self._jpeg(CLICK_SETTLE_S)
+        """Jev places the target on the screen as it is now, zoomed in once and again."""
+        jpeg = self._jpeg()
         started = time.monotonic()
         point = self.jev.locate(jpeg, target)
         if point is None:
@@ -322,9 +308,7 @@ class Brain(threading.Thread):
 
     def _call(self) -> None:
         self.phase = ("grabbing", round(time.monotonic() - self.started, 2))
-        last = self.shared.log[-1].t if self.shared.log else -1.0
-        just_acted = time.monotonic() - self.started - last < CALL_SETTLE_S
-        frame = self.executor.settle(CALL_SETTLE_S) if just_acted else self.target.grab()
+        frame = self.target.grab()
         image = shrink(cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes())
         if self.shots is not None:  # what each call saw, for debugging
             (self.shots / f"call-{len(self.calls)}.jpg").write_bytes(image)
