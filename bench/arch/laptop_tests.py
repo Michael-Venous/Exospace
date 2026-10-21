@@ -27,7 +27,7 @@ import cv2
 from bench.arch.laptop import LaptopTarget, shell
 from bench.arch.queue_agent import CLICKERS, QueueAgent
 
-OUT = Path("work/arch/laptop")
+OUT = Path("work/arch/laptop")  # --out to keep another machine's runs apart
 SPEECH_S = 0.35  # a word, about 170 words a minute
 QUIET_S = 2.0  # the agent counts as finished with a turn after this long with nothing running or queued
 # Fast vision models, the instruction-tuned (chat) variants OpenRouter serves; effort "" = reasoning off.
@@ -53,9 +53,25 @@ JS
 setsid -f firefox --no-remote --profile /tmp/exo-ff https://www.google.com >/dev/null 2>&1; sleep 4"""
 WINDOWS_JS = """var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
 for (var i = 0; i < ws.length; i++) { var w = ws[i]; if (w.normalWindow || w.dialog)
-  print("EXOWIN " + JSON.stringify({caption: w.caption, cls: w.resourceClass, active: w.active})); }"""
-CLOSE_JS = """var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
-for (var i = 0; i < ws.length; i++) { var w = ws[i]; if ((w.normalWindow || w.dialog) && w.resourceClass != "plasmashell") w.closeWindow(); }"""
+  print("EXOWIN " + JSON.stringify({id: String(w.internalId), caption: w.caption, cls: w.resourceClass,
+                                   active: w.active})); }"""
+KEEP: set[str] = set()  # windows open before the run (someone's own session): never closed
+
+
+def minimize_js(minimized: bool) -> str:
+    """A KWin script minimizing (or restoring) the windows open before the run: tests start on an empty desktop."""
+    return f"""var keep = {json.dumps(sorted(KEEP))};
+var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
+for (var i = 0; i < ws.length; i++) {{ if (keep.indexOf(String(ws[i].internalId)) >= 0)
+    ws[i].minimized = {str(minimized).lower()}; }}"""
+
+
+def close_js() -> str:
+    """A KWin script closing every app window the run opened."""
+    return f"""var keep = {json.dumps(sorted(KEEP))};
+var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
+for (var i = 0; i < ws.length; i++) {{ var w = ws[i]; if ((w.normalWindow || w.dialog) && w.resourceClass != "plasmashell"
+    && keep.indexOf(String(w.internalId)) < 0) w.closeWindow(); }}"""
 BLENDER_ORACLE = r'''
 import bpy, json
 def dump():
@@ -189,7 +205,7 @@ def _groceries() -> tuple[bool, str]:
 def _firefox_homepage(test: Test) -> tuple[bool, str]:
     """Wikipedia is the homepage of the test profile: Firefox is closed as a user would close it (which writes
     prefs.js), then its prefs are read."""
-    kwin(CLOSE_JS)
+    kwin(close_js())
     out = shell("for i in $(seq 50); do pgrep -f 'exo-f[f]' >/dev/null || break; sleep 0.1; done; "
                 "grep -h 'browser.startup.homepage\"' /tmp/exo-ff/prefs.js 2>/dev/null")
     return "wikipedia" in out.lower(), out.strip()[:200]
@@ -263,11 +279,12 @@ DEFAULT = [1, 3, 4, 5, 6, 7, 8, 10]
 
 
 def reset() -> None:
-    """Close every app window, the test Chrome and leftover files: each test starts on the empty desktop."""
-    kwin(CLOSE_JS)
+    """Close every app window the run opened, the apps it started and its leftover files: each test starts on the
+    desktop as the run found it (empty on the test laptop)."""
+    kwin(close_js())
     time.sleep(1.5)
-    shell("pkill -f exo-chrome; for app in blender okular kate kwrite systemsettings dolphin konsole gwenview firefox "
-          f"brave; do pkill -x $app; done; {CLEAN_FILES}; sleep 1")
+    shell(f"pkill -f exo-chrome; for app in blender okular kate kwrite systemsettings dolphin konsole gwenview firefox "
+          f"brave; do pkill --newer {os.getpid()} -x $app; done; {CLEAN_FILES}; sleep 1")
 
 
 def speak(agent: QueueAgent, words: str) -> float:
@@ -316,8 +333,8 @@ def wait_quiet(agent: QueueAgent, limit_s: float) -> tuple[float, str]:
 
 
 def run(test: Test, index: int, repeat: int, model: str, effort: str, target: LaptopTarget, label: str,
-        clicker: str, plan: str) -> dict:
-    folder = OUT / f"{label}-{index}-{repeat}"
+        clicker: str, plan: str, out: Path) -> dict:
+    folder = out / f"{label}-{index}-{repeat}"
     folder.mkdir(parents=True, exist_ok=True)
     reset()
     test.data = {}
@@ -380,9 +397,12 @@ def main() -> None:
     parser.add_argument("--model", default="deepseek", choices=list(MODELS))
     parser.add_argument("--clicker", default="qwen", choices=["jev", *CLICKERS])
     parser.add_argument("--plan", default="screen", choices=["screen", "ahead"])
+    parser.add_argument("--out", type=Path, default=OUT)
     args = parser.parse_args()
-    OUT.mkdir(parents=True, exist_ok=True)
-    path = OUT / "report.json"
+    args.out.mkdir(parents=True, exist_ok=True)
+    path = args.out / "report.json"
+    KEEP.update(w["id"] for w in windows())
+    kwin(minimize_js(True))
     rows = json.loads(path.read_text()) if path.exists() else []
     model, effort = MODELS[args.model]
     target = LaptopTarget()
@@ -390,13 +410,14 @@ def main() -> None:
         for repeat in range(args.repeats):
             for n in args.tests or DEFAULT:
                 label = "+".join([args.model, *[x for x in (args.clicker, args.plan) if x != "screen"]])
-                row = run(TESTS[n - 1], n, repeat, model, effort, target, label, args.clicker, args.plan)
+                row = run(TESTS[n - 1], n, repeat, model, effort, target, label, args.clicker, args.plan, args.out)
                 rows.append(row)
                 path.write_text(json.dumps(rows, indent=1))
                 print(json.dumps({k: row[k] for k in ("test", "model", "passed", "detail", "turns", "calls",
                                                       "cancelled", "not_found")})[:600], flush=True)
     finally:
         reset()
+        kwin(minimize_js(False))
         target.close()
 
 

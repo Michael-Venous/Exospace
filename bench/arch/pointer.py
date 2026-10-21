@@ -14,6 +14,7 @@ import os
 import time
 
 import cv2
+import httpx
 import numpy as np
 
 from bench.arch.openrouter_study import OpenRouterJSON
@@ -22,6 +23,7 @@ from brain.cancel import CancelToken
 from brain.imaging import shrink
 
 MODEL = "perceptron/perceptron-mk1.5"
+READ_S = 3.0  # longest wait for a reply's next bytes
 PROMPT = ('Find {target}. Reply with JSON {{"found": true|false, "x": 0-1000, "y": 0-1000}}: the centre of that '
           "control, x from the left edge and y from the top edge of the image; found false if it isn't visible.")
 PIXEL_PROMPT = ('Find {target}. Reply with JSON {{"found": true|false, "x": ..., "y": ...}}: the centre of that '
@@ -39,8 +41,9 @@ class Pointer:
         turns reasoning off (some models refuse that and take "minimal"). `pixels`: the model is asked for x and y
         in the image's pixels, not 0-1000."""
         self.cancel, self.jev, self.pixels = cancel, jev, pixels  # its calls go in Jev's trace, beside Jev's looks
+        # A reply that stalls READ_S fails and is asked once more (a GLM pointing call once hung past 8 s).
         self.client = OpenRouterJSON(model, os.environ["OPENROUTER_API_KEY"], effort, fastest=not only, only=only,
-                                     keepalive=False)
+                                     keepalive=False, read_s=READ_S)
 
     def point(self, image: bytes, target: str) -> tuple[float, float] | None:
         """Where `target` is (0-1 of the screen), or None if the model doesn't see it."""
@@ -49,8 +52,13 @@ class Pointer:
         h, w = cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_GRAYSCALE).shape[:2]
         scale = (w, h) if self.pixels else (1000, 1000)
         prompt = (PIXEL_PROMPT.format(target=target, w=w, h=h) if self.pixels else PROMPT.format(target=target))
-        data, _ = self.cancel.run(lambda: self.client.call(image, prompt, "You locate controls in screenshots.",
-                                                           SCHEMA))
+        def ask() -> tuple[dict, dict]:
+            return self.client.call(image, prompt, "You locate controls in screenshots.", SCHEMA)
+
+        try:
+            data, _ = self.cancel.run(ask)
+        except httpx.TimeoutException:
+            data, _ = self.cancel.run(ask)
         self.jev.trace.append({"label": "pointer", "target": target, "reply": data,
                                "elapsed_s": round(time.monotonic() - started, 3)})
         if not data.get("found") or "x" not in data or "y" not in data:

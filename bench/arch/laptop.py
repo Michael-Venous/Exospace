@@ -22,8 +22,10 @@ import numpy as np
 
 from brain.hid import HIDError
 
-SESSION = {"XDG_RUNTIME_DIR": "/run/user/1000", "WAYLAND_DISPLAY": "wayland-1", "DISPLAY": ":0",
-           "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"}
+RUNTIME = f"/run/user/{os.getuid()}"
+SESSION = {"XDG_RUNTIME_DIR": RUNTIME, "DISPLAY": ":0", "DBUS_SESSION_BUS_ADDRESS": f"unix:path={RUNTIME}/bus",
+           # the desktop session's socket (wayland-1 on the laptop, wayland-0 on the workstation)
+           "WAYLAND_DISPLAY": min(p.name for p in Path(RUNTIME).glob("wayland-[0-9]"))}
 HELPER = Path(__file__).with_name("laptop_hid.py")
 
 

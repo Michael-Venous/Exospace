@@ -35,7 +35,8 @@ from brain.imaging import shrink
 from brain.types import Action, DeviceProfile
 
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
-DEVICE = "Linux laptop, KDE Plasma desktop. The GUI key opens the application launcher. The panel hides itself."
+DEVICE = os.environ.get("EXO_DEVICE", "Linux laptop, KDE Plasma desktop. The GUI key opens the application launcher. "
+                                      "The panel hides itself.")  # the target as the model is told it
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
 READ_S = 3.0  # longest wait for the model's next streamed bytes, its first token included
 LOG_TAIL = 20  # executor log entries each call sees
