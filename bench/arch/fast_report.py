@@ -4,16 +4,17 @@ Reads `work/arch/e2e*-fast/report.json` and each run's `trace.json`: success, un
 wall time, and for the candidates the time each step spent building its element list (perception) and
 in the fast model, next to race's Flash plans.
 
-  PYTHONPATH=. .venv/bin/python -m bench.arch.fast_report
+  PYTHONPATH=. .venv/bin/python -m bench.arch.fast_report [work/arch/round1]
 """
 
 from __future__ import annotations
 
 import json
 import statistics
+import sys
 from pathlib import Path
 
-ROOT = Path("work/arch")
+ROOT = Path("work/arch")  # the latest round; earlier ones are moved to subfolders
 
 
 def _p(values: list[float], q: float) -> str:
@@ -22,7 +23,8 @@ def _p(values: list[float], q: float) -> str:
 
 
 def main() -> None:
-    for report in sorted(ROOT.glob("e2e*-fast/report.json")):
+    root = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT
+    for report in sorted(root.glob("e2e*-fast/report.json")):
         rows = json.loads(report.read_text())
         print(f"\n{report.parent.name}: {len(rows)} runs")
         print("| Executor | Success | Unsafe | False done | Planned ok | Planned wall sum / p50 / p90 s | "

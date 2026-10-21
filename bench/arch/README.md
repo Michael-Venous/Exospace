@@ -508,6 +508,58 @@ Gemma 4 31B 88 / 12 at 0.44 s; Gemini 3.8 Flash 97 / 3 at 2.66 s; Flash-Lite 92 
 4. **0.1 s needs a local model** (GPU parser + small model); hosted floors are 0.2 s. Measure on the 3080 Ti
    only after coordinating with drift.
 
+### The fast element-list path end to end (study 12, 2026-10-20, `fast_list.py`, `fast_report.py`)
+Race with its planner replaced (`race+fastlist-*`): each step builds an element list, DeepSeek V4.1 Flash
+(OpenRouter, text only) picks 1-3 actions from it, a click lands on the element's centre (Qwen 3.8 27B places
+a target the list lacks), Jev's runtime completion check ends the request, Jev checks each step's input for
+irreversibility. Race's triage, approvals and direct path are unchanged.
+- **`dom`: the page's own interactive elements and their text.** An ideal list Exospace can never have: it
+  sees the target only as HDMI pixels, with nothing installed there. It is the upper bound of this design.
+- **`ocr`: text lines CPU OCR finds in the screenshot** (RapidOCR on this laptop, ~1 s a step, inside the
+  step's time). Pixel-derived, the way a parser would work; no icons, merged words.
+
+Round 1 used the vague fixture's old address bar (it dropped a YouTube search URL's query, which the
+candidate's typed searches hit) and the candidate's first prompt; round 2 made that address bar open
+YouTube results as YouTube does and gave the candidate the runtime planner's search-URL rule. All
+executors were interleaved in each round. `work/arch/round1/`, `work/arch/e2e*-fast/`.
+
+**Measured, round 2** (vague ×3, studio ×1)
+
+| Scenario | Executor | Success | Unsafe | False done | Planned median / p90 s | Planned wall | Perception s | Model s (calls) |
+|---|---|---|---|---|---|---|---|---|
+| vague | runtime race | **33/36** | 0 | 2 | 10.6 / 17.7 | 283 s | – | 163 (54 Flash) |
+| vague | fast list, dom (ideal) | 31/36 | 0 | 2 | **5.3** / 22.6 | **221 s** | – | 42 (79) |
+| vague | fast list, ocr (pixels) | 28/36 | 0 | 3 | 8.7 / 27.6 | 315 s | 74 | 43 (73) |
+| studio | runtime race | **11/11** | 0 | 0 | 3.9 / 4.0 | 11 s | – | 0 |
+| studio | fast list, dom | 9/11 | 0 | 0 | 15.7 / 30.8 | 50 s | – | 14 (17) |
+| studio | fast list, ocr | 8/11 | 0 | 0 | 11.8 / 19.1 | 36 s | 16 | 12 (25) |
+
+Round 1 (vague ×3; workstation, studio ×1): race 35/36, 8/10, 11/11; dom 25/36, 7/10, 8/11; ocr 26/36,
+7/10, 9/11; 0 unsafe for all. Paired against race in round 2's vague runs: dom 2 wins / 4 losses (p = 0.69),
+ocr 1 / 6 (p = 0.125).
+
+- **With the ideal list, planned vague requests halve in median time** (5.3 vs 10.6 s; successful ones 5.2 vs
+  10.9 s) and the total falls 22%, at a non-significant 2 fewer successes. Each fast call costs 0.5 s
+  against Flash's 3.0 s.
+- **From pixels it loses most of that:** CPU OCR adds ~1 s a step (23% of its wall time), finds no icons and
+  merges words; success falls to 28/36 and the median to 8.7 s.
+- **Where Jev's own steps already handle a request (studio), the fast list is slower** (median 15.7 vs 3.9 s):
+  it calls a model every step where race takes Jev's ~1 s steps and calls no LLM at all.
+- Its misses: a list carries no visual state (what's in the cart, which video plays), so "take it back out"
+  kept clicking the same element; repeated no-effect steps despite the note. All three still share one false
+  "done": "put on something chill" passed on a results page with nothing playing (Jev's completion check).
+- No unsafe input in 324 runs, for any executor.
+
+#### What study 12 supports
+1. **Keep the runtime race as the default.** It has the best success in every scenario and round.
+2. **The faster path is real only with fast, complete perception.** With the page's own list it halves
+   planned latency; CPU OCR on pixels doesn't get there. The next measurement is a fast screen parser
+   (UI element detection + OCR on a GPU) on these same runs; the 3080 Ti is reserved for drift, so only
+   after coordinating.
+3. **Unmeasured hybrid worth trying next:** race's Jev-first steps as today, with the fast list planner in
+   place of the Flash hand-off only (studio shows Jev's steps are faster where they work; vague shows the fast
+   planner is faster than Flash where Jev hands off). A runtime change would be the Agent owner's.
+
 ### Streaming (study 2, `stream_study.py`)
 - Schema-enforced streaming is valid but only ~0.4 s faster (2.38 vs 2.79 s), because Flash
   plans **one stage per observation point** even when told to look ahead. That's sensible:

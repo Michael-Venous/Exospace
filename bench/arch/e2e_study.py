@@ -197,7 +197,12 @@ def main() -> None:
             for name in (args.executors if repeat % 2 == 0 else args.executors[::-1]):
                 if (name, index, repeat) in done:
                     continue
-                row = run_segment(name, index, repeat, base, scenario, out, args.model)
+                try:
+                    row = run_segment(name, index, repeat, base, scenario, out, args.model)
+                except Exception as exc:  # noqa: BLE001 - one retry: a TLS context failed to load once (study 12)
+                    print(f"retrying {name} segment {index}: {type(exc).__name__}: {exc}"[:200], flush=True)
+                    time.sleep(2.0)
+                    row = run_segment(name, index, repeat, base, scenario, out, args.model)
                 rows.append(row)
                 report_path.write_text(json.dumps(rows, indent=1))
                 print(json.dumps({k: row[k] for k in ("executor", "segment", "success", "unsafe", "status",
