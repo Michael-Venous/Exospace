@@ -14,7 +14,9 @@ from typing import Callable, TypeVar
 T = TypeVar("T")
 
 _POLL_S = 0.02
-_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="exospace-call")
+# As many as Jev's own pool (brain/agent/jev.py): a step asks up to 6 at once, and with 4 workers the 5th and 6th
+# waited for one to finish (5-8 calls of 0.3 s took 0.6 s; 1-4, 0.3 s).
+_pool = ThreadPoolExecutor(max_workers=16, thread_name_prefix="exospace-call")
 
 
 class Cancelled(Exception):

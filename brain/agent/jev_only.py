@@ -178,6 +178,12 @@ COPY_CONTROL = "the text that the first line of the `goal` copies (a later line 
 # Jev is sure of it: "copy the header" boxed four rows of Wikipedia's citations 0.54 sure, and the select at its
 # centre clicked a citation's link (2026-10-19).
 BIG_TARGET = 0.1  # of the screen's width and height
+# Nor when the box itself is doubtful: Jev's sureness can be that what the step works in isn't open yet. On
+# LibreOffice's Start Center "add hello to b1" boxed the recent documents 0.06 sure, opens 0.97, and the click
+# opened one of them (2026-10-20); big boxes clicked unzoomed that held their target were 0.37-0.66 (14 clicks). A
+# look again on that screen boxed Calc's small entry 5 times in 6. Doubted presence still zooms: a blank document's
+# body, 0.11 sure, present 0.56.
+BIG_SURE = 0.3
 # A zoom shows the whole target with this margin: one cutting YouTube's search box to its last letter left Jev
 # 0.26 sure it was there (4/4), one holding all of it 0.75.
 ZOOM_MARGIN = 1.15
@@ -359,7 +365,13 @@ class JevOnlyPlanner:
         raw = ctx.goal.splitlines()
         while True:
             lines = self._lines(ctx.goal)
-            if not lines[self.line]:  # its words went on the line before it, which is done
+            if self.line in self.joined:
+                # Its words went on a line an earlier run finished: that line is judged again with them. "In d 5"
+                # clicked its cell and ended, and "type hello." said after it, joined on, ended untyped (2026-10-20).
+                j = max((k for k in range(self.line) if lines[k]), default=0)
+                self.line, self.since, self.finished = j, self.prev, "\n".join(raw[:j])
+                continue
+            if not lines[self.line]:  # an approval
                 return self._next_line(image, ctx, lines, "Jev verified the completed goal")
             before = lines[self.line - 1] if self.line else ""
             asks = [(lines[self.line], ctx.history[self.since:], _seen(ctx.history, before, self.prev, self.since),
@@ -508,6 +520,13 @@ class JevOnlyPlanner:
         step = "copy" if recopy else answers["next"].get("choice")
         choice = answers["text"].get("choice")
         text = texts[int(choice)] if choice in named else None
+        if step == "address" and text is not None and _is_the_request(text, line):
+            # A site's name is part of the line: "go to google docs" on Chrome's Google page chose the whole line
+            # 0.37, "google docs" 0.35, and the bare click on the address bar it became cost 4 steps (2026-10-20).
+            odds = {k: probability(v) for k, v in (answers["text"].get("probabilities") or {}).items()}
+            site = max((k for k in named if not _is_the_request(texts[int(k)], line)), key=lambda k: odds.get(k, 0.0))
+            if odds.get(site, 0.0) > odds.get("none", 0.0):
+                text = texts[int(site)]
         if step == "erase" and text is None:
             text = _last_typed(ctx.history[self.prev:])  # "delete hello" right after typing it: Jev picked no words (2/2)
         if missing:
@@ -564,6 +583,9 @@ class JevOnlyPlanner:
                 point = self._copy_spot(image, ctx, lines, seen)
                 if point is None:
                     return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
+            elif min(width, height) >= BIG_TARGET and sure >= self.jev.min_presence \
+                    and probability(answers["target"].get("confidence")) < BIG_SURE:
+                return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
             elif min(width, height) < BIG_TARGET or sure < self.jev.min_presence:
                 # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
                 # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
@@ -616,6 +638,7 @@ class JevOnlyPlanner:
                 actions.append(Action(step if step in CLICKS else "click", x=point[0], y=point[1]))
         if step in ("copy", "paste"):
             actions.append(Action("hotkey", keys=(mod, CLIPBOARD[step])))
+        in_place = False
         if step in ("type", "fill", "address", "erase"):
             if text is None:
                 # "open up a google doc template" on a new tab: Jev chose the address bar with no words to type
@@ -640,9 +663,13 @@ class JevOnlyPlanner:
                 if step == "address" and ctx.profile.os in DOTCOM_OS and not re.search(r"\s", text) \
                         and probability(answers["dotcom"].get("noul")) >= GATE:
                     actions.append(Action("hotkey", keys=("CTRL", "ENTER")))
-                elif step == "address" or probability(answers["submit"].get("noul")) >= GATE \
-                        or probability(answers["commit"].get("noul")) >= self.jev.min_presence:
+                elif step == "address" or probability(answers["submit"].get("noul")) >= GATE:
                     actions.append(Action("hotkey", keys=("ENTER",)))
+                elif probability(answers["commit"].get("noul")) >= self.jev.min_presence:
+                    # Calc's Enter after "hello" moved too little to count as a reaction, so the settle held the full
+                    # 1 s a page load may take to start, and the run's last look came 1.1 s after it (2026-10-20).
+                    actions.append(Action("hotkey", keys=("ENTER",)))
+                    in_place = True
         if step in TAB_KEYS:
             actions.append(Action("hotkey", keys=(mod, TAB_KEYS[step])))
         if step == "close_app":
@@ -684,7 +711,8 @@ class JevOnlyPlanner:
             self.clicked = image, point, actions[0].brief()
         if step in CLICKS and not settled:
             self.doubted = actions[0].brief()
-        return Plan(f"Jev next step: {step}", actions, [], blind=step in ("address", "new_tab"))
+        return Plan(f"Jev next step: {step}", actions, [], blind=step in ("address", "new_tab"),
+                    in_place=in_place)
 
     def _look_again(self, ctx: StepContext, limit: int = MAX_WAITS, anytime: bool = False) -> Plan | None:
         """A target not visible yet is often a page still loading: right after a launch, YouTube's search box
@@ -829,6 +857,8 @@ class JevOnlyPlanner:
 
     def _next_line(self, image: bytes, ctx: StepContext, lines: list[str], why: str) -> Plan:
         """The line Jev sees is done: go on to the next one, or the request is done."""
+        while self.line + 1 in self.joined:  # judged done with the line they joined
+            self.line += 1
         if self.line + 1 < len(lines):
             self._advance(ctx)
             self.seen = False

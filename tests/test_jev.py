@@ -129,6 +129,15 @@ class JevTests(unittest.TestCase):
             list(pool.map(lambda _: self.jev.evaluate(image, {'present': {}}), range(5)))
         self.assertEqual(prepare.call_count, 1)
 
+    def test_different_screens_prepare_at_once(self):
+        images = [cv2.imencode('.jpg', np.full((600, 900, 3), v, np.uint8))[1].tobytes() for v in (11, 12)]
+        both = threading.Barrier(2, timeout=2)
+        def prepare(jpeg):
+            both.wait()  # breaks, failing the call, unless the other screen is being prepared too
+            return prepare_image(jpeg)
+        with patch('brain.agent.jev.prepare_image', side_effect=prepare), ThreadPoolExecutor(2) as pool:
+            list(pool.map(lambda image: self.jev.evaluate(image, {'present': {}}), images))
+
     def test_cancelled_request_does_not_hit_api(self):
         self.token.cancel('test')
         from brain.cancel import Cancelled

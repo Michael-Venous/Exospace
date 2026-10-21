@@ -2,8 +2,10 @@
 
 import csv
 import tempfile
+import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -103,6 +105,14 @@ class RuntimeTests(unittest.TestCase):
         still = thumbnail(self.capture.grab())
         self.assertGreaterEqual(controller.wait_settled(since=still), .3)  # nothing shown yet
         self.assertLess(controller.wait_settled(since=255 - still), .1)  # a tab closed before the first look
+
+    def test_a_reaction_too_small_for_the_screen_is_awaited_where_it_shows(self):
+        controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(
+            min_s=0, react_s=.05, load_stable_s=0, load_react_s=.6, stable_s=0, timeout_s=1, poll_s=.001))
+        shown_at = time.monotonic() + .2
+        self.assertGreaterEqual(controller.wait_settled(reacted=lambda f: time.monotonic() >= shown_at), .2)
+        self.assertLess(controller.wait_settled(reacted=lambda f: True), .05)
+        self.assertGreaterEqual(controller.wait_settled(reacted=lambda f: False), .6)  # never shows: as a load
 
     def test_a_moving_screen_settles_at_the_given_timeout(self):
         controller = Controller(self.hid, self.capture, self.cancel, SettleConfig(timeout_s=5, poll_s=.001))
@@ -242,6 +252,24 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual([(c.kwargs["loading"], c.kwargs["react"]) for c in settle.call_args_list
                           if "loading" in c.kwargs], [(False, False), (True, True)])
 
+    def test_enter_into_a_cell_skips_the_page_load_wait(self):
+        self.hid.change = False  # the screen before the Enter stays the one to compare with
+        self.fast.next_actions.side_effect = [
+            Plan("fill", [Action("click", x=.5, y=.5), Action("type_text", text="hello"),
+                          Action("hotkey", keys=["ENTER"])], [], in_place=True),
+            Plan("verified", [Action("done", summary="Entered")], []),
+        ]
+        with patch.object(self.controller, "wait_settled", wraps=self.controller.wait_settled) as settle:
+            self.agent().run("add hello to b1", self.profile)
+        self.assertEqual([(c.kwargs["loading"], c.kwargs["react"]) for c in settle.call_args_list
+                          if "loading" in c.kwargs], [(False, False), (False, True)])
+        click, enter = [c.kwargs["reacted"] for c in settle.call_args_list if "loading" in c.kwargs]
+        self.assertIsNone(click)  # only the Enter waits for the cell to show the entry
+        cell = self.capture.grab()
+        cell[45:55, 75:85] = 255 - cell[45:55, 75:85]  # the entry drawn at the clicked point
+        self.assertTrue(enter(cell))
+        self.assertFalse(enter(self.capture.grab()))
+
     def test_scroll_after_a_hover_skips_the_settle(self):
         self.fast.next_actions.side_effect = [
             Plan("scroll", [Action("skill", name="hover", args={"x": .5, "y": .5}), Action("scroll", dy=5)], []),
@@ -267,7 +295,7 @@ class RuntimeTests(unittest.TestCase):
                                                                      args={"name": "video player"})], [])
         with patch("brain.agent.loop.visibly_changed", return_value=True), \
                 patch("brain.skills.APP_START_S", 0.01), \
-                patch.object(self.controller, "wait_for_change", side_effect=[True, False] * 3):
+                patch.object(self.controller, "wait_for_change", side_effect=[True, True, False] * 3):
             # each try flashed the launcher; no window came
             result = self.agent().run("See the video", self.profile)
         self.assertEqual((result.status, result.message, result.steps), ("fail", "Stuck repeating the same action", 3))
@@ -331,6 +359,11 @@ class RuntimeTests(unittest.TestCase):
             raise TimeoutError("provider timed out")
         with self.assertRaisesRegex(TimeoutError, "provider timed out"):
             self.cancel.run(timeout)
+
+    def test_a_steps_six_calls_run_at_once(self):
+        together = threading.Barrier(6, timeout=2)  # breaks if a call waits for another to finish
+        with ThreadPoolExecutor(6) as pool:
+            self.assertEqual(list(pool.map(lambda _: self.cancel.run(together.wait) >= 0, range(6))), [True] * 6)
 
     def test_cancellation_prevents_model_result_execution(self):
         def next_actions(image, ctx):

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import base64
-import functools
 import gzip
 import json
 import math
@@ -10,7 +9,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 
 import cv2
@@ -67,18 +66,25 @@ def prepare_image(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]
 
 
 _prepare_lock = threading.Lock()
-
-
-@functools.lru_cache(maxsize=4)
-def _prepare_cached(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
-    return prepare_image(jpeg)
+_preparing: dict[bytes, Future] = {}  # the last few screens, each prepared once
 
 
 def _prepared(jpeg: bytes) -> tuple[bytes, tuple[int, int], tuple[int, int]]:
     # A step's parallel calls send the same screen: prepared once, 5 calls were ready to upload after 52 ms, not
-    # 115 ms (Pi 5). The lock makes the others wait for that one rather than each preparing it again.
+    # 115 ms (Pi 5); the others wait for that one. Different images prepare at once: after a click, the marked
+    # previous screen and the current one queued on one lock, uploads 44-53 ms into a step, not 17-31 (2026-10-20).
     with _prepare_lock:
-        return _prepare_cached(jpeg)
+        future, mine = _preparing.get(jpeg), False
+        if future is None:
+            future, mine = _preparing.setdefault(jpeg, Future()), True
+            while len(_preparing) > 4:
+                del _preparing[next(iter(_preparing))]
+    if mine:
+        try:
+            future.set_result(prepare_image(jpeg))
+        except Exception as exc:
+            future.set_exception(exc)
+    return future.result()
 
 
 COMPLETION_QUESTION = (

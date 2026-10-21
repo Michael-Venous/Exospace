@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = Config.load()
     token = CancelToken()
     status = lambda message: print(message, flush=True)
-    if not (cfg.gemini_api_key or cfg.uses_zai):
+    if cfg.executor != "jev-only" and not (cfg.gemini_api_key or cfg.uses_zai):
         status("Set ZAI_API_KEY or GEMINI_API_KEY in the project .env (see .env.example); either one works.")
         return 1
     try:

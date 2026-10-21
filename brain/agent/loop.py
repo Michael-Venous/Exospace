@@ -32,6 +32,9 @@ MAX_DISCARDS = 2
 # each costing a ~1.1 s replan; the 2 whose target moved changed it 133-173. The settle threshold (1.5) is a whole-screen
 # measure. shortcut: 8 samples; recheck with the discard listing if a kept plan clicks a moved target.
 AREA_MOVED = 6.0
+# How much the area around a filled cell must change after its Enter to show the entry: of 7 Calc fills (2026-10-20),
+# 6.3-19.8 once "hello" showed, 0.0-2.6 before (2.6: a full-size frame resized against a recorded one).
+AREA_REACTED = 4.0
 
 
 @dataclass(frozen=True)
@@ -155,11 +158,15 @@ class Agent:
                         # Only what the first action aims at must be where the plan saw it: Google's results
                         # drawing in below the address bar a plan clicked discarded that plan (2026-10-18).
                         first = plan.actions[0]
-                        moved = (area_change(frame, latest, profile.rect, first.x, first.y) >= AREA_MOVED
-                                 if first.x is not None and first.y is not None
-                                 else ctl.changed(before, thumbnail(latest)))
+                        aimed = first.x is not None and first.y is not None
+                        change = area_change(frame, latest, profile.rect, first.x, first.y) if aimed else None
+                        moved = change >= AREA_MOVED if change is not None else ctl.changed(before, thumbnail(latest))
                         if not moving and moved and discarded < MAX_DISCARDS:
                             discarded += 1
+                            if self.events is not None:  # the screen it was discarded for is otherwise never kept
+                                kept = self.events.set_frame(prepare(latest, profile.rect, grid=False), keep=True)
+                                self._emit("discard", step=step, frame=kept,
+                                           change=None if change is None else round(change, 2))
                             note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
                             progress_at += times["t_model"]  # a plan never tried: its thinking time isn't a stall
                             continue
@@ -227,9 +234,16 @@ class Agent:
                                 times["t_execute"] += time.monotonic() - stamp
                             history.append(action.brief())  # before settling: a restart lands there
                             if settles:
-                                settled_s = ctl.wait_settled(loading=_may_load(action) and not keys_next,
+                                load = _may_load(action) and not keys_next and not plan.in_place
+                                # Text entered where the plan clicked shows only there: watch that area.
+                                aim = plan.actions[0]
+                                reacted = (lambda f, b=base, a=aim: area_change(b, f, profile.rect, a.x, a.y)
+                                           >= AREA_REACTED) if plan.in_place and not keys_next and base is not None \
+                                    and aim.x is not None and aim.y is not None else None
+                                settled_s = ctl.wait_settled(loading=load,
                                                              react=not keys_next or action.type == "hotkey",
-                                                             since=None if base is None else thumbnail(base))
+                                                             since=None if base is None else thumbnail(base),
+                                                             reacted=reacted)
                                 times["t_settle"] += settled_s
                     if pending_done is not None:
                         # Check the claim on the new screen now: replanning on a screen that looks unchanged

@@ -174,6 +174,29 @@ class AgentEventTests(unittest.TestCase):
         self.assertTrue(bus.frame()[1].startswith(b"\xff\xd8"))  # JPEG
 
 
+    def test_a_discarded_plan_keeps_the_screen_it_was_discarded_for(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        capture = Capture()
+        controller = Controller(HID(capture), capture, CancelToken(),
+                                SettleConfig(min_s=0, react_s=0, load_stable_s=0, load_react_s=0, stable_s=0, timeout_s=.1, poll_s=.001))
+        executor = Mock(spec=["next_actions"])
+
+        def decide(image, ctx):
+            if ctx.step == 1:
+                capture.frame[:] = 210  # the target changed while the plan was made
+            return Plan("Click Send", [Action("click", x=0.5, y=0.25)], []) if ctx.step == 1 else Plan("Sent", [Action("done", summary="Sent")], [])
+        executor.next_actions.side_effect = decide
+        bus = EventBus()
+        client = bus.subscribe()
+        agent = Agent(executor, controller, Memory(root / "session.json"),
+                      Telemetry(root / "results.csv", "test"), max_steps=4, events=bus)
+        agent.run("send it", DeviceProfile("macos", Rect(0, 0, 160, 100), "mouse", 1))
+        [discard] = [e for e in drain(client) if e["ev"] == "discard"]
+        self.assertEqual((discard["step"], discard["change"]), (1, 130.0))
+        self.assertTrue(bus.kept_frame(discard["frame"]).startswith(b"\xff\xd8"))
+
     def test_each_event_carries_the_decisions_made_since_the_last(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)

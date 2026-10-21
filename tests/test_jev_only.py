@@ -1,6 +1,9 @@
 """Jev's own next step (ported from origin/jev-only) and the Jev-first planner that falls back to Flash."""
 
+import tempfile
 import unittest
+from dataclasses import replace
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import cv2
@@ -8,8 +11,10 @@ import numpy as np
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_first import JevFirstPlanner
-from brain.agent.jev_only import FAILED, LOOK_AGAIN, JevOnlyPlanner
+from brain.agent.jev_only import FAILED, LOOK_AGAIN, MAX_WAITS, JevOnlyPlanner
 from brain.agent.triage import spans
+from brain.cancel import CancelToken
+from brain.config import Config
 from brain.types import Action, DeviceProfile, Rect
 
 BOX = {"box": {"left": .28, "right": .32, "top": .28, "bottom": .32}, "confidence": .9}  # small: looked at closer
@@ -24,10 +29,10 @@ class JevOnlyTests(unittest.TestCase):
     def plan(self, goal, complete=.1, next="click", present=.95, text="none", replace=.1, note="",
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
-             target=BOX, run="r", drawing=.05, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
+             target=BOX, run="r", drawing=.05, text_odds=None, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
              lookup=.05, pending=.05, opens=.05, fresh=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
-                "target": target, "text": {"choice": text}, "replace": {"noul": replace}, "fits": {"noul": fits},
+                "target": target, "text": {"choice": text, "probabilities": text_odds or {}}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
                 "app": {"box": dict(zip(("left", "right", "top", "bottom"), app))}, "site": {"noul": site},
                 "submit": {"noul": submit}, "browser_named": {"noul": .05}, "browser_front": {"noul": browser_front}, "opened_front": {"noul": opened_front}, "left": {"noul": left},
@@ -132,6 +137,10 @@ class JevOnlyTests(unittest.TestCase):
         rests = [c for c in self.planner.jev.evaluate.call_args_list if "joined" in c.args[1]]
         self.assertEqual(len(rests), 1)  # asked once
         self.assertEqual(rests[0].kwargs["state"], {"goal": "Close this browser\nbrowser."})
+        # the rest of a line an earlier run finished is still to do once joined on
+        self.assertEqual(self.step("In d 5", left=.1, run="t").type, "done")
+        self.assertNotEqual(self.step("In d 5\nUser correction: type hello.", joined="one", run="u").type, "done")
+        self.assertEqual(self.planner.current_line, "In d 5 type hello.")
         # a request of its own is a line of its own
         self.step("open up youtube\nUser correction: search for horses", left=.1, next="click", run="s")
         self.assertEqual(self.planner.current_line, "search for horses")
@@ -294,6 +303,16 @@ class JevOnlyTests(unittest.TestCase):
     def test_a_big_target_is_clicked_without_a_closer_look(self):
         action = self.step("click the third video", target=BIG, looks=(STRAY, STRAY))
         self.assertEqual((action.type, round(action.x, 2), round(action.y, 2)), ("click", .3, .3))
+        # a doubtful big box (Start Center's recent documents, 0.06 sure) is looked at again, not clicked or zoomed
+        doubtful = BIG | {"confidence": .06}
+        self.assertEqual(self.step("add hello to b1", target=doubtful, opens=.97, history=["hotkey(GUI)"]),
+                         LOOK_AGAIN)
+        self.zoom.assert_not_called()
+        self.assertEqual(self.step("add hello to b1", target=doubtful, opens=.97, run="s",
+                                   history=["hotkey(GUI)"] + [LOOK_AGAIN.brief()] * MAX_WAITS).type, "fail")
+        # with presence doubted too it is zoomed as any doubted target (a blank document's body, 0.11 sure)
+        self.assertEqual(self.step("type in hello", target=doubtful, present=.56, run="t").type, "click")
+        self.zoom.assert_called()
 
     def test_typed_text_is_a_run_of_the_goals_words(self):
         goal = 'type "hello world", then press enter'
@@ -621,6 +640,12 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual([a.brief() for a in actions], ["hotkey(CTRL+L)", "type_text('google docs')", "hotkey(ENTER)"])
         self.assertTrue(self.last.blind)  # the address bar takes it whatever the page draws meanwhile
         self.assertEqual(self.step("go to email", next="address").type, "click")  # no words: the page's link
+        # the whole line just ahead of the site's name (0.37 to 0.35): the site's name is typed
+        line, odds = "go to google docs", {"none": .13, "6": .35, "8": .06, "9": .37}
+        self.assertEqual(self.plan(line, next="address", text="9", text_odds=odds, run="s")[1].brief(),
+                         "type_text('google docs')")
+        self.assertEqual(self.step(line, next="address", text="9", text_odds=odds | {"none": .5}, run="t").type,
+                         "click")  # nothing named surer than no words
         goal = "open up a google doc template"  # describes a page: its words, typed or clicked, would search the web
         for text in (str(spans(goal).index("google doc template")), "none"):
             self.assertEqual(self.step(goal, next="address", text=text, lookup=.65).type, "fail")
@@ -651,6 +676,7 @@ class JevOnlyTests(unittest.TestCase):
         horses = str(spans(goal).index("horses"))
         actions = self.plan(goal, next="click", text=horses, input=.95, submit=.9)
         self.assertEqual([a.type for a in actions], ["click", "type_text", "hotkey"])
+        self.assertFalse(self.last.in_place)  # a search's Enter loads its results
         for unsure in ({"input": .7}, {"text": "none"}):  # a tile that opens a document, or nothing to type
             self.assertEqual([a.type for a in self.plan(goal, **{"next": "click", "text": horses} | unsure)], ["click"])
 
@@ -659,6 +685,7 @@ class JevOnlyTests(unittest.TestCase):
         hello = str(spans(goal).index("hello"))
         actions = self.plan(goal, next="click", text=hello, input=.95, commit=.9)
         self.assertEqual([a.type for a in actions], ["click", "type_text", "hotkey"])
+        self.assertTrue(self.last.in_place)  # no page load after a cell's Enter
         self.assertEqual([a.type for a in self.plan(goal, next="click", text=hello, input=.95, commit=.6)],
                          ["click", "type_text"])  # a terminal in front of a spreadsheet: Enter would run it
 
@@ -769,7 +796,7 @@ class JevFirstTests(unittest.TestCase):
     def setUp(self):
         self.planner = object.__new__(JevFirstPlanner)
         self.planner.flash, self.planner.steps, self.planner._flash_run = Mock(), Mock(), None
-        self.planner.handoff, self.planner.uses_flash = True, True
+        self.planner.handoff = True
         self.planner.flash.next_actions.return_value = Plan("Stage 1/1: planned", [Action("hotkey", keys=("TAB",))], [])
 
     def ctx(self, run):
@@ -791,16 +818,22 @@ class JevFirstTests(unittest.TestCase):
             self.assertEqual(self.planner.next_actions(b"img", ctx).actions[0].type, "fail")
         self.planner.flash.next_actions.assert_not_called()
 
-    def test_jev_only_never_calls_flash(self):
-        self.planner.handoff, self.planner.uses_flash = False, False
-        self.planner.steps.next_actions.return_value = Plan(FAILED, [Action("fail", reason="composed")], [],
-                                                            needs_planner=True)
-        self.assertEqual(self.planner.next_actions(b"img", self.ctx("a")).actions[0].type, "fail")
-        self.planner.jev = Mock()
-        self.planner.jev.evaluate.return_value = ({"os": {"choice": "linux", "confidence": .9}}, (4, 3), (0, 0))
-        self.assertEqual(self.planner.classify_os(b"jpeg"), "linux")
-        self.planner.flash.next_actions.assert_not_called()
-        self.planner.flash.classify_os.assert_not_called()
+    def test_jev_only_runs_without_a_language_model_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = replace(Config.load(), gemini_api_key="", zai_api_key="", typesafe_api_key="offline",
+                          model_log=Path(tmp) / "calls.jsonl")
+            planner = JevFirstPlanner(cfg, CancelToken(), handoff=False, flash=False)
+        self.addCleanup(planner.close)
+        self.assertIsNone(planner.flash)
+        planner.steps = Mock()
+        planner.steps.next_actions.return_value = Plan(FAILED, [Action("fail", reason="composed")], [],
+                                                       needs_planner=True)
+        self.assertEqual(planner.next_actions(b"img", self.ctx("a")).actions[0].type, "fail")
+        planner.acknowledge(False)
+        planner.forget_plan()
+        planner.jev = Mock()
+        planner.jev.evaluate.return_value = ({"os": {"choice": "linux", "confidence": .9}}, (4, 3), (0, 0))
+        self.assertEqual(planner.classify_os(b"jpeg"), "linux")
 
     def test_without_handoff_text_jev_cant_write_still_goes_to_flash(self):
         self.planner.handoff = False

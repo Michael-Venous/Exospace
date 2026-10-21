@@ -39,6 +39,7 @@ class Plan:
     refresh_screen: bool = False
     held: str = ""
     blind: bool = False  # its keys go where they go whatever the screen shows, as Ctrl+L and a site's name
+    in_place: bool = False  # its Enter enters text where it was typed, as a spreadsheet cell: no page load follows
 
 
 class Executor(Protocol):
