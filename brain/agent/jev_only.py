@@ -57,7 +57,11 @@ NEXT_CRITERIA = {
     # text to type (2026-10-21).
     "select": "Select a visible word in a document or input field that the goal deletes or replaces, when it isn't "
               "the last word typed, so the next step erases or types over it.",
-    "copy": "Copy one visible heading, line or paragraph of text that the goal names.",
+    # On Genghis Khan's article with his birthplace's link in view, "click his birthplace and copy the first
+    # paragraph" chose copy 0.33 to click 0.32 once and copied his own article; told this, click 0.34-0.43 to copy
+    # 0.17-0.25 (6/6), with copy kept on the birthplace's article and in Docs (12/12, 2026-10-21).
+    "copy": "Copy one visible heading, line or paragraph of text that the goal names, once every click the goal asks "
+            "for before the copy is done: until then, click.",
     "paste": "Paste what was copied into the input field, cell or document where the goal puts it.",
     "scroll_down": "Scroll down to reveal something the goal needs that is below the visible area.",
     "scroll_up": "Scroll up to reveal something the goal needs that is above the visible area.",
@@ -212,6 +216,11 @@ OPENS = ("Is what the next step of the `goal` works in (a document, sheet, page 
          "while a control that creates or opens it is visible?")
 TAB_CONTROL = "the tab the `goal` names, other than the tab in front"
 OPENER_CONTROL = f"{STEP_CONTROL}: when what it works in isn't open yet, the control that creates or opens it"
+# A word to select, in a crop of a few words: for "Delete cats" in Docs' "I like cats and dogs" the step's spot in a
+# 0.30 crop boxed "like" (0.46-0.59 sure, 8/8), and the double click took it (2026-10-21); named the word, in a 0.10
+# crop, both zooms boxed "cats" at its middle 0.97-0.98 sure (6/6), and "world" of "hello world" 6/6.
+SELECT_CONTROL = "the word that the next step of the `goal` selects, to delete or replace it"
+SELECT_WINDOW = 0.10
 # Its last line: past the end of a paragraph's first line, which ran to the column's edge, the triple click followed
 # the "mountain range" link there, 3 runs in 3 (2026-10-21). Zooms on the last line took its row 14 times in 14.
 COPY_CONTROL = "the last line of the text that the first line of the `goal` copies (a later line names it by what it pastes)"
@@ -584,7 +593,9 @@ class JevOnlyPlanner:
         loading = pending or probability(answers["loading"].get("noul")) >= GATE
         wait = self._look_again(ctx, MAX_LOADING_WAITS if loading else MAX_WAITS, anytime=True) if loading or drawing \
             else None
-        if (opened or pending) and wait:
+        # Nor what a click is still opening: Docs' new blank document read loading 0.93 as it came, and "type shopping
+        # list" went to the address bar (2026-10-21).
+        if (opened or pending or loading and inputs[-1:] and inputs[-1].startswith("click(")) and wait:
             return wait
         if routing:
             # A website that names no browser is no app to search the launcher for: "youtube" found nothing there.
@@ -718,7 +729,7 @@ class JevOnlyPlanner:
             # A switch's box is the tab named: the paste's place behind it read present 0.31-0.38 (2026-10-21).
             sure = max(probability(answers["present"].get("noul")), opens if opens >= GATE else 0.0,
                        other_tab if switch else 0.0)
-            control = OPENER_CONTROL if opens >= GATE else STEP_CONTROL
+            control = SELECT_CONTROL if step == "select" else OPENER_CONTROL if opens >= GATE else STEP_CONTROL
             if held and (point is None or sure < GATE):
                 return self._next_line(image, ctx, lines, "Jev verified the completed goal")
             # Not a copy's: on the citation a footnote jump marked, "copy the header" was 0.22-0.35 sure of it, waited,
@@ -744,7 +755,8 @@ class JevOnlyPlanner:
                 # typing that went nowhere left out: told the text was typed, both zooms doubted the search box (0.41-0.48)
                 state = {"goal": line, "executed_steps": seen[:self.since - self.prev] if missing else seen}
                 # the crop's side is a fraction of the screen's longer side, and its height 0.66 of its width
-                window = max(ZOOM_WINDOW, ZOOM_MARGIN * max(width * size[0], height * size[1] / 0.66) / max(size))
+                window = max(SELECT_WINDOW if step == "select" else ZOOM_WINDOW,
+                             ZOOM_MARGIN * max(width * size[0], height * size[1] / 0.66) / max(size))
                 with ThreadPoolExecutor(2) as pool:
                     zooms = list(pool.map(lambda _: zoom(self.jev, image, state, control, point, window,
                                                           ctx.run_id, ctx.step), range(2)))

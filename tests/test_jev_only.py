@@ -890,8 +890,11 @@ class JevOnlyTests(unittest.TestCase):
                          "hotkey(CTRL+W)")  # a key needs nothing drawn
         # after other steps the question isn't asked, and a page still loading is no reason to wait
         evaluate.reset_mock()
-        self.assertEqual(self.step("search for horses", drawing=.9, loading=.9, history=["click(1,1)"]).type, "click")
+        self.assertEqual(self.step("search for horses", drawing=.9, loading=.9, history=["hotkey(ENTER)"]).type, "click")
         self.assertFalse(asked())
+        # but for what a click is still opening
+        self.assertEqual(self.step("search for horses", loading=.9, history=["click(1,1)"]).brief(),
+                         "skill(wait {'s': 1.0})")
 
     def test_a_browser_the_line_opened_on_its_new_tab_page_needs_no_new_tab(self):
         opened = ["skill(open_app {'name': 'chrome'})"]
