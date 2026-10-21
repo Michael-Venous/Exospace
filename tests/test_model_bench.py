@@ -13,7 +13,7 @@ import numpy as np
 from bench.arch import model_matrix, router, vague
 from bench.arch.completion_log import CompletionLog
 from bench.arch.completion_study import errors
-from bench.arch.fast_list import FastListPlanner
+from bench.arch.fast_list import FastList, HybridPlanner
 from bench.arch.option_scan import listing, ocr_point
 from bench.arch.plan_ground import PlanGroundPlanner
 from bench.arch.race_continue import LOOKAHEAD_PROMPT, ContinuePlanner, _HandBack
@@ -316,8 +316,8 @@ class OptionScanTests(unittest.TestCase):
 
 
 
-def _fast(reply: dict, done: float = 0.0) -> FastListPlanner:
-    planner = FastListPlanner.__new__(FastListPlanner)
+def _fast(reply: dict, done: float = 0.0) -> FastList:
+    planner = FastList.__new__(FastList)
     jev = SimpleNamespace(trace=[], completion=lambda *a, **k: done, assess=lambda *a, **k: ({"irreversible": 0.0}, {}))
     planner.__dict__.update(cancel=CancelToken(), approved_run=lambda ctx: False, source="dom", jev=jev, page=None,
                             _dom=[("e1", "Reply", (0.5, 0.3)), ("e2", "Search", (0.2, 0.1))], _ocr=None,
@@ -325,6 +325,22 @@ def _fast(reply: dict, done: float = 0.0) -> FastListPlanner:
                             llm=SimpleNamespace(call=lambda *a: (reply, {"total": 0.3})),
                             pointer=SimpleNamespace(point=lambda image, target: (0.9, 0.9)))
     return planner
+
+
+class HybridTests(unittest.TestCase):
+    def _hybrid(self, stuck_on: str) -> HybridPlanner:
+        planner = HybridPlanner.__new__(HybridPlanner)
+        planner.__dict__.update(steps=_Steps(stuck_on), _flash_run=None,
+                                fast=SimpleNamespace(next_actions=lambda image, ctx: Plan("Fast list (ocr)", [], [])))
+        return planner
+
+    def test_jevs_own_steps_run_as_in_the_runtime(self):
+        self.assertEqual(self._hybrid("never").next_actions(SCREEN, _ctx("open the inbox")).reasoning, "Jev step")
+
+    def test_the_hand_off_goes_to_the_fast_list_and_stays_there(self):
+        planner = self._hybrid("tell")
+        self.assertTrue(planner.next_actions(SCREEN, _ctx("tell john")).reasoning.startswith("Fast list (ocr) [Jev handed off"))
+        self.assertEqual(planner.next_actions(SCREEN, _ctx("tell john")).reasoning, "Fast list (ocr)")
 
 
 class FastListTests(unittest.TestCase):

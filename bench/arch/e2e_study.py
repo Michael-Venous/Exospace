@@ -19,7 +19,7 @@ from pathlib import Path
 from bench.arch.triage_executor import RaceExecutor, RaceLedgerExecutor, RaceRelaxedExecutor, TriageExecutor, TriageLedgerExecutor
 from bench.arch import correction, injection, studio, vague, workstation
 from bench.arch.completion_log import CompletionLog
-from bench.arch.fast_list import FastListExecutor, FastOcrExecutor
+from bench.arch.fast_list import FastListExecutor, FastOcrExecutor, HybridExecutor, HybridOcrExecutor
 from bench.arch.plan_ground import PlanGroundExecutor, PlanGroundPointerExecutor
 from bench.arch.race_continue import (RaceContinueExecutor, RaceGateExecutor, RaceLookaheadExecutor,
                                       RaceLookaheadPointerExecutor)
@@ -82,7 +82,8 @@ EXECUTORS = {"jev-flash (current)": JevFlashExecutor, "triage-first": TriageExec
              "runtime-race": RuntimeRaceExecutor, "race+pointer": RacePointerExecutor,
              "race+continue": RaceContinueExecutor, "race-gate0.6": RaceGateExecutor,
              "race+lookahead": RaceLookaheadExecutor,
-             "race+fastlist-dom": FastListExecutor, "race+fastlist-ocr": FastOcrExecutor, "race+lookahead+pointer": RaceLookaheadPointerExecutor, "runtime-jev": runtime_as("jev"),
+             "race+fastlist-dom": FastListExecutor, "race+fastlist-ocr": FastOcrExecutor,
+             "hybrid-dom": HybridExecutor, "hybrid-ocr": HybridOcrExecutor, "race+lookahead+pointer": RaceLookaheadPointerExecutor, "runtime-jev": runtime_as("jev"),
              "runtime-jev-only": runtime_as("jev-only"),
              "rewrite": RewriteExecutor, "rewrite-parallel": ParallelRewriteExecutor,
              "rewrite-on-stuck": RewriteOnStuckExecutor, "plan-ground": PlanGroundExecutor,

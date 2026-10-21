@@ -13,7 +13,8 @@ Jev before it runs (as the planner path does).
   dom   the page's interactive elements and their text, read from the page: an IDEAL list, better than any
         parser of a real screen would give
   ocr   text lines CPU OCR finds in the screenshot (RapidOCR): pixel-derived; its time is in the step
-Bench only: the runtime would need this in brain/agent (Agent owner).
+Study 13's hybrid (`HybridExecutor`) keeps race's Jev-first planner whole and uses the fast list only where
+it hands a request to Flash. Bench only: the runtime would need this in brain/agent (Agent owner).
 """
 
 from __future__ import annotations
@@ -31,7 +32,9 @@ import numpy as np
 from bench.arch.openrouter_study import OpenRouterJSON
 from bench.arch.pointer import Pointer
 from brain.agent.executor import Plan, StepContext, context_prompt
+from brain.agent.jev import JevVision
 from brain.agent.jev_first import JevFirstPlanner
+from brain.agent.jev_only import FAILED
 from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.race import RaceExecutor
 from brain.agent.triage import GATE
@@ -72,15 +75,14 @@ DOM_ELEMENTS = """() => [...document.querySelectorAll('button, input, textarea, 
 Element = tuple[str, str, tuple[float, float]]
 
 
-class FastListPlanner(JevFirstPlanner):
-    """Race's planner slot, with the same Jev client, OS check and approval binding."""
+class FastList:
+    """The fast planner itself: one element list and one fast call per step, on the race's own Jev client."""
 
-    def __init__(self, cfg: Config, cancel: CancelToken, approved_run: Callable[[StepContext], bool] | None,
+    def __init__(self, cancel: CancelToken, jev: JevVision, approved_run: Callable[[StepContext], bool] | None,
                  source: str) -> None:
-        super().__init__(cfg, cancel, approved_run)
-        self.cancel, self.approved_run, self.source = cancel, approved_run, source
+        self.cancel, self.jev, self.approved_run, self.source = cancel, jev, approved_run, source
         self.llm = OpenRouterJSON(MODEL, os.environ["OPENROUTER_API_KEY"], "", fastest=True)
-        self.pointer = Pointer(cancel, self.jev, POINTER_MODEL)
+        self.pointer = Pointer(cancel, jev, POINTER_MODEL)
         self.page = None
         self._dom: list[Element] = []
         self._ocr = None
@@ -177,6 +179,23 @@ class FastListPlanner(JevFirstPlanner):
                                                             irreversible=True))
         return values.get("irreversible", 0.0) >= GATE
 
+    def close(self) -> None:
+        self._check.shutdown(wait=False, cancel_futures=True)
+        self.pointer.close()
+        self.llm.client.close()
+
+
+class FastListPlanner(JevFirstPlanner):
+    """Race's planner slot, all of it the fast list (study 12's candidate)."""
+
+    def __init__(self, cfg: Config, cancel: CancelToken, approved_run: Callable[[StepContext], bool] | None,
+                 source: str) -> None:
+        super().__init__(cfg, cancel, approved_run)
+        self.fast = FastList(cancel, self.jev, approved_run, source)
+
+    def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
+        return self.fast.next_actions(image, ctx)
+
     def acknowledge(self, executed: bool) -> None:
         pass  # every step is planned afresh on the screen it sees
 
@@ -184,9 +203,31 @@ class FastListPlanner(JevFirstPlanner):
         pass
 
     def close(self) -> None:
-        self._check.shutdown(wait=False, cancel_futures=True)
-        self.pointer.close()
-        self.llm.client.close()
+        self.fast.close()
+        super().close()
+
+
+class HybridPlanner(JevFirstPlanner):
+    """Study 13: race's Jev-first planner unchanged, the fast list where it hands a request to Flash."""
+
+    fast: FastList
+
+    def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
+        # JevFirstPlanner.next_actions with hand-off on (race's default), the hand-off going to the fast list.
+        why = ""
+        if ctx.note and self._flash_run != ctx.run_id:  # a recovery note: Jev doesn't read it
+            self._flash_run, why = ctx.run_id, f"recovery note: {ctx.note[:80]}"
+        if self._flash_run != ctx.run_id:
+            plan = self.steps.next_actions(image, ctx)
+            if plan.reasoning != FAILED:
+                return plan
+            why = plan.actions[0].reason if plan.actions else "failed"
+            self._flash_run = ctx.run_id
+        plan = self.fast.next_actions(image, ctx)
+        return replace(plan, reasoning=f"{plan.reasoning} [Jev handed off: {why}]") if why else plan
+
+    def close(self) -> None:
+        self.fast.close()
         super().close()
 
 
@@ -200,8 +241,26 @@ class FastListExecutor(RaceExecutor):
         self.jev = self.planner.jev
 
     def attach_page(self, page) -> None:
-        self.planner.attach_page(page)
+        self.planner.fast.attach_page(page)
 
 
 class FastOcrExecutor(FastListExecutor):
+    source = "ocr"
+
+
+class HybridExecutor(RaceExecutor):
+    """The runtime race as it is, the fast list in place of the Flash hand-off only."""
+
+    source = "dom"
+
+    def __init__(self, cfg: Config, cancel: CancelToken) -> None:
+        super().__init__(replace(cfg, executor="race", jev_first=True), cancel)
+        self.planner.__class__ = HybridPlanner  # the runtime's planner keeps its state, gains the fast list
+        self.planner.fast = FastList(cancel, self.planner.jev, self.approved_run, self.source)
+
+    def attach_page(self, page) -> None:
+        self.planner.fast.attach_page(page)
+
+
+class HybridOcrExecutor(HybridExecutor):
     source = "ocr"
