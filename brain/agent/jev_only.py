@@ -277,6 +277,13 @@ CLIPBOARD_ASKED = ("Does the request on the last line of the `goal` ask to copy 
 OWN_LINE = ("Does the request on the first line of the `goal` name a line or paragraph that the pasted text goes after or "
             "below, as a line of its own rather than at the end of that line's text?")
 OWN_LINE_GATE = 0.25
+# A paste at the end goes there by keys: right after a copy, Docs' comment bubble beside the selection drew Jev's box
+# for "paste after the last line" (0.31-0.43 across both lines) and took its click, and the paste went after the first
+# line (2 runs in 2, 2026-10-21). Pastes at the end read 0.48-0.87; after the first or second line, before it, or
+# into a cell 0.04-0.25.
+AT_END = ("Does the first line of the `goal` put the text it pastes after the last line of the document or field, at "
+          "the very end of its text?")
+AT_END_GATE = 0.3
 # Lines ending with their copy 0.06-0.33 ("...click his birthplace and copy the first paragraph." 0.27-0.33), lines
 # going on to paste or send it 0.88-0.96 (2026-10-21).
 AFTER_COPY = "Does the request on the last line of the `goal` ask for anything more after it copies text to the clipboard?"
@@ -703,7 +710,7 @@ class JevOnlyPlanner:
                 return look
             focus = False
         certain = settled = True  # of the click's target: only a doubtful zoom says otherwise
-        own_line = False  # a paste's, on a line of its own
+        own_line = at_end = False  # a paste's, on a line of its own, and at the very end
         labelled = step in ("click", "fill") and probability(answers["labelled"].get("noul")) >= GATE
         if step in ("click", "double_click", "right_click", "fill", "copy", "select") or focus:
             point = box_center(answers["target"], size, padded)
@@ -723,7 +730,7 @@ class JevOnlyPlanner:
                 spot = self._text_spot(image, ctx, lines, seen, step)
                 if spot is None:
                     return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
-                point, own_line = spot[:2], spot[2]
+                point, own_line, at_end = spot[:2], spot[2], spot[3]
             elif min(width, height) >= BIG_TARGET and sure >= self.jev.min_presence \
                     and probability(answers["target"].get("confidence")) < BIG_SURE:
                 return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
@@ -788,8 +795,12 @@ class JevOnlyPlanner:
                 actions.append(Action("skill", name="select", args={"x": round(point[0], 3), "y": round(point[1], 3)}))
             elif step == "paste":
                 # The click lands on the text, inside a field's box too; End puts the caret after it.
-                end = ("GUI", "RIGHT") if ctx.profile.os in ("macos", "ios") else ("END",)
-                actions += [Action("click", x=point[0], y=point[1]), Action("hotkey", keys=end)]
+                mac = ctx.profile.os in ("macos", "ios")
+                if at_end:
+                    actions.append(Action("hotkey", keys=("GUI", "DOWN") if mac else ("CTRL", "END")))
+                else:
+                    end = ("GUI", "RIGHT") if mac else ("END",)
+                    actions += [Action("click", x=point[0], y=point[1]), Action("hotkey", keys=end)]
                 if own_line:
                     actions.append(Action("hotkey", keys=("ENTER",)))
             else:
@@ -1013,8 +1024,8 @@ class JevOnlyPlanner:
                                   {"goal": line})]
 
     def _text_spot(self, image: bytes, ctx: StepContext, lines: list[str], context: list[str],
-                   step: str) -> tuple[float, float, bool] | None:
-        """Where the line's copy or paste clicks, and whether a paste goes on a line of its own. A copy clicks on the
+                   step: str) -> tuple[float, float, bool, bool] | None:
+        """Where the line's copy or paste clicks, whether a paste goes on a line of its own, and whether at the end. A copy clicks on the
         row of the text's last line a zoom finds, a paste on the box's last: the text it goes after ends there. A copy's
         triple click selects the text it copies from just past the end of that line, so it lands on no link in it; a paste clicks
         the middle of the place it pastes into or after. Of two boxes the one reaching further: one look's
@@ -1026,7 +1037,8 @@ class JevOnlyPlanner:
         questions = {"copy_present": {"type": "noul", "instructions": COPY_PRESENT},
                      "copied": {"type": "box", "instructions": box}}
         if step == "paste":
-            questions["own_line"] = {"type": "noul", "instructions": OWN_LINE}
+            questions |= {"own_line": {"type": "noul", "instructions": OWN_LINE},
+                          "at_end": {"type": "noul", "instructions": AT_END}}
         rest = "\n".join(lines[self.line + 1:])
         states = [{"goal": "\n".join(filter(None, (tail, rest))), "executed_steps": context}
                   for tail in _clause_tails(lines[self.line])]
@@ -1047,8 +1059,9 @@ class JevOnlyPlanner:
             # too, the click hit Docs' comment bubble beside the copied line's selection, and the paste went after that
             # line (2026-10-21).
             left, top, _, bottom = _edges(box, size, padded)
-            own = sum(probability(answers["own_line"].get("noul")) for answers, _, _ in replies) / len(replies)
-            return left + COPY_PAST, bottom - (bottom - top) / 4, own >= OWN_LINE_GATE
+            own, end = (sum(probability(answers[k].get("noul")) for answers, _, _ in replies) / len(replies)
+                        for k in ("own_line", "at_end"))
+            return left + COPY_PAST, bottom - (bottom - top) / 4, own >= OWN_LINE_GATE, end >= AT_END_GATE
         bottom = _edges(box, size, padded)[3]
         point, _, last = zoom(self.jev, image, state, control, (center[0], bottom), COPY_WINDOW, ctx.run_id, ctx.step)
         # Only in the box: a zoom off it went to the address bar above it (1 in 16). Past the last line's end, short of
@@ -1059,7 +1072,7 @@ class JevOnlyPlanner:
             x, y = min(x, last[2]), last[1] + (last[3] - last[1]) / 4
         else:
             y = center[1]
-        return min(1.0, x + COPY_PAST), y, False
+        return min(1.0, x + COPY_PAST), y, False, False
 
     def _evaluate_all(self, ctx: StepContext, asks: list[Ask]) -> list[tuple[dict, tuple[int, int], tuple[int, int]]]:
         """Each ask's answers, its question sets asked in parallel, those on the same image in the same state in one

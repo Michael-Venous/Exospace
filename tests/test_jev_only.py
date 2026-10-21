@@ -31,7 +31,7 @@ class JevOnlyTests(unittest.TestCase):
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, text_odds=None, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
              lookup=.05, pending=.05, opens=.05, fresh=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two",
-             labelled=.05, other_tab=.05, on=.95, way="same", far="1", place="none", clipboard=.05, after_copy=.9, own_line=.05):
+             labelled=.05, other_tab=.05, on=.95, way="same", far="1", place="none", clipboard=.05, after_copy=.9, own_line=.05, at_end=.05):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text, "probabilities": text_odds or {}}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
@@ -40,7 +40,7 @@ class JevOnlyTests(unittest.TestCase):
                 "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused}, "other_tab": {"noul": other_tab},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
-                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "clipboard": {"noul": clipboard}, "after_copy": {"noul": after_copy}, "own_line": {"noul": own_line}, "joined": {"choice": joined},
+                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "clipboard": {"noul": clipboard}, "after_copy": {"noul": after_copy}, "own_line": {"noul": own_line}, "at_end": {"noul": at_end}, "joined": {"choice": joined},
                 "labelled": {"noul": labelled}, "on": {"noul": on}, "way": {"choice": way}, "far": {"choice": far},
                 "place": {"choice": place}, "column": BOX, "row": BOX}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
@@ -464,6 +464,9 @@ class JevOnlyTests(unittest.TestCase):
         below = self.plan("paste it after the last line", next="paste", copied=two, own_line=.4, history=selected,
                           run="o")
         self.assertEqual([a.brief() for a in below], ["click(205,320)", "hotkey(END)", "hotkey(ENTER)", "hotkey(CTRL+V)"])
+        # at the very end of the document: by keys, clear of what lies over the text
+        end = self.plan("paste it after the last line", next="paste", own_line=.4, at_end=.6, history=selected, run="e")
+        self.assertEqual([a.brief() for a in end], ["hotkey(CTRL+END)", "hotkey(ENTER)", "hotkey(CTRL+V)"])
         # a click into text Jev picks between the line's copy and its paste is the paste
         clicked = self.plan("copy the first line, paste after the last line", next="click", input=.98, clipboard=.9,
                             history=selected, run="c")
