@@ -37,6 +37,11 @@ from brain.types import Action, DeviceProfile
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
 DEVICE = os.environ.get("EXO_DEVICE", "Linux laptop, KDE Plasma desktop. The GUI key opens the application launcher. "
                                       "The panel hides itself.")  # the target as the model is told it
+MODIFIERS = {"CTRL", "SHIFT", "ALT"}  # pressed alone they do nothing (GUI alone opens the launcher)
+SEE_SIDE = int(os.environ.get("EXO_SEE_SIDE", "1280"))  # the longest side of the screenshot the brain sees
+# CTRL+L then typing 0.06 s later lost the first letters ("youtube.com" became "tube.com") while Chrome focused its
+# address bar: no input follows another sooner than this (input pacing, not a wait for the screen).
+INPUT_GAP_S = float(os.environ.get("EXO_INPUT_GAP_S", "0.08"))
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
 READ_S = 3.0  # longest wait for the model's next streamed bytes, its first token included
 LOG_TAIL = 20  # executor log entries each call sees
@@ -151,7 +156,10 @@ class Executor(threading.Thread):
             kind = next(iter(action))
             value = action[kind]
             if kind == "key":
-                self._input(lambda: self.controller.hotkey(value if isinstance(value, list) else [value]))
+                keys = value if isinstance(value, list) else [value]
+                if {str(k).upper() for k in keys} <= MODIFIERS:
+                    return "error", "a modifier pressed alone does nothing: no key can be held down"
+                self._input(lambda: self.controller.hotkey(keys))
             elif kind == "type":
                 self._input(lambda: self.controller.type_text(str(value)))
             elif kind in ("click", "double_click", "right_click"):
@@ -184,6 +192,8 @@ class Executor(threading.Thread):
         return cv2.imencode(".jpg", self.controller.capture.grab(), [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
 
     def _input(self, send) -> None:
+        if self.inputs:  # input at a person's pace: a shortcut's focus change lands before the next key
+            time.sleep(max(0.0, self.inputs[-1] + INPUT_GAP_S - time.monotonic()))
         self.inputs.append(time.monotonic())
         send()
 
@@ -323,7 +333,7 @@ class Brain(threading.Thread):
     def _call(self) -> None:
         self.phase = ("grabbing", round(time.monotonic() - self.started, 2))
         frame = self.target.grab()
-        image = shrink(cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes())
+        image = shrink(cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes(), SEE_SIDE)
         if self.shots is not None:  # what each call saw, for debugging
             (self.shots / f"call-{len(self.calls)}.jpg").write_bytes(image)
         with self.cond:

@@ -197,6 +197,20 @@ def _taxes() -> tuple[bool, str]:
     return ok, out.replace("\n", " ")
 
 
+def _steps(test: Test) -> tuple[bool, str]:
+    """Each spoken step happened, in order, by the active window over the run: Chrome opened, the horse search, a
+    video, back to the search, and Chrome closed (which video is not checked)."""
+    seen = [caption for _, caption in test.data["timeline"]]
+    search = [i for i, c in enumerate(seen) if re.search(r"horse.* - YouTube - Google Chrome", c, re.I)]
+    # a YouTube page after the search that isn't the search (a video page is titled "YouTube" until it loads)
+    video = [i for i, c in enumerate(seen) if c.endswith("YouTube - Google Chrome") and "horse video" not in c.lower()
+             and search and i > search[0]]
+    back = [i for i in search if video and i > video[0]]
+    closed = not any(w["cls"].lower().startswith("google-chrome") for w in windows())
+    steps = {"search": bool(search), "video": bool(video), "back": bool(back), "closed": closed}
+    return all(steps.values()), json.dumps(steps)
+
+
 def _groceries() -> tuple[bool, str]:
     out = shell("ls ~/Desktop; cat ~/Desktop/groceries* 2>/dev/null")
     return "groceries" in out and "milk" in out.lower() and "egg" in out.lower(), out.replace("\n", " | ")
@@ -268,7 +282,9 @@ TESTS = [
     Test("correction", ["open youtube actually no open wikipedia and look up the eiffel tower"],
          CHROME.format(urls="https://www.google.com"),
          lambda t: _tabs_check(lambda tabs, cap: "eiffel" in cap)()),
-    # the stress test: off the default run until everything above passes (`--tests 11`)
+    # the stress test: off the default run until everything above passes (`--tests 12`)
+    Test("step by step", ["open chrome, go to youtube, search for horse videos, click the second video, go back, "
+                          "close chrome"], "true", _steps),
     Test("blender house", ["open up blender and make a house", "actually make it wider", "make it brown"],
          f"mkdir -p ~/.config/blender/5.2/scripts/startup && cat > {BLENDER_STARTUP} <<'PY'\n{BLENDER_ORACLE}\nPY\n"
          "rm -f /tmp/exo_blender.json", _house, turn_s=300, cleanup=f"rm -f {BLENDER_STARTUP} /tmp/exo_blender.json"),
@@ -284,7 +300,7 @@ def reset() -> None:
     kwin(close_js())
     time.sleep(1.5)
     shell(f"pkill -f exo-chrome; for app in blender okular kate kwrite systemsettings dolphin konsole gwenview firefox "
-          f"brave; do pkill --newer {os.getpid()} -x $app; done; {CLEAN_FILES}; sleep 1")
+          f"brave chrome; do pkill --newer {os.getpid()} -x $app; done; {CLEAN_FILES}; sleep 1")
 
 
 def speak(agent: QueueAgent, words: str) -> float:
@@ -365,6 +381,7 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
                 break
             if test.name.startswith("blender"):
                 test.data.setdefault("widths", []).append(footprint([o for o in blender_scene() if o["type"] == "MESH"]))
+        test.data["timeline"] = timeline
         passed, detail = test.check(test)
         passed = passed and not any(t["stalled"] for t in turns)
     finally:
