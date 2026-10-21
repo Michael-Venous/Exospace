@@ -58,10 +58,11 @@ NEXT_CRITERIA = {
     "select": "Select a visible word in a document or input field that the goal deletes or replaces, when it isn't "
               "the last word typed, so the next step erases or types over it.",
     # On Genghis Khan's article with his birthplace's link in view, "click his birthplace and copy the first
-    # paragraph" chose copy 0.33 to click 0.32 once and copied his own article; told this, click 0.34-0.43 to copy
-    # 0.17-0.25 (6/6), with copy kept on the birthplace's article and in Docs (12/12, 2026-10-21).
-    "copy": "Copy one visible heading, line or paragraph of text that the goal names, once every click the goal asks "
-            "for before the copy is done: until then, click.",
+    # paragraph" chose copy 0.33 to click 0.32 once and copied his own article; told this, click 0.40-0.50 to copy
+    # 0.19-0.26 (6/6), with copy kept on the birthplace's article, Einstein's (0.51-0.56) and in Docs (18/18,
+    # 2026-10-21). Told to finish "every click" first, Einstein's copy fell to a tie with click (3/6).
+    "copy": "Copy one visible heading, line or paragraph of text that the goal names. When the goal asks to click a "
+            "link to another page before it copies, click that link first.",
     "paste": "Paste what was copied into the input field, cell or document where the goal puts it.",
     "scroll_down": "Scroll down to reveal something the goal needs that is below the visible area.",
     "scroll_up": "Scroll up to reveal something the goal needs that is above the visible area.",
