@@ -136,20 +136,32 @@ FOCUSED = ("Would text typed right now go into the input field, cell or document
            "types it?")
 # The routing questions ask about the next step: with "open discord, close discord, and open a terminal" the
 # whole goal fits no single app.
+# "Open up the WhatsApp app." fitted whatsapp.com in front 0.54-0.60, and Jev clicked the site's links for it
+# (2026-10-21). Told "app" means an installed one, 0.16-0.20; its links 0.96-0.98, "Go to WhatsApp." 0.68-0.74.
 FITS_QUESTION = ("Can the next step of the `goal`, after the `executed_steps`, be carried out in the app or web page "
-                 "in front in `screen`, without switching to or opening another app?")
+                 "in front in `screen`, without switching to or opening another app? A `goal` that says \"app\" means "
+                 "an installed app, not a website.")
+# Chrome's whatsapp.com tabs read present 0.86-0.88 for "Open up the WhatsApp app.", and the route switched to one
+# (2026-10-21). Told "app" means an installed one, 0.49-0.61, under the switch's 0.85; "Open the WhatsApp tab." 0.97.
 APP_PRESENT = ("Is a window, tab or app icon of an app suited to the next step of the `goal` visible in `screen`, "
-               "such as in a taskbar, dock, desktop or open app launcher? For a website, a web browser is suited.")
+               "such as in a taskbar, dock, desktop or open app launcher? For a website, a web browser is suited; "
+               "a `goal` that says \"app\" means an installed app, not a website.")
 APP_TARGET = ("The visible window, tab or app icon in `screen` of the app best suited to the next step of the "
               "`goal`; for a website, a web browser.")
 # A panel's icons sit side by side: "open a terminal" boxed VS Code's icon beside the terminal's (3 steps, v7-t2),
 # and one zoomed look at that box chose the terminal's (12/12 on 2 frames).
 APP_CONTROL = "the window, tab or app icon of the app best suited to the next step of the `goal`; for a website, a web browser"
 # "as an app launcher would list it": without it Jev chose "open a terminal" (3/3), with it "terminal".
+# Cinnamon's menu finds the typed words run together inside a name, keyword or description: "Open up the WhatsApp
+# app." chose "WhatsApp app" (10/10), which found nothing, and its next line pressed Enter in the empty menu
+# (2026-10-21). Told the word "app" after it is no part of the name, "WhatsApp" 10/10 and "Discord" 9/10.
 APP_NAME = ("Which words of the `goal` are the name of the app, or the kind of app, that its next step opens or uses, "
-            "as an app launcher would list it, without the command words or articles around it?")
+            "as an app launcher would list it: the name alone, without the command words or articles before it or "
+            "the word \"app\" after it?")
+# A goal that calls it an app: "Open up the WhatsApp app." over whatsapp.com read a website 0.64-0.72, and Jev
+# clicked the site's Log In for it (2026-10-21). Told so, 0.29-0.34; "Go to WhatsApp." 0.83-0.89, YouTube 0.92-0.97.
 SITE = ("Does the next step of the `goal` go to a website or web service, rather than open or use an app "
-        "installed on the device?")
+        "installed on the device? A `goal` that calls it an app means the installed app.")
 # Asked apart from SITE: "open up chrome, ..., make a new tab" with Chrome closed scored 0.76-0.81 as a website.
 BROWSER_NAMED = "Does the `goal` name a specific web browser by its name?"
 # A website's line fits the browser in front, whatever page it shows: "copy the header" on a Wikipedia article fitted
