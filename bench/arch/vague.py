@@ -5,7 +5,10 @@ resolve ("the one from HR"), text to compose ("tell john I'll get it to him by s
 before the target exists ("put on something chill"), and two apps in one breath. The `+popup`,
 `+slow` and `+shift` segments repeat planned ones while the screen moves: a modal on the video site's
 first view, results that load for 2 s, and a banner that pushes the grid down 1.2 s after the view
-draws (a plan made on the screen before is stale). Ctrl+L focuses the address bar, as in a real browser.
+draws (a plan made on the screen before is stale). Ctrl+L focuses the address bar, as in a real browser, and a
+YouTube search URL opens its results (2026-10-20, study 12; before, the page dropped the query and showed the
+home page, which race's completion check passed as "put on something chill" done). Words that aren't an
+address still do nothing there, where a real browser would search the web.
 Nothing here was tuned on; oracles read `window.S`.
 """
 
@@ -18,6 +21,9 @@ _EXACT = "VIDS.filter(x=>x[2].toLowerCase().includes(S.query.toLowerCase()))"
 _WORDS = ("((m=>m.length?m:VIDS)(VIDS.filter(x=>S.query.toLowerCase().split(/\\s+/)"
           ".some(w=>w.length>2&&x[2].toLowerCase().includes(w)))))")
 _SCREEN_CHANGES = r"""
+const navigate=navUrl;
+navUrl=function(u){const q=/youtube\.com\/results\?search_query=([^&]+)/i.exec(u);
+ if(q){S.query=decodeURIComponent(q[1].replace(/\+/g,' '));go('results:'+S.query)}else navigate(u)};
 document.addEventListener('keydown',e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='l'){e.preventDefault();const u=document.getElementById('url');u.focus();u.select()}});
 const drawn=render;
 render=function(){drawn();const v=S.view,a=document.getElementById('app');
