@@ -42,15 +42,15 @@ READ_S = 3.0  # longest wait for the model's next streamed bytes, its first toke
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
 # Each model on one host. Qwen's quality depends on it (study 17: 192/192 pointed on ModelRun, 15/192 on Cerebras);
-# DeepSeek was fastest on Together (model check: 0.33 s first token p50).
-PINNED = {"qwen/qwen3.8-27b": "modelrun/fp4", "deepseek/deepseek-v4.1-flash-1017": "together",
-          "z-ai/glm-5.3-flash": "together"}
+# DeepSeek was fastest on Together (model check: 0.33 s first token p50), Morph next (0.58 s): its fallback.
+PINNED = {"qwen/qwen3.8-27b": ("modelrun/fp4",), "deepseek/deepseek-v4.1-flash-1017": ("together", "morph/fp8"),
+          "z-ai/glm-5.3-flash": ("together",)}
 # Pointing models that can click in Jev's place, each on the host study 17 measured it on.
 # (model, host, reasoning effort: "" = off, x/y in pixels). GLM 5.3 Flash's hosts all require some reasoning, and
 # it answers in pixels.
-CLICKERS = {"qwen": ("qwen/qwen3.8-27b", PINNED["qwen/qwen3.8-27b"], "", False),
+CLICKERS = {"qwen": ("qwen/qwen3.8-27b", PINNED["qwen/qwen3.8-27b"][0], "", False),
             "deepseek": ("deepseek/deepseek-v4.1-flash-1017", "inference-net/fp8", "", False),
-            "glm": ("z-ai/glm-5.3-flash", PINNED["z-ai/glm-5.3-flash"], "minimal", True)}
+            "glm": ("z-ai/glm-5.3-flash", PINNED["z-ai/glm-5.3-flash"][0], "minimal", True)}
 SURE_BOX = 0.7  # Jev's box confidence at which a target its presence check refused still gets a zoomed look
 PROMPT = """You operate a computer for a user who speaks to you. You see its screen; you act only through
 its keyboard and mouse. The user's words arrive while they speak.
@@ -339,7 +339,7 @@ class Brain(threading.Thread):
         for past in self.history[-HISTORY:]:
             history += [{"role": "user", "content": past["context"]},
                         {"role": "assistant", "content": past["reply"] or "(nothing)"}]
-        provider = ({"order": [PINNED[self.model]], "allow_fallbacks": False} if self.model in PINNED
+        provider = ({"order": list(PINNED[self.model]), "allow_fallbacks": False} if self.model in PINNED
                     else {"sort": "latency"})
         body = {"model": self.model, "stream": True, "temperature": 0, "provider": provider,
                 "reasoning": {"effort": self.effort} if self.effort else {"enabled": False},
