@@ -130,7 +130,7 @@ def handle(cmd: dict) -> None:
 
 def grab() -> bytes:
     path = "/tmp/exo_grab.jpg"  # JPEG: a fifth of the PNG's bytes over SSH
-    subprocess.run(["spectacle", "-b", "-n", "-f", "-o", path], check=True, timeout=15,
+    subprocess.run(["spectacle", "-b", "-n", "-f", "-o", path], check=True, timeout=3,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(path, "rb") as f:
         return f.read()

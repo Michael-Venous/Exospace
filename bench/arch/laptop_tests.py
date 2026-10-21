@@ -1,10 +1,10 @@
-"""Study 16: the shared-queue architecture (`queue_agent.py`) on the real test laptop, 11 spoken tasks.
+"""Study 16: the agent (`queue_agent.py`) on the real test laptop, 11 spoken tasks, run on the laptop itself.
 
-The agent runs here and sees only the laptop's screenshots; it acts only through the uinput keyboard and
-mouse (`laptop.py`). Each turn is spoken word by word at SPEECH_S a word, the agent hearing it grow; the next
-turn comes once the agent has gone quiet (nothing running or queued for QUIET_S). Setup, cleanup and the
-oracles use SSH commands only: KWin's window list, files, the display mode, the wallpaper, a test Chrome's
-tab list (its debugging port), and a Blender startup script that writes the scene to a file.
+The agent sees only the laptop's screenshots and acts only through the uinput keyboard and mouse
+(`laptop.py`). Each turn is spoken word by word at SPEECH_S a word, the agent hearing it grow; the next turn
+comes once the agent has gone quiet (nothing running or queued for QUIET_S). Setup, cleanup and the oracles
+use shell commands the agent never sees: KWin's window list, files, a test Firefox profile's prefs, a test
+Chrome's tab list (its debugging port), and a Blender startup script that writes the scene to a file.
 
   PYTHONPATH=. .venv/bin/python ~/.cache/exo-bench/withkeys.py bench.arch.laptop_tests [--tests 1 2] [--repeats 1]
 """
@@ -17,7 +17,6 @@ import os
 import random
 import re
 import statistics
-import subprocess
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -25,7 +24,7 @@ from pathlib import Path
 
 import cv2
 
-from bench.arch.laptop import HOST, LaptopTarget, shell
+from bench.arch.laptop import LaptopTarget, shell
 from bench.arch.queue_agent import CLICKERS, QueueAgent
 
 OUT = Path("work/arch/laptop")
@@ -41,6 +40,16 @@ MODELS = {"deepseek": ("deepseek/deepseek-v4.1-flash-1017", ""), "gemma31b": ("g
           "step5": ("stepfun/step-5-preview", "minimal"), "minimax": ("minimax/minimax-m3.1-flash:free", "minimal")}
 CHROME = ("setsid -f google-chrome-stable --user-data-dir=/tmp/exo-chrome --no-first-run --no-default-browser-check "
           "--password-store=basic --ozone-platform=wayland --remote-debugging-port=9333 {urls} >/dev/null 2>&1; sleep 4")
+# A fresh Firefox profile with no first-run pages or close prompts; the user's own profile is never touched.
+FIREFOX = """rm -rf /tmp/exo-ff && mkdir -p /tmp/exo-ff && cat > /tmp/exo-ff/user.js <<'JS'
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("startup.homepage_welcome_url", "");
+user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("browser.tabs.warnOnClose", false);
+JS
+setsid -f firefox --no-remote --profile /tmp/exo-ff https://www.google.com >/dev/null 2>&1; sleep 4"""
 WINDOWS_JS = """var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
 for (var i = 0; i < ws.length; i++) { var w = ws[i]; if (w.normalWindow || w.dialog)
   print("EXOWIN " + JSON.stringify({caption: w.caption, cls: w.resourceClass, active: w.active})); }"""
@@ -106,46 +115,19 @@ def chrome_tabs() -> list[dict]:
 
 
 def video_playing() -> bool:
-    """Whether any test-Chrome tab has a <video> playing: its debugging port, tunnelled over SSH."""
+    """Whether any test-Chrome tab has a <video> playing: its debugging port."""
     from websockets.sync.client import connect
 
-    tunnel = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "-N", "-L", "19333:127.0.0.1:9333", HOST])
-    try:
-        time.sleep(1.0)
-        for tab in chrome_targets():
-            url = tab.get("webSocketDebuggerUrl", "").replace("127.0.0.1:9333", "127.0.0.1:19333")
-            try:
-                with connect(url, open_timeout=3, max_size=None) as ws:
-                    ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression":
-                        "[...document.querySelectorAll('video')].some(v => !v.paused && v.currentTime > 0)"}}))
-                    if json.loads(ws.recv(timeout=3)).get("result", {}).get("result", {}).get("value"):
-                        return True
-            except Exception:  # noqa: BLE001 - a tab that doesn't answer has no video playing
-                continue
-        return False
-    finally:
-        tunnel.terminate()
-
-
-def refresh_hz() -> float:
-    out = re.sub(r"\x1b\[[0-9;]*m", "", shell("kscreen-doctor -o"))
-    current = re.search(r"\d+:\d+x\d+@([\d.]+)\*", out)
-    return float(current.group(1)) if current else 0.0
-
-
-def wallpaper() -> str:
-    """The wallpaper of the desktop on the laptop's screen: plugin, image, colour."""
-    return shell("""qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '
-var d = desktopForScreen(0); d.currentConfigGroup = ["Wallpaper", d.wallpaperPlugin, "General"];
-print(d.wallpaperPlugin + "|" + d.readConfig("Image") + "|" + d.readConfig("Color"));'""").strip()
-
-
-def restore_wallpaper(saved: str) -> None:
-    plugin, image, color = (saved.split("|") + ["", "", ""])[:3]
-    key, value = ("Image", image) if image else ("Color", color)
-    shell(f"""qdbus6 org.kde.plasmashell /PlasmaShell org.kde.PlasmaShell.evaluateScript '
-var d = desktopForScreen(0); d.wallpaperPlugin = "{plugin}";
-d.currentConfigGroup = ["Wallpaper", "{plugin}", "General"]; d.writeConfig("{key}", "{value}");'""")
+    for tab in chrome_targets():
+        try:
+            with connect(tab.get("webSocketDebuggerUrl", ""), open_timeout=3, max_size=None) as ws:
+                ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {"expression":
+                    "[...document.querySelectorAll('video')].some(v => !v.paused && v.currentTime > 0)"}}))
+                if json.loads(ws.recv(timeout=3)).get("result", {}).get("result", {}).get("value"):
+                    return True
+        except Exception:  # noqa: BLE001 - a tab that doesn't answer has no video playing
+            continue
+    return False
 
 
 def blender_scene() -> list[dict]:
@@ -203,18 +185,13 @@ def _groceries() -> tuple[bool, str]:
     return "groceries" in out and "milk" in out.lower() and "egg" in out.lower(), out.replace("\n", " | ")
 
 
-def _display_and_wallpaper(test: Test) -> tuple[bool, str]:
-    """The panel only runs at 120 Hz: the agent must find that and say so, leave it there, and change the wallpaper
-    (or ask what to change it to)."""
-    hz, paper = refresh_hz(), wallpaper()
-    said = " ".join(test.data.get("said_turn1", [])).lower()
-    # 120 named, and 60 not claimed as the current rate (xrandr on Wayland reads XWayland's 60 and lists 120 as a mode)
-    reported = bool(re.search(r"\b(120|119\.9\d*)(\.\d+)?\s*hz", said)) and not re.search(
-        r"\b(at|running|currently|set to|is)\b[^.?]{0,25}?\b(60|59\.9\d*)(\.\d+)?\s*hz", said)
-    changed = paper != test.data.get("wallpaper")
-    asked = test.data.get("asked_wallpaper", False)
-    return (hz >= 119 and reported and (changed or asked),
-            f"refresh {hz} Hz; reported 120 in turn 1 {reported}; wallpaper {paper!r} (changed {changed}, asked {asked})")
+def _firefox_homepage(test: Test) -> tuple[bool, str]:
+    """Wikipedia is the homepage of the test profile: Firefox is closed as a user would close it (which writes
+    prefs.js), then its prefs are read."""
+    kwin(CLOSE_JS)
+    out = shell("for i in $(seq 50); do pgrep -f 'exo-f[f]' >/dev/null || break; sleep 0.1; done; "
+                "grep -h 'browser.startup.homepage\"' /tmp/exo-ff/prefs.js 2>/dev/null")
+    return "wikipedia" in out.lower(), out.strip()[:200]
 
 
 def _printer_pdf() -> tuple[bool, str]:
@@ -267,9 +244,8 @@ TESTS = [
          DOWNLOADS, lambda t: _taxes(), turn_s=150),
     Test("groceries note", ["open a text editor, write buy milk and eggs, and save it on the desktop as groceries"],
          "true", lambda t: _groceries(), turn_s=120),
-    Test("120hz and wallpaper", ["my monitor feels like its on 60hz, can you check for me",
-                                 "yes change it to 120hz", "now change my wallpaper"],
-         "true", _display_and_wallpaper, turn_s=120, cleanup="kscreen-doctor output.eDP-1.mode.1 >/dev/null 2>&1"),
+    Test("firefox homepage", ["change my firefox homepage to wikipedia"], FIREFOX, _firefox_homepage,
+         cleanup="rm -rf /tmp/exo-ff"),
     Test("printer article pdf", ["save the wikipedia article on printers as a pdf"], CHROME.format(urls="https://www.google.com"),
          lambda t: _printer_pdf(), turn_s=150),
     Test("correction", ["open youtube actually no open wikipedia and look up the eiffel tower"],
@@ -330,7 +306,8 @@ def wait_quiet(agent: QueueAgent, limit_s: float) -> tuple[float, str]:
             if now - moved_at >= STALL_S:
                 return now - started, (f"no progress for {STALL_S:.0f} s: brain {agent.brain.phase}, calling "
                                        f"{agent.brain.calling}, executor {agent.shared.state}, queue {len(agent.shared.queue)}, "
-                                       f"dirty {agent.brain.dirty}, alive {agent.brain.is_alive()}/{agent.executor.is_alive()}")
+                                       f"dirty {agent.brain.dirty}, alive {agent.brain.is_alive()}/{agent.executor.is_alive()}, last call "
+                                       f"error {(agent.brain.calls or [{}])[-1].get('error', '')[:120]!r}")
         elif now - quiet_since >= QUIET_S:
             return now - started, ""
         time.sleep(0.2)
@@ -344,8 +321,6 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
     reset()
     test.data = {}
     shell(f"touch /tmp/exo_test_start; {test.setup}", timeout=60)
-    if test.name.startswith("120hz"):
-        test.data["wallpaper"] = wallpaper()
     grabs_before = len(target.grabs)
     agent = QueueAgent(target, model, effort, os.environ["TYPESAFE_API_KEY"], folder, clicker, plan)
     timeline: list[tuple[float, str]] = []  # the active window over the run, for debugging (oracle side only)
@@ -372,10 +347,6 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
                 break
             if test.name.startswith("blender"):
                 test.data.setdefault("widths", []).append(footprint([o for o in blender_scene() if o["type"] == "MESH"]))
-            if test.name.startswith("120hz") and k == 0:
-                test.data["said_turn1"] = list(agent.brain.said)
-            if test.name.startswith("120hz") and k == 2:
-                test.data["asked_wallpaper"] = any("?" in s for s in agent.brain.said[-2:])
         passed, detail = test.check(test)
         passed = passed and not any(t["stalled"] for t in turns)
     finally:
@@ -384,8 +355,6 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
         agent.close()
         if test.cleanup:
             shell(test.cleanup)
-        if test.name.startswith("120hz"):
-            restore_wallpaper(test.data["wallpaper"])
     calls = agent.brain.calls
     row = {"test": test.name, "index": index, "repeat": repeat, "model": label, "passed": passed, "detail": detail,
            "turns": turns, "said": agent.brain.said, "calls": len(calls),
@@ -408,7 +377,7 @@ def main() -> None:
     parser.add_argument("--tests", nargs="*", type=int, help="1-based test numbers (default: DEFAULT)")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--model", default="deepseek", choices=list(MODELS))
-    parser.add_argument("--clicker", default="jev", choices=["jev", *CLICKERS])
+    parser.add_argument("--clicker", default="qwen", choices=["jev", *CLICKERS])
     parser.add_argument("--plan", default="screen", choices=["screen", "ahead"])
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -419,7 +388,7 @@ def main() -> None:
     try:
         for repeat in range(args.repeats):
             for n in args.tests or DEFAULT:
-                label = "+".join([args.model, *[x for x in (args.clicker, args.plan) if x not in ("jev", "screen")]])
+                label = "+".join([args.model, *[x for x in (args.clicker, args.plan) if x != "screen"]])
                 row = run(TESTS[n - 1], n, repeat, model, effort, target, label, args.clicker, args.plan)
                 rows.append(row)
                 path.write_text(json.dumps(rows, indent=1))

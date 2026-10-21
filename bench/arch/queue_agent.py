@@ -39,8 +39,9 @@ DEVICE = "Linux laptop, KDE Plasma desktop. The GUI key opens the application la
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
-# Models whose quality depends on the host (study 17: Qwen 3.8 27B pointed 192/192 on ModelRun, 15/192 on Cerebras)
-PINNED = {"qwen/qwen3.8-27b": "modelrun/fp4"}
+# Each model on one host. Qwen's quality depends on it (study 17: 192/192 pointed on ModelRun, 15/192 on Cerebras);
+# DeepSeek was fastest on Together (model check: 0.33 s first token p50).
+PINNED = {"qwen/qwen3.8-27b": "modelrun/fp4", "deepseek/deepseek-v4.1-flash-1017": "together"}
 # Pointing models that can click in Jev's place, each on the host study 17 measured it on.
 CLICKERS = {"qwen": ("qwen/qwen3.8-27b", PINNED["qwen/qwen3.8-27b"]),
             "deepseek": ("deepseek/deepseek-v4.1-flash-1017", "inference-net/fp8")}
@@ -65,8 +66,13 @@ screen is still loading or changing, reply with nothing and you will see it agai
                                     proves it; it is checked on the screen before it counts
   {"say": "It's running at 120 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
 A confirmed done, or a reply that ends with say or ask, ends your turn: the user speaks next.
-No key can be held during a click or drag.
-Judge what the user means from the screen and the conversation before acting. Use keyboard shortcuts where they are sure."""
+Rules:
+- Judge what the user means from the screen and the conversation before acting.
+- While you work, reply with actions only: never announce what you are about to do. Talk when you have the answer
+  or the result, or to ask.
+- If the log shows an action failed, or the screen shows it changed nothing, don't repeat it: try another way.
+- State only what the screen shows; never guess a result.
+- Use keyboard shortcuts where they are sure. No key can be held during a click or drag."""
 
 
 # Planning ahead (`plan="ahead"`): steps on screens not drawn yet are queued too, and a click waits for its target
@@ -400,7 +406,7 @@ class Brain(threading.Thread):
 class QueueAgent:
     """The model and executor threads, taking turns, on one target."""
 
-    def __init__(self, target, model: str, effort: str, jev_key: str, log_dir: Path, clicker: str = "jev",
+    def __init__(self, target, model: str, effort: str, jev_key: str, log_dir: Path, clicker: str = "qwen",
                  plan: str = "screen") -> None:
         """`plan` "screen": each reply covers one screen; "ahead": replies plan across screens, clicks wait."""
         self.cancel = CancelToken()

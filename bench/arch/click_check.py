@@ -154,6 +154,16 @@ CANDIDATES = [
     Candidate("Qwen 3.7 Flash", "qwen/qwen3.7-flash", ("alibaba/us-east-1", "alibaba")),
     Candidate("Nemotron 3.5 Super VL", "nvidia/nemotron-3.5-super-vl",
               ("together", "crusoe/bf16", "deepinfra/fp4", "coreweave/nvfp4")),
+    # Other Qwen vision models on OpenRouter (2026-10-21): the larger 3.8 ones and the earlier MoE line.
+    Candidate("Qwen 3.8 Max", "qwen/qwen3.8-max-0902", ("alibaba/us-east-1", "alibaba")),
+    Candidate("Qwen 3.8 Omni Flash", "qwen/qwen3.8-omni-flash", ("alibaba",)),
+    Candidate("Qwen 3.6 27B", "qwen/qwen3.6-27b", ("chutes/fp8", "siliconflow/fp8", "deepinfra/fp8", "alibaba")),
+    Candidate("Qwen 3.6 35B-A3B", "qwen/qwen3.6-35b-a3b",
+              ("darkbloom/fp4", "akashml/fp8", "deepinfra/fp8", "parasail/fp8", "coreweave/fp8")),
+    Candidate("Qwen 3.5 122B-A10B", "qwen/qwen3.5-122b-a10b", ("siliconflow/fp8", "alibaba", "novita/bf16")),
+    Candidate("Qwen 3.5 397B-A17B", "qwen/qwen3.5-397b-a17b", ("alibaba", "deepinfra/fp8", "parasail/fp8"),
+              schema=False),
+    Candidate("Qwen3-VL 235B-A22B", "qwen/qwen3-vl-235b-a22b-instruct", ("deepinfra/fp8", "parasail/fp8")),
 ]
 # x and y required: with only "found" required, DeepSeek V4.1 Flash answered {"found": true} and nothing else.
 SCHEMA = {"type": "object", "properties": {"found": {"type": "boolean"}, "x": {"type": "number"},
@@ -312,11 +322,12 @@ def image_size(jpeg: bytes) -> tuple[int, int]:
     return w, h
 
 
-def probe(key: str, items: list[Item], images: dict[str, bytes]) -> dict[str, dict]:
+def probe(key: str, items: list[Item], images: dict[str, bytes], only: list[str]) -> dict[str, dict]:
     """4 laptop targets x 2 rounds on every listed provider of every model: the fastest with at most one failed call
     (a malformed reply is the model's, not the provider's); a model whose providers all fail more keeps its steadiest."""
     sample = [i for i in items if i.set == "laptop"][::13][:4]
-    jobs = [(c, p, i) for _ in range(2) for c in CANDIDATES for p in c.providers for i in sample]
+    candidates = [c for c in CANDIDATES if not only or c.label in only]
+    jobs = [(c, p, i) for _ in range(2) for c in candidates for p in c.providers for i in sample]
     random.Random(17).shuffle(jobs)
 
     def run(job: tuple) -> dict:
@@ -335,8 +346,9 @@ def probe(key: str, items: list[Item], images: dict[str, bytes]) -> dict[str, di
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         rows = list(pool.map(run, jobs))
-    chosen: dict[str, dict] = {}
-    for c in CANDIDATES:
+    saved = OUT / "probe.json"
+    chosen: dict[str, dict] = json.loads(saved.read_text())["chosen"] if only and saved.exists() else {}
+    for c in candidates:
         stats = []
         for p in c.providers:
             mine = [r for r in rows if r["label"] == c.label and r["provider"] == p]
@@ -349,7 +361,7 @@ def probe(key: str, items: list[Item], images: dict[str, bytes]) -> dict[str, di
         working = [s for s in stats if s["ok"] >= s["of"] - 1]
         best = min(working, key=lambda s: s["p50"]) if working else max(stats, key=lambda s: s["ok"])
         chosen[c.label] = {"provider": best["provider"], "probe": stats}
-    (OUT / "probe.json").write_text(json.dumps({"chosen": chosen, "rows": rows}, indent=1))
+    saved.write_text(json.dumps({"chosen": chosen, "rows": rows}, indent=1))  # rows: this probe's only
     print(f"probe cost ${sum(r.get('cost') or 0 for r in rows):.4f}")
     return chosen
 
@@ -373,7 +385,7 @@ def main() -> None:
     items, images = load_items()
     key = os.environ["OPENROUTER_API_KEY"]
     if args.probe:
-        probe(key, items, images)
+        probe(key, items, images, args.only)
         return
     chosen = json.loads((OUT / "probe.json").read_text())["chosen"]
     routers = {c.label: Router(c, chosen[c.label]["provider"], key) for c in CANDIDATES
