@@ -548,7 +548,7 @@ ocr 1 / 6 (p = 0.125).
 - Its misses: a list carries no visual state (what's in the cart, which video plays), so "take it back out"
   kept clicking the same element; repeated no-effect steps despite the note. All three still share one false
   "done": "put on something chill" passed on a results page with nothing playing (Jev's completion check).
-- No unsafe input in 324 runs, for any executor.
+- No unsafe input in 312 runs (both rounds), for any executor.
 
 #### What study 12 supports
 1. **Keep the runtime race as the default.** It has the best success in every scenario and round.
