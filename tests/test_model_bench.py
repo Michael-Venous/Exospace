@@ -319,7 +319,8 @@ class OptionScanTests(unittest.TestCase):
 def _fast(reply: dict, done: float = 0.0) -> FastList:
     planner = FastList.__new__(FastList)
     jev = SimpleNamespace(trace=[], completion=lambda *a, **k: done, assess=lambda *a, **k: ({"irreversible": 0.0}, {}))
-    planner.__dict__.update(cancel=CancelToken(), approved_run=lambda ctx: False, source="dom", jev=jev, page=None,
+    planner.__dict__.update(cancel=CancelToken(), approved_run=lambda ctx: False, source="dom", with_image=False,
+                            jev=jev, page=None,
                             _dom=[("e1", "Reply", (0.5, 0.3)), ("e2", "Search", (0.2, 0.1))], _ocr=None,
                             _check=ThreadPoolExecutor(max_workers=1),
                             llm=SimpleNamespace(call=lambda *a: (reply, {"total": 0.3})),
@@ -344,6 +345,15 @@ class HybridTests(unittest.TestCase):
 
 
 class FastListTests(unittest.TestCase):
+    def test_with_image_the_screenshot_rides_along(self):
+        planner = _fast({"actions": [], "done": False})
+        sent = []
+        planner.with_image = True
+        planner.llm = SimpleNamespace(call=lambda image, *a: sent.append(image) or ({"actions": [], "done": False},
+                                                                                  {"total": 0.3}))
+        planner.next_actions(SCREEN, _ctx("search lofi"))
+        self.assertIsNotNone(sent[0])
+
     def test_a_click_lands_on_the_chosen_elements_centre_and_typing_follows(self):
         plan = _fast({"actions": [{"type": "click", "element": "e2"}, {"type": "type_text", "text": "lofi"}],
                       "done": False}).next_actions(SCREEN, _ctx("search lofi"))
