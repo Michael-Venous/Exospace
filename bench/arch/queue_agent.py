@@ -1,14 +1,16 @@
-"""Candidate architecture (study 16): a fast LLM at the front, a shared action queue, Jev as clicker.
+"""Candidate architecture (study 16): a fast LLM at the front, a shared action queue, Jev as clicker and checker.
 
   Brain     one fast vision model. Called on new speech (latest wins: an update cancels the call in flight)
-            and whenever the executor stops (end of queue, a `look`, a failure) while a task is active; after
-            SLEEP_S with no speech and nothing to do, only speech wakes it. Each call sees the user's words so
-            far, the conversation, the executor's log and queue, and the screen as it is. It streams one action
-            per line and each is applied as it arrives: appended to the queue, or `stop` (the executor stops
-            after its current action and the queue is cleared, then the rest of the reply refills it).
+            and whenever the executor stops (end of queue, a `look`, a failure) while a task is active. Each
+            call sees the user's words so far, the conversation, the executor's log and queue, and the screen as
+            it is. It streams one action per line and each is applied as it arrives: appended to the queue, or
+            `stop` (the queue is cleared; the rest of the reply refills it).
   Executor  runs the queue in order: keys and typing go straight to the HID; a click names its target and Jev
-            places it on the fresh screen (locate + zoom, gate 0.5). A target Jev can't find, or any error,
-            pauses the queue and is logged; so does `look`. The brain's next call sees why and carries on.
+            places it on the fresh screen (locate + zoom). A target Jev can't find, or any error, pauses the
+            queue and is logged, and the brain's next call sees why.
+  Checks    the model says what it expects; Jev confirms it on the screen. At a `look` Jev reports whether the
+            screen shows what the model expected. A request ends only with `done`, which Jev's completion check
+            (goal + executed steps + screen) must confirm; otherwise the model is called again with the reason.
 Pixels in, keyboard and mouse out: nothing else of the target is read. Bench only.
 """
 
@@ -26,7 +28,8 @@ from pathlib import Path
 import cv2
 import httpx
 
-from brain.agent.jev import JevVision
+from brain.agent.jev import JevVision, probability
+from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.triage import GATE, refine
 from brain.cancel import CancelToken
 from brain.capture import thumbnail
@@ -36,25 +39,20 @@ from brain.imaging import shrink
 from brain.types import Action, ActionError, DeviceProfile
 
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
-DEVICE = ("Linux laptop, KDE Plasma desktop. The GUI key opens the application launcher: type to search, and look "
-          "at the results before choosing one, as they mix apps, files and settings. Websites open from a browser's "
-          "address bar (CTRL+L). The panel hides itself: an empty black screen is the desktop.")
-# How the executor's state reads to the model: a bare "paused" read as waiting on the user ("the queued actions
-# are paused, do you want me to continue?", study 16).
+DEVICE = "Linux laptop, KDE Plasma desktop. The GUI key opens the application launcher. The panel hides itself."
 STATES = {"running": "running your actions", "paused": "stopped, waiting for your next actions",
           "idle": "finished all the actions you queued"}
 SLEEP_S = 8.0  # no speech and nothing to do for this long: screen changes stop calling the model
-LOG_TAIL = 20
-MAX_LINES = 24  # a reply longer than this is degenerate (one repeated "type text" for 120 s, study 16)
-CLICK_SETTLE_S = 1.2  # before Jev looks for a click's target
-LOOK_SETTLE_S = 2.5  # at a look, for a page to finish drawing
-MIN_REPEAT = 3  # actions in a reply before an exact repeat of the last reply counts as a loop
-SURE_BOX = 0.7  # Jev's box confidence at which a target its presence check refused gets a zoomed look anyway
-CALL_SETTLE_S = 1.0  # a call right after the executor's input waits up to this for the screen to settle  # executor log entries each call sees
+LOG_TAIL = 20  # executor log entries each call sees
+# Settling: the screen once two screenshots in a row match, at most this long (a playing video never matches).
+CLICK_SETTLE_S = 0.8  # before Jev looks for a click's target
+LOOK_SETTLE_S = 2.0  # at a look or done, for a page or app to finish drawing
+CALL_SETTLE_S = 0.8  # a call right after the executor's input: a menu it opened is still drawing
+SURE_BOX = 0.7  # Jev's box confidence at which a target its presence check refused still gets a zoomed look
 PROMPT = """You operate a computer for a user who speaks to you. You see its screen; you act only through
 its keyboard and mouse. Never open a terminal or type shell commands unless the user explicitly asks for one:
-do everything through the desktop's own interface, as the user would. The user's words arrive while they speak; you are called again as they grow, when the
-screen changes, and whenever your queued actions run out, pause or fail.
+do everything through the desktop's own interface, as the user would. The user's words arrive while they
+speak; you are called again as they grow, and whenever your queued actions run out, pause or fail.
 
 Reply with actions, ONE JSON object per line, nothing else. They run in order as soon as each line arrives:
   {"key": ["CTRL","L"]}             a key or combination (CTRL SHIFT ALT GUI ENTER ESC TAB BACKSPACE DELETE UP
@@ -66,21 +64,17 @@ Reply with actions, ONE JSON object per line, nothing else. They run in order as
   {"drag": ["the file report.pdf", "the Documents folder in the sidebar"]}   press on one spot, release on another
   {"scroll": 3, "at": "the list of results"}   mouse-wheel notches, positive down ("at" optional)
   {"wait": 1.5}                     seconds
-                                    No key can be held during a click or drag: to act on several items, select
-                                    them by keyboard (CTRL+A, SHIFT with arrow keys) or handle them one at a time.
-  {"look": "the search results page"}   stop here and show me the screen again before going on (if the screen
-                                    hasn't changed since your last call, looking again shows nothing new: act, or
-                                    say what's wrong)
+  {"look": "the search results page"}   stop and show me the screen again; say what you expect to see, and
+                                    the log will say whether the screen shows it
+  {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
+                                    proves it; it is checked on the screen before it counts
   {"stop": true}                    first, to cancel queued actions (e.g. the user changed their mind)
-  {"say": "It's running at 60 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
-Judge what the user means from the screen and the conversation before acting. Ask only when you can't make a
-sensible choice; when one choice is clearly reasonable ("the house" means all of it), act and say what you
-assumed. A screenshot can't show
-motion: a video page showing its player is a video playing; don't keep clicking it to check. Use keyboard shortcuts where
-they are sure; click when the target is visible. After anything that changes the screen in a way you need to
-see (a page or app opening, a menu, a search), end with look. When the request is done, or you are waiting
-for the user's answer, reply with nothing more to do: an empty reply or a say. Never repeat actions the log
-shows done. The executor log tells you what ran, what failed and why."""
+  {"say": "It's running at 120 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
+No key can be held during a click or drag. Judge what the user means from the screen and the conversation
+before acting. Use keyboard shortcuts where they are sure; click when the target is visible. After anything
+that changes the screen in a way you need to see (a page or app opening, a menu, a search), end with look.
+When you need the user's answer, end with ask. The executor log tells you what ran, what failed and why, and
+what each look and done found; never repeat what it shows done."""
 
 
 @dataclass
@@ -97,6 +91,9 @@ class Shared:
     log: list[Record] = field(default_factory=list)
     state: str = "idle"  # running | paused | idle
     stop: bool = False
+    goal: str = ""  # what the user has asked for, for the done check
+    turn_start: int = 0  # the log entry the current request starts at
+    finished: bool = False  # a done that Jev confirmed: only new speech wakes the model
 
 
 class Executor(threading.Thread):
@@ -120,10 +117,11 @@ class Executor(threading.Thread):
             result, detail = self._do(action)
             with self.cond:
                 self.shared.log.append(Record(round(time.monotonic() - self.started, 2), action, result, detail))
-                if self.shared.stop or result != "done" or "look" in action:
-                    if result != "done":
+                if result == "verified":
+                    self.shared.finished = True
+                if self.shared.stop or result not in ("done", "verified") or "look" in action:
+                    if result not in ("done", "verified", "checked"):
                         self.shared.queue.clear()  # what was queued after a failure assumed it worked
-                    # A stop cleared the queue when it came; what its reply queued after it stays.
                     self.shared.state, self.shared.stop = "paused", False
                 elif not self.shared.queue:
                     self.shared.state = "idle"
@@ -157,15 +155,17 @@ class Executor(threading.Thread):
             elif kind == "wait":
                 time.sleep(min(float(value), 10.0))
             elif kind == "look":
-                self._settle(LOOK_SETTLE_S)
+                return "checked", self._shown(str(value))
+            elif kind == "done":
+                return self._verify(str(value))
             else:
                 return "error", f"unknown action {kind!r}"
             return "done", ""
         except (ActionError, HIDError, ValueError, TypeError, KeyError, StopIteration) as exc:
             return "error", f"{type(exc).__name__}: {exc}"[:160]
 
-    def _settle(self, limit_s: float):
-        """The screen once two grabs in a row match, or after `limit_s` whatever moves (a video never settles)."""
+    def settle(self, limit_s: float):
+        """The screen once two screenshots in a row match, or after `limit_s` whatever still moves."""
         deadline = time.monotonic() + limit_s
         frame = self.controller.capture.grab()
         while time.monotonic() < deadline:
@@ -175,20 +175,40 @@ class Executor(threading.Thread):
             frame = following
         return frame
 
+    def _jpeg(self, limit_s: float) -> bytes:
+        return cv2.imencode(".jpg", self.settle(limit_s), [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+
     def _input(self, send) -> None:
         self.inputs.append(time.monotonic())
         send()
 
+    def _shown(self, expected: str) -> str:
+        """Jev's answer to whether the screen shows what the model expected at this look."""
+        answers, _, _ = self.jev.evaluate(self._jpeg(LOOK_SETTLE_S), {"shown": {"type": "noul", "instructions":
+                                          f"Does `screen` show this: {expected}?"}}, label="look")
+        p = probability(answers["shown"].get("noul"))
+        return f"Jev: the screen {'shows' if p >= GATE else 'does not show'} that ({p:.2f})"
+
+    def _verify(self, claim: str) -> tuple[str, str]:
+        """The request counts as done only if Jev's completion check sees it done on the screen."""
+        with self.cond:
+            goal = self.shared.goal
+            steps = [json.dumps(r.action) for r in self.shared.log[self.shared.turn_start:]
+                     if r.result == "done" and not {"look", "wait"} & r.action.keys()]
+        score = self.jev.completion(self._jpeg(LOOK_SETTLE_S), goal, steps, evidence=claim)
+        if score >= COMPLETION_GATE:
+            return "verified", f"Jev sees the request done ({score:.2f})"
+        return "not_verified", f"Jev does not see the request done on the screen ({score:.2f}): it isn't done yet"
+
     def _find(self, target: str) -> tuple[float, float] | None:
         """Jev places the target on the screen as it is now (after it settles), zoomed in once and again."""
-        frame = self._settle(CLICK_SETTLE_S)
-        jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+        jpeg = self._jpeg(CLICK_SETTLE_S)
         started = time.monotonic()
         point = self.jev.locate(jpeg, target)
         if point is None:
-            # Jev's presence answers turn on the wording ("119.93 Hz option in the open refresh rate dropdown" 0.08,
-            # "119.93 Hz" 0.79, the same box both times, study 16): a sure box gets a zoomed look, which still checks.
-            # Likewise a wide list row ("Display Configuration": present 0.98, unique 0.96, box 0.43-0.48).
+            # Jev's presence answer turns on the wording ("119.93 Hz option in the open refresh rate dropdown" 0.08,
+            # "119.93 Hz" 0.79, the same box both times): a box Jev is sure of, or a target it does see, gets the
+            # zoomed look, which checks again.
             answers = (self.jev.trace[-1].get("answers") or {}) if self.jev.trace else {}
             answer = answers.get("location") or {}
             box = answer.get("box")
@@ -206,13 +226,11 @@ class Brain(threading.Thread):
     """The model loop: calls on speech or executor events, streams actions into the shared queue."""
 
     def __init__(self, target, shared: Shared, cond: threading.Condition, executor: Executor, model: str,
-                 effort: str, started: float, trace: list) -> None:
+                 effort: str, started: float) -> None:
         super().__init__(daemon=True, name="queue-brain")
         self.target, self.shared, self.cond, self.executor = target, shared, cond, executor
-        self.model, self.effort, self.started, self.trace = model, effort, started, trace
-        # No kept-alive connections: reusing one after a cancelled stream failed with "bad record mac" (study 16).
-        self.client = httpx.Client(timeout=60, limits=httpx.Limits(max_keepalive_connections=0),
-                                   headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"})
+        self.model, self.effort, self.started = model, effort, started
+        self.client = self._client()
         self.retry = False  # the last call failed: call again at once
         self.phase = ("waiting", 0.0)  # what the loop is doing, and since when (for stall reports)
         self.conversation: list[dict] = []  # earlier turns and what was said to the user
@@ -221,23 +239,28 @@ class Brain(threading.Thread):
         self.heard_at = 0.0  # last new speech
         self.active_until = 0.0  # a task is active until then; afterwards only speech wakes the model
         self.dirty = False
+        self.calling = False  # a model call is in flight
         self.cancel_call = threading.Event()
         self.closed = False
         self.calls: list[dict] = []
         self.said: list[str] = []
         self.last_seen = -1  # executor log length the last call saw
         self.shots: Path | None = None  # a folder to keep each call's screenshot in
-        self.last_thumb = None  # the screen the last call saw
-        self.unchanged = False  # this call's screen is the last call's
-        self.last_batch: list[str] = []  # the last reply's actions
-        self.repeats = 0  # replies in a row that repeated the one before
-        self.looked_only = 0  # replies in a row that did nothing but look
+
+    @staticmethod
+    def _client() -> httpx.Client:
+        # One connection per call: one reused after a cancelled stream failed with "bad record mac".
+        return httpx.Client(timeout=60, limits=httpx.Limits(max_keepalive_connections=0),
+                            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"})
 
     # -- speech, from the scripted user -------------------------------------------------------------------
 
     def hear(self, words: str, speaking: bool) -> None:
         with self.cond:
+            if not self.words:  # a new request starts here
+                self.shared.turn_start, self.shared.finished = len(self.shared.log), False
             self.words, self.speaking = words, speaking
+            self.shared.goal = "\n".join([*(t["user"] for t in self.conversation if "user" in t), words])
             self.heard_at = time.monotonic()
             self.active_until = self.heard_at + SLEEP_S
             self.dirty = True
@@ -249,8 +272,6 @@ class Brain(threading.Thread):
             if self.words:
                 self.conversation.append({"user": self.words})
             self.words, self.speaking = "", False
-
-    calling = False  # a model call is in flight
 
     def busy(self) -> bool:
         """Still working: speech pending, a call running, or the executor with something to do."""
@@ -276,7 +297,8 @@ class Brain(threading.Thread):
                 self.calls.append({"t": round(time.monotonic() - self.started, 2), "speaking": self.speaking,
                                    "words": self.words, "lines": [], "cancelled": False,
                                    "error": f"{type(exc).__name__}: {exc}"[:200]})
-                self._reconnect()
+                self.client.close()
+                self.client = self._client()
                 self.retry = True
             finally:
                 with self.cond:
@@ -291,7 +313,9 @@ class Brain(threading.Thread):
             return True
         if self.dirty:
             return time.monotonic() - self.heard_at >= 0.25  # a short debounce between words
-        # Paused (a look or a failure) waits for this call even with actions still queued behind it.
+        if self.shared.finished:
+            return False
+        # Paused (a look, a failure, an unconfirmed done) waits for this call, even with actions queued behind it.
         stopped = self.shared.state == "paused" or (self.shared.state == "idle" and not self.shared.queue)
         news = len(self.shared.log) != self.last_seen
         return stopped and news and time.monotonic() < self.active_until
@@ -299,27 +323,14 @@ class Brain(threading.Thread):
     def _call(self) -> None:
         self.phase = ("grabbing", round(time.monotonic() - self.started, 2))
         last = self.shared.log[-1].t if self.shared.log else -1.0
-        if time.monotonic() - self.started - last < CALL_SETTLE_S:
-            # Called on the executor's own input: a menu or popup it opened is still drawing (a dropdown clicked
-            # again and again, each screenshot taken before its list showed, study 16).
-            frame = self.executor._settle(CALL_SETTLE_S)
-        else:
-            frame = self.target.grab()
+        just_acted = time.monotonic() - self.started - last < CALL_SETTLE_S
+        frame = self.executor.settle(CALL_SETTLE_S) if just_acted else self.target.grab()
         image = shrink(cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes())
-        thumb = thumbnail(frame)
-        unchanged = self.last_thumb is not None and not self.executor.controller.changed(self.last_thumb, thumb)
-        self.last_thumb = thumb
-        self.unchanged = unchanged
         if self.shots is not None:  # what each call saw, for debugging
             (self.shots / f"call-{len(self.calls)}.jpg").write_bytes(image)
         with self.cond:
             self.last_seen = len(self.shared.log)
             context = {
-                "rule": "No terminal, no shell commands: only the desktop's own windows, menus and settings.",
-                "screen_changed_since_your_last_call": not unchanged,
-                **({"note": "Your last reply repeated the actions you had already sent and run, so they were not run "
-                            "again. Look at the screen: is the request already done? If so reply with nothing."}
-                   if self.repeats else {}),
                 "device": DEVICE,
                 "user_is_speaking": self.speaking, "user_words_so_far" if self.speaking else "user_said": self.words,
                 "conversation_before": self.conversation[-12:],
@@ -339,7 +350,7 @@ class Brain(threading.Thread):
         record = {"t": round(started - self.started, 2), "speaking": self.speaking, "words": self.words,
                   "lines": [], "cancelled": False}
         self.calls.append(record)
-        text, full, first = "", "", None
+        text, full = "", ""
         with self.client.stream("POST", OPENROUTER, json=body) as response:
             if response.status_code != 200:
                 record["error"] = f"HTTP {response.status_code}: {response.read()[:160]!r}"
@@ -352,52 +363,17 @@ class Brain(threading.Thread):
                     continue
                 for choice in json.loads(line[6:]).get("choices", []):
                     piece = (choice.get("delta") or {}).get("content") or ""
-                    if piece and first is None:
-                        first = time.monotonic() - started
-                        record["ttft_s"] = round(first, 3)
-                    text += piece
-                    full += piece
+                    if piece and "ttft_s" not in record:
+                        record["ttft_s"] = round(time.monotonic() - started, 3)
+                    text, full = text + piece, full + piece
                     while "\n" in text:
                         done, text = text.split("\n", 1)
                         self._apply(done, record, started)
-                if len(record["lines"]) >= MAX_LINES:  # a runaway reply repeating itself: cut it off
-                    record["cut"] = True
-                    break
-        if record["cancelled"]:
-            self._reconnect()  # a stream left half-read: reusing its TLS connection failed ("bad record mac")
-        else:
+        if not record["cancelled"]:
             self._apply(text, record, started)  # the last line, which has no newline after it
         if not record["lines"]:
             record["raw"] = full[:600]  # a reply with no action in it: what it said instead
-        self._check_repeat(record)
-        acted = [line for line in record["lines"] if not {"skipped", "say", "ask"} & line.keys()]
-        self.looked_only = self.looked_only + 1 if acted and all("look" in line for line in acted) else 0
         record["total_s"] = round(time.monotonic() - started, 3)
-
-    def _check_repeat(self, record: dict) -> None:
-        """A reply that is exactly the previous reply's actions again: the first time, the next call is told so and
-        asked whether the request is already done; the second time it counts as done. ("S X 1.5 Enter look" sent a
-        dozen times widened a Blender house to 7e14 m, study 16.)"""
-        batch = [json.dumps({k: v for k, v in line.items() if k != "at_s"}, sort_keys=True)
-                 for line in record["lines"] if "skipped" not in line and "say" not in line and "ask" not in line]
-        if len(batch) >= MIN_REPEAT and batch == self.last_batch and not self.unchanged:
-            # Only a whole recipe sent again after it visibly did something: one that had no effect is a fair retry,
-            # and a short one ("click Save" in a print dialog, then in the file dialog it opens) is often right.
-            self.repeats += 1
-            record["repeat"] = self.repeats
-            with self.cond:
-                self.shared.queue.clear()  # those actions already ran once
-                if self.repeats >= 2:
-                    self.active_until = 0.0  # done: only new speech wakes the model now
-                self.cond.notify_all()
-        else:
-            self.repeats = 0
-        self.last_batch = batch
-
-    def _reconnect(self) -> None:
-        self.client.close()
-        self.client = httpx.Client(timeout=60, limits=httpx.Limits(max_keepalive_connections=0),
-                                   headers=dict(self.client.headers))
 
     def _apply(self, line: str, record: dict, started: float) -> None:
         line = line.strip().strip("`").strip()
@@ -409,13 +385,6 @@ class Brain(threading.Thread):
             record["lines"].append({"unparsed": line[:120]})
             return
         if not isinstance(action, dict) or not action:
-            return
-        if "look" in action and self.looked_only >= 1 and self.unchanged and not any(
-                not {"skipped", "say", "ask"} & line.keys() for line in record["lines"]):
-            # A reply that only looks again, right after one that only looked, at a screen that hasn't changed: the model
-            # is stuck (looks repeated until the watchdog stopped a finished Blender house, study 16). Either alone ended
-            # turns early: a material panel filling in reads as unchanged; a wallpaper turn looked twice.
-            record["lines"].append({"at_s": round(time.monotonic() - started, 3), "skipped": action})
             return
         record["lines"].append({"at_s": round(time.monotonic() - started, 3), **action})
         with self.cond:
@@ -448,7 +417,7 @@ class QueueAgent:
         profile = DeviceProfile("linux", (0, 0, w, h), "mouse", time.time())
         self.shared, self.cond = Shared(), threading.Condition()
         self.executor = Executor(self.controller, self.jev, profile, self.shared, self.cond, self.started, self.trace)
-        self.brain = Brain(target, self.shared, self.cond, self.executor, model, effort, self.started, self.trace)
+        self.brain = Brain(target, self.shared, self.cond, self.executor, model, effort, self.started)
         self.brain.shots = log_dir
         self.executor.start()
         self.brain.start()

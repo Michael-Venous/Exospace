@@ -102,16 +102,12 @@ def handle(cmd: dict) -> None:
     elif op == "move":
         move(cmd["x"], cmd["y"])
     elif op in ("click", "tap"):
-        # As a hand on a mouse does: arrive, then press and release. A press in the same instant as the move
-        # was ignored by a Qt popup list (Display settings' refresh rate, study 16).
         move(cmd["x"], cmd["y"])
-        time.sleep(0.05)
         button = BTN[cmd.get("button", "left")]
         for _ in range(cmd.get("count", 1)):
             emit(POINTER, (EV_KEY, button, 1))
-            time.sleep(0.05)
             emit(POINTER, (EV_KEY, button, 0))
-            time.sleep(0.05)
+            time.sleep(0.03)
     elif op == "scroll":
         for _ in range(abs(cmd["dy"])):
             emit(POINTER, (EV_REL, REL_WHEEL, -1 if cmd["dy"] > 0 else 1))
