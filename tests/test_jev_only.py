@@ -604,6 +604,14 @@ class JevOnlyTests(unittest.TestCase):
         self.assertEqual(self.step(goal, left=.28, launcher=.99, history=opened).type, "click")
         self.assertEqual(self.step(goal, left=.28, history=opened, run="s").type, "done")
 
+    def test_an_app_launched_but_not_in_front_leaves_its_line_to_route(self):
+        goal, opened = "open up the whatsapp app", ["skill(open_app {'name': 'whatsapp'})"]
+        name = str(spans(goal).index("whatsapp"))
+        icon = dict(fits=.1, app_present=.95, app_name=name, app=(.58, .59, .95, .99), looks=((.58, .97),))
+        self.assertEqual(self.step(goal, left=.26, opened_front=.12, history=opened, **icon).brief(),
+                         "click(580,970)")  # its taskbar icon
+        self.assertEqual(self.step(goal, left=.26, history=opened, run="s").type, "done")
+
     def test_each_line_routes_again(self):
         first = "open up discord"
         self.plan(first, app_name=str(spans(first).index("discord")))  # fits: routing ends

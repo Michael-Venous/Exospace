@@ -476,7 +476,11 @@ class JevOnlyPlanner:
         held = finished and first["next"].get("choice") in CLICKS and (ctx.history[-1:] == [doubted] or listed)
         fresh = opened and first["next"].get("choice") == "new_tab" and probability(first["fresh"].get("noul")) >= GATE \
             and any(s.startswith("skill(open_app ") for s in ctx.history[self.since:])
-        finished = (finished or fresh) and not held
+        # Nor a line that launched an app still not in front: Whatsie, running behind Chrome's whatsapp.com, stayed
+        # behind after its open_app, and the page read the line done (0.74) with the app in front 0.12 (2026-10-21).
+        hidden = "opened_front" in first and probability(first["opened_front"].get("noul")) < GATE \
+            and _just_opened(ctx.history[self.since:])
+        finished = (finished or fresh) and not held and not hidden
         if finished and len(answered) > 1:
             self._advance(ctx)
             answered, finished = answered[1:], False  # the next line's first step
@@ -487,6 +491,10 @@ class JevOnlyPlanner:
         texts = spans(line, MAX_SPANS)
         named = {str(i) for i in range(len(texts))}
         routing = "fits" in answers
+        if hidden and not routing:
+            # Routed to the page in front, whatsapp.com read as the line's site (0.53): its links aren't the app's.
+            self.routed = False
+            return self._look_again(ctx, MAX_LOADING_WAITS) or _fail("the app opened never came in front")
         if probability(answers["question"].get("noul")) >= GATE \
                 and (finished or probability(answers["complete"].get("noul")) >= GATE):
             # Jev called "what is this page about?" complete and said "Done." with no answer. Only then: "search up
@@ -823,6 +831,8 @@ class JevOnlyPlanner:
         own steps alone, 2/2), and with `route` the questions that find its app, asked apart with the line's own
         `steps` ("close discord" after the clicks that opened it fitted Discord in front 0.41, 0.88 alone)."""
         options = {str(i): json.dumps(text, ensure_ascii=False) for i, text in enumerate(spans(line, MAX_SPANS))}
+        front = {"opened_front": {"type": "noul", "instructions": OPENED_FRONT.format(app=json.dumps(self.opened))}} \
+            if self.opened and ctx.profile.os in OPEN_APP_KEYS else {}  # firmware has no apps
         # Until Jev sees the app in front can take the line's next step, each step also picks the app to use.
         routing = {"fits": {"type": "noul", "instructions": FITS_QUESTION},
                    "app_present": {"type": "noul", "instructions": APP_PRESENT},
@@ -834,12 +844,12 @@ class JevOnlyPlanner:
                    "browser_named": {"type": "noul", "instructions": BROWSER_NAMED},
                    "browser_front": {"type": "noul", "instructions": BROWSER_FRONT},
                    "launcher": {"type": "noul", "instructions": LAUNCHER_OPEN},
-                   "window": {"type": "noul", "instructions": WINDOW}} \
-            | ({"opened_front": {"type": "noul", "instructions": OPENED_FRONT.format(app=json.dumps(self.opened))}}
-               if self.opened else {}) if route and ctx.profile.os in OPEN_APP_KEYS else {}  # firmware has no apps
+                   "window": {"type": "noul", "instructions": WINDOW}} | front \
+            if route and ctx.profile.os in OPEN_APP_KEYS else {}
         irreversible = {"irreversible": {"type": "noul", "instructions": NEXT_IRREVERSIBLE}} if guard else {}
+        # Also once routed: a launch can leave its app behind the window in front (see `hidden`).
         drawing = {"drawing": {"type": "noul", "instructions": DRAWING},
-                   "fresh": {"type": "noul", "instructions": FRESH}} if opened else {}
+                   "fresh": {"type": "noul", "instructions": FRESH}} | front if opened else {}
         stepping = irreversible | drawing | {
             "complete": {"type": "noul", "instructions": COMPLETION_QUESTION},
             "question": {"type": "noul", "instructions": QUESTION},
