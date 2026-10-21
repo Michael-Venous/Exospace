@@ -630,7 +630,11 @@ class JevOnlyPlanner:
             # the page's Gmail link as the step's control.
             step = "click"
         clicked_last = bool(ctx.history) and ctx.history[-1].startswith("click(")
-        if step == "type" and not (clicked_last or ctx.history and _KEPT.fullmatch(ctx.history[-1])):
+        # A new tab puts the caret in its address bar: "Search up genghis khan" right after one boxed from the
+        # address bar to the page's search box, and the click between them typed into nothing (2026-10-21).
+        tabbed = bool(inputs) and bool(re.fullmatch(rf"hotkey\((CTRL|GUI)\+{TAB_KEYS['new_tab']}\)", inputs[-1])) \
+            and probability(answers["focused"].get("noul")) >= GATE
+        if step == "type" and not (clicked_last or tabbed or ctx.history and _KEPT.fullmatch(ctx.history[-1])):
             # Focus doesn't show in a screenshot: a "type" not right after a click went nowhere, so the field
             # is clicked first (nrebolloso, origin/live-speech b219465). Keys that edited text leave the caret where
             # they did: "replace with gang" after "world" was erased clicked mid-word in "hello" (2026-10-21).

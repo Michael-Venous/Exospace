@@ -11,7 +11,7 @@ import numpy as np
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_first import JevFirstPlanner
-from brain.agent.jev_only import FAILED, LOOK_AGAIN, MAX_WAITS, JevOnlyPlanner
+from brain.agent.jev_only import FAILED, LOOK_AGAIN, MAX_WAITS, WAIT, JevOnlyPlanner
 from brain.agent.triage import spans
 from brain.cancel import CancelToken
 from brain.config import Config
@@ -329,6 +329,14 @@ class JevOnlyTests(unittest.TestCase):
     def test_typing_not_right_after_a_click_clicks_the_field_first(self):
         goal = "search for cats"
         actions = self.plan(goal, next="type", text=str(spans(goal, 250).index("cats")), history=["hotkey(GUI)"])
+        self.assertEqual([a.type for a in actions], ["click", "type_text"])
+
+    def test_typing_right_after_a_new_tab_types_into_its_focused_address_bar(self):
+        goal = "open a new tab and search for cats"
+        text = str(spans(goal, 250).index("cats"))
+        actions = self.plan(goal, next="type", text=text, focused=.9, history=["hotkey(CTRL+T)", WAIT.brief()])
+        self.assertEqual([a.type for a in actions], ["type_text"])
+        actions = self.plan(goal, next="type", text=text, focused=.1, history=["hotkey(CTRL+T)", WAIT.brief()])
         self.assertEqual([a.type for a in actions], ["click", "type_text"])
 
     def test_filled_box_is_selected_before_typing(self):
