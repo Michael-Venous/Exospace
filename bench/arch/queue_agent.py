@@ -37,6 +37,7 @@ from brain.types import Action, DeviceProfile
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
 DEVICE = "Linux laptop, KDE Plasma desktop. The GUI key opens the application launcher. The panel hides itself."
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
+READ_S = 3.0  # longest wait for the model's next streamed bytes, its first token included
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
 # Each model on one host. Qwen's quality depends on it (study 17: 192/192 pointed on ModelRun, 15/192 on Cerebras);
@@ -251,8 +252,9 @@ class Brain(threading.Thread):
 
     @staticmethod
     def _client() -> httpx.Client:
-        # One connection per call: one reused after a cancelled stream failed with "bad record mac".
-        return httpx.Client(timeout=60, limits=httpx.Limits(max_keepalive_connections=0),
+        # One connection per call: one reused after a cancelled stream failed with "bad record mac". A reply that
+        # stalls READ_S (a provider's first token once took 8.4 s against a usual 0.45 s) fails and is asked again.
+        return httpx.Client(timeout=httpx.Timeout(60, read=READ_S), limits=httpx.Limits(max_keepalive_connections=0),
                             headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"})
 
     # -- speech, from the scripted user -------------------------------------------------------------------
