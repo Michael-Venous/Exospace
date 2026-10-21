@@ -36,6 +36,7 @@ MODELS = {"deepseek": ("deepseek/deepseek-v4.1-flash-1017", ""), "gemma31b": ("g
           "luna": ("openai/gpt-6-luna", ""), "haiku": ("anthropic/claude-haiku-5.5", ""),
           "qwen27b": ("qwen/qwen3.8-27b", ""),
           "qwen27b-think": ("qwen/qwen3.8-27b", "low"), "glm": ("z-ai/glm-5.3-flashx", "minimal"),
+          "glm53flash": ("z-ai/glm-5.3-flash", "minimal"),
           "nemotron": ("nvidia/nemotron-3.5-super-vl", ""), "mimo": ("xiaomi/mimo-v2.6-flash", ""),
           "step5": ("stepfun/step-5-preview", "minimal"), "minimax": ("minimax/minimax-m3.1-flash:free", "minimal")}
 CHROME = ("setsid -f google-chrome-stable --user-data-dir=/tmp/exo-chrome --no-first-run --no-default-browser-check "

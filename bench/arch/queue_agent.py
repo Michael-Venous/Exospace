@@ -42,10 +42,14 @@ LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
 # Each model on one host. Qwen's quality depends on it (study 17: 192/192 pointed on ModelRun, 15/192 on Cerebras);
 # DeepSeek was fastest on Together (model check: 0.33 s first token p50).
-PINNED = {"qwen/qwen3.8-27b": "modelrun/fp4", "deepseek/deepseek-v4.1-flash-1017": "together"}
+PINNED = {"qwen/qwen3.8-27b": "modelrun/fp4", "deepseek/deepseek-v4.1-flash-1017": "together",
+          "z-ai/glm-5.3-flash": "together"}
 # Pointing models that can click in Jev's place, each on the host study 17 measured it on.
-CLICKERS = {"qwen": ("qwen/qwen3.8-27b", PINNED["qwen/qwen3.8-27b"]),
-            "deepseek": ("deepseek/deepseek-v4.1-flash-1017", "inference-net/fp8")}
+# (model, host, reasoning effort: "" = off, x/y in pixels). GLM 5.3 Flash's hosts all require some reasoning, and
+# it answers in pixels.
+CLICKERS = {"qwen": ("qwen/qwen3.8-27b", PINNED["qwen/qwen3.8-27b"], "", False),
+            "deepseek": ("deepseek/deepseek-v4.1-flash-1017", "inference-net/fp8", "", False),
+            "glm": ("z-ai/glm-5.3-flash", PINNED["z-ai/glm-5.3-flash"], "minimal", True)}
 SURE_BOX = 0.7  # Jev's box confidence at which a target its presence check refused still gets a zoomed look
 PROMPT = """You operate a computer for a user who speaks to you. You see its screen; you act only through
 its keyboard and mouse. The user's words arrive while they speak.

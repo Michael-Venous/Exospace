@@ -130,7 +130,8 @@ class Candidate:
     model: str
     providers: tuple[str, ...]  # probed in turn; the run pins the fastest that answers
     effort: str = ""  # "" = reasoning off
-    native: str = "json"  # "json": GROUND_PROMPT's 0-1000 x/y; "tars": UI-TARS click(point) in resized pixels
+    native: str = "json"  # "json": GROUND_PROMPT's 0-1000 x/y; "pixel": x/y in the image's pixels;
+    # "tars": UI-TARS click(point) in resized pixels
     schema: bool = True  # structured output; OpenRouter drops a pinned provider that lacks it (Cerebras)
 
 
@@ -164,11 +165,26 @@ CANDIDATES = [
     Candidate("Qwen 3.5 397B-A17B", "qwen/qwen3.5-397b-a17b", ("alibaba", "deepinfra/fp8", "parasail/fp8"),
               schema=False),
     Candidate("Qwen3-VL 235B-A22B", "qwen/qwen3-vl-235b-a22b-instruct", ("deepinfra/fp8", "parasail/fp8")),
+    # One candidate per host: does DeepSeek point better on another host (2026-10-21)? And GLM 5.3 Flash, whose
+    # hosts all refuse reasoning off. DeepSeek's own and Baseten's endpoints take no images.
+    *[Candidate(f"DeepSeek V4.1 Flash @{p}", "deepseek/deepseek-v4.1-flash-1017", (p,))
+      for p in ("together", "fireworks", "deepinfra/fp8", "parasail/fp8", "morph/fp8", "makora/fp8")],
+    *[Candidate(f"GLM 5.3 Flash @{p}", "z-ai/glm-5.3-flash", (p,), "minimal", schema=p not in ("z-ai/fp8",))
+      for p in ("together", "fireworks", "baseten/fp8", "parasail/fast", "deepinfra/fp4", "z-ai/fp8")],
+    *[Candidate(f"GLM 5.3 Flash px @{p}", "z-ai/glm-5.3-flash", (p,), "minimal", native="pixel")
+      for p in ("together", "deepinfra/fp4")],
+    *[Candidate(f"DeepSeek V4.1 Flash px @{p}", "deepseek/deepseek-v4.1-flash-1017", (p,), native="pixel")
+      for p in ("together", "morph/fp8")],
 ]
 # x and y required: with only "found" required, DeepSeek V4.1 Flash answered {"found": true} and nothing else.
 SCHEMA = {"type": "object", "properties": {"found": {"type": "boolean"}, "x": {"type": "number"},
                                          "y": {"type": "number"}}, "required": ["found", "x", "y"]}
 SYSTEM = "You locate controls in screenshots. Reply with a single JSON object only. Its JSON schema: " + json.dumps(SCHEMA)
+# GLM 5.3 Flash answers in the image's pixels whatever the prompt asks (its 0-1000 replies were pixels: x 0.80
+# and y 0.80 of the truth on 1280 x 800 screens), so it is asked in pixels.
+PIXEL_PROMPT = ('Find {target}. Reply with JSON {{"found": true|false, "x": ..., "y": ...}}: the centre of that '
+                "control in pixels of this {size} image, x from the left edge and y from the top edge; found false "
+                "if it isn't visible.")
 # UI-TARS 1.5's own grounding prompt, with a way to say the target isn't there.
 TARS_PROMPT = """You are a GUI agent. You are given a task and your action history, with screenshots. You need to \
 perform the next action to complete the task.
@@ -199,9 +215,10 @@ class Router:
             messages = [{"role": "user", "content": [{"type": "text", "text": TARS_PROMPT.format(target=target)},
                                                      picture]}]
         else:
+            prompt = (PIXEL_PROMPT.format(target=target, size="x".join(map(str, image_size(image))))
+                      if self.candidate.native == "pixel" else GROUND_PROMPT.format(target=target))
             messages = [{"role": "system", "content": SYSTEM},
-                        {"role": "user", "content": [picture, {"type": "text",
-                                                               "text": GROUND_PROMPT.format(target=target)}]}]
+                        {"role": "user", "content": [picture, {"type": "text", "text": prompt}]}]
         body = {"model": self.candidate.model, "messages": messages, "temperature": 0,
                 "provider": {"order": [self.provider], "allow_fallbacks": False}, "usage": {"include": True}}
         if self.candidate.schema and self.candidate.native != "tars":  # as study 9
@@ -245,7 +262,8 @@ def point_of(text: str, candidate: Candidate, size: tuple[int, int]) -> tuple[fl
         data = parse_json(text)
         if not data.get("found"):
             return None
-        return float(data["x"]) / 1000, float(data["y"]) / 1000
+        scale = size if candidate.native == "pixel" else (1000, 1000)
+        return float(data["x"]) / scale[0], float(data["y"]) / scale[1]
     except (ValueError, KeyError, TypeError) as exc:
         raise BadReply(f"{exc}: {text[:120]!r}") from None
 
