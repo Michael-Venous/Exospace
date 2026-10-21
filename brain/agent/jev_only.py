@@ -73,6 +73,17 @@ TEXT_QUESTION = ("Which text does the next step type, or erase? It must be copie
 # key at a time read as the same step stuck three times over (2026-10-20).
 LABELLED = ("Does the `goal` name the spot the next step clicks by labels along two edges of a grid or table, such as "
             "a column and a row?")
+# Placed by the grid's own labels: the words of the goal that name the place, picked by the first look, tell one zoom
+# on each edge's labels which label to box, around the first look's box of it. On blank Calc sheets (a 1280 and a 1916
+# screen, 10 cells, 2 tries, 2 rounds) the cell where they crossed was the one named 75 of 80 times, 3 of the misses a
+# row or column off; the first look's own box 2-6 of 20. A zoom told a split label ("k", "27") lost "k27" and "b1",
+# and a zoom around the first look's cell lost rows 10 away (2026-10-20). A first look already in that cell stays:
+# on Wikipedia's largest-cities table, "click the city in the third row of the table", the crossing put the click at
+# the City header's centre, x 0.245, past the "Tokyo" link main clicked at 0.240; main 3/3, crossing 0/3 (2026-10-20).
+PLACE_NAME = "Which words of the `goal` name the place the next step acts on, such as a cell's column and row?"
+EDGES = ("column", "row")
+EDGE_LABEL = "The label of the {edge} the `goal` names, on the grid's edge."
+EDGE_ZOOM = "the label of the {edge} that \"{name}\" names, along the grid's edge"
 PLACED = "Is the place the `goal` names the one selected in `screen`, such as the selected cell, item or field?"
 PLACE_WAY = "Which way from the place selected in `screen` is the place the `goal` names?"
 PLACE_WAYS = {"same": "It is the place selected", "up": "Above it", "down": "Below it", "left": "Left of it",
@@ -668,6 +679,8 @@ class JevOnlyPlanner:
                         or _fail("its target isn't clearly visible", planner=True)
                 first = _edges(answers["target"], size, padded)
                 point = min((_narrowed(p, b, first) for p, b in looks), key=lambda p: math.dist(p, point))
+            elif labelled:
+                point = self._by_labels(image, ctx, line, answers, size, padded, texts, point) or point
             if step == "copy":
                 actions.append(Action("skill", name="select", args={"x": round(point[0], 3), "y": round(point[1], 3)}))
             else:
@@ -754,6 +767,26 @@ class JevOnlyPlanner:
         return Plan(f"Jev next step: {step}", actions, [], blind=step in ("address", "new_tab"),
                     in_place=in_place)
 
+    def _by_labels(self, image: bytes, ctx: StepContext, line: str, answers: dict, size: tuple[int, int],
+                   padded: tuple[int, int], texts: list[str],
+                   first: tuple[float, float]) -> tuple[float, float] | None:
+        """The cell `line` names by a grid's labels, its column and row each found by a zoom on its label told the
+        words that name the place: the `first` look's point where it lies in that cell, else where they cross; None
+        where Jev picks no words or a zoom finds no label."""
+        choice = answers["place"].get("choice")
+        at = [box_center(answers[edge], size, padded) for edge in EDGES]
+        if choice not in {str(i) for i in range(len(texts))} or None in at:
+            return None
+        state = {"goal": line}
+        with ThreadPoolExecutor(2) as pool:
+            (column, _, across), (row, _, down) = pool.map(
+                lambda edge, center: zoom(self.jev, image, state, EDGE_ZOOM.format(edge=edge, name=texts[int(choice)]),
+                                          center, ZOOM_WINDOW, ctx.run_id, ctx.step), EDGES, at)
+        if not (column and row and across and down):
+            return None
+        inside = across[0] <= first[0] <= across[2] and down[1] <= first[1] <= down[3]
+        return first if inside else (column[0], row[1])
+
     def _look_again(self, ctx: StepContext, limit: int = MAX_WAITS, anytime: bool = False) -> Plan | None:
         """A target not visible yet is often a page still loading: right after a launch, YouTube's search box
         wasn't there and Flash took the rest (30 s on the Pi). Wait briefly instead, up to `limit` in a row
@@ -822,7 +855,9 @@ class JevOnlyPlanner:
             "pending": {"type": "noul", "instructions": PENDING},
             "opens": {"type": "noul", "instructions": OPENS},
             "labelled": {"type": "noul", "instructions": LABELLED},
-        }
+            "place": {"type": "choice", "instructions": PLACE_NAME, "criteria": {"none": "The goal names no place."}
+                      | options},
+        } | {edge: {"type": "box", "instructions": EDGE_LABEL.format(edge=edge)} for edge in EDGES}
         return image, "jev", ([(routing, {"goal": line, "executed_steps": steps})] if routing else []) \
             + [(stepping, {"goal": line, "executed_steps": context})]
 

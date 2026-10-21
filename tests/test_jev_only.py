@@ -31,7 +31,7 @@ class JevOnlyTests(unittest.TestCase):
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, text_odds=None, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
              lookup=.05, pending=.05, opens=.05, fresh=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two",
-             labelled=.05, on=.95, way="same", far="1"):
+             labelled=.05, on=.95, way="same", far="1", place="none"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text, "probabilities": text_odds or {}}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
@@ -41,7 +41,8 @@ class JevOnlyTests(unittest.TestCase):
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
                 "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined},
-                "labelled": {"noul": labelled}, "on": {"noul": on}, "way": {"choice": way}, "far": {"choice": far}}
+                "labelled": {"noul": labelled}, "on": {"noul": on}, "way": {"choice": way}, "far": {"choice": far},
+                "place": {"choice": place}, "column": BOX, "row": BOX}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
         profile = DeviceProfile(os, Rect(0, 0, 400, 300), device, 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
@@ -694,9 +695,21 @@ class JevOnlyTests(unittest.TestCase):
         rest = self.plan(goal, on=.9, history=["click(300,300)", "hotkey(DOWN)", "hotkey(DOWN)"])
         self.assertEqual([a.brief() for a in rest], ["type_text('hello')", "hotkey(ENTER)"])
         self.assertTrue(self.last.in_place)
+        # placed where the zooms on its column's and row's labels, told the words that name it, cross
+        named = self.plan(goal, next="fill", text=hello, labelled=.85, place=str(spans(goal).index("d 5")),
+                          looks=((.2, .9), (.8, .4)), boxes=((.15, .0, .25, .05), (.0, .35, .05, .45)), run="n")
+        self.assertEqual([a.brief() for a in named], ["click(200,400)"])
+        self.assertIn('"d 5"', self.zoom.call_args_list[0].args[3])
         self.plan(goal, next="click", labelled=.85, run="s")
         with patch("brain.agent.jev_only.mark", return_value=b"marked"):  # the sure click is judged marked
             self.assertEqual(self.step(goal, on=.1, way="same", history=["click(300,300)"], run="s").type, "fail")
+
+    def test_a_first_look_already_in_the_labelled_cell_keeps_its_point(self):
+        goal = "click the city in the third row of the table"  # a link's text, not the column's centre
+        place = str(spans(goal).index("third row"))
+        kept = self.plan(goal, labelled=.85, place=place, looks=((.2, .9), (.8, .4)),
+                         boxes=((.25, .0, .35, .05), (.0, .25, .05, .35)))
+        self.assertEqual([a.brief() for a in kept], ["click(300,300)"])
 
     def test_text_typed_into_a_cell_is_entered_in_the_same_step(self):
         goal = "add hello to b1"
