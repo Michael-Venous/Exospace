@@ -14,7 +14,7 @@ from brain.agent.memory import Memory
 from brain.agent.race import RaceExecutor
 import brain.agent.triage as triage_module
 from brain.agent.jev import JEV_SIDE
-from brain.agent.triage import Triage, _crop_around, answer_to_pending, spans, triage
+from brain.agent.triage import Triage, _crop_around, answer_to_pending, grid_pitch, spans, triage
 from brain.cancel import CancelToken
 from brain.types import Action, DeviceProfile, Rect
 
@@ -67,6 +67,16 @@ class TriageTests(unittest.TestCase):
         for window, side in ((.3, 960), (.8, JEV_SIDE)):  # a small target enlarged 2.5x, a wide one only to Jev's size
             crop, _ = _crop_around(frame, (.5, .3), window)
             self.assertEqual(max(cv2.imdecode(np.frombuffer(crop, np.uint8), 1).shape[:2]), side)
+
+    def test_a_grid_pitch_is_read_from_its_lines_not_its_text(self):
+        sheet = np.full((720, 1280), 255, np.uint8)
+        sheet[157::14, :] = sheet[:, 29::73] = 200
+        cv2.putText(sheet, "hello 42", (250, 300), cv2.FONT_HERSHEY_SIMPLEX, .5, 0)
+        frame = cv2.imencode(".jpg", sheet)[1].tobytes()
+        self.assertAlmostEqual(grid_pitch(frame, (.3, .4), 0) * 720, 14, delta=.3)
+        self.assertAlmostEqual(grid_pitch(frame, (.3, .4), 1) * 1280, 73, delta=.5)
+        blank = cv2.imencode(".jpg", np.full((720, 1280), 255, np.uint8))[1].tobytes()
+        self.assertIsNone(grid_pitch(blank, (.3, .4), 0))
 
     def test_ambiguous_target_goes_to_the_planner(self):
         self.jev.evaluate.return_value = self.answer("act_now", unique=.3)

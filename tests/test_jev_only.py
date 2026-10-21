@@ -41,7 +41,7 @@ class JevOnlyTests(unittest.TestCase):
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
                 "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined},
-                "labelled": {"noul": labelled}, "on": {"noul": on}, "way": {"choice": way}, "far": {"choice": far}}
+                "labelled": {"noul": labelled}, "on": {"noul": on}, "way": {"choice": way}, "far": {"choice": far}, "selected": target}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
         profile = DeviceProfile(os, Rect(0, 0, 400, 300), device, 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
@@ -690,8 +690,8 @@ class JevOnlyTests(unittest.TestCase):
         self.zoom.assert_not_called()
         # a row off: an arrow key toward it, then the rest of the step once it is selected
         moved = self.plan(goal, on=.1, way="down", far="2", history=["click(300,300)"])
-        self.assertEqual([a.brief() for a in moved], ["hotkey(DOWN)", "hotkey(DOWN)"])
-        rest = self.plan(goal, on=.9, history=["click(300,300)", "hotkey(DOWN)", "hotkey(DOWN)"])
+        self.assertEqual([a.brief() for a in moved], ["click(300,380)"])  # two of the selected box's heights down
+        rest = self.plan(goal, on=.9, history=["click(300,300)", "click(300,380)"])
         self.assertEqual([a.brief() for a in rest], ["type_text('hello')", "hotkey(ENTER)"])
         self.assertTrue(self.last.in_place)
         self.plan(goal, next="click", labelled=.85, run="s")

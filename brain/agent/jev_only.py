@@ -28,7 +28,7 @@ import numpy as np
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev import COMPLETION_QUESTION, IRREVERSIBLE_KINDS, JevVision, probability
-from brain.agent.triage import (APPROVED, GATE, ZOOM_WINDOW, Box, beside, box_center, box_contains, box_size, encloses, mark, refine,
+from brain.agent.triage import (APPROVED, GATE, ZOOM_WINDOW, Box, beside, box_center, box_contains, box_size, encloses, grid_pitch, mark, refine,
                                 spans, zoom)
 from brain.skills import OPEN_APP_KEYS
 from brain.types import Action
@@ -69,8 +69,8 @@ TEXT_QUESTION = ("Which text does the next step type, or erase? It must be copie
 # row or two off (D5 clicked D4, C8 C7, both read done), and its zooms lose the headers (E14 failed). The goal named
 # so: 0.75-0.89 for cells, 0.07-0.10 for other goals. On the screen after the click, the named cell selected read
 # 0.83-0.95, another 0.01-0.23, and the way to it was right 21 of 22 times. How far: rows 1-8 away exactly (24/24),
-# columns 3-4 away as 2 (4/4), and a move short is checked again. One cell's move barely changes the screen, so a
-# key at a time read as the same step stuck three times over (2026-10-20).
+# columns 3-4 away as 2 (4/4), and a move short is checked again. The move is a click that many of the selected
+# place's own widths or heights from it.
 LABELLED = ("Does the `goal` name the spot the next step clicks by labels along two edges of a grid or table, such as "
             "a column and a row?")
 PLACED = "Is the place the `goal` names the one selected in `screen`, such as the selected cell, item or field?"
@@ -80,6 +80,8 @@ PLACE_WAYS = {"same": "It is the place selected", "up": "Above it", "down": "Bel
 PLACE_FAR = ("How many places from the place selected in `screen` is the place the `goal` names, counted along the row "
              "or column labels of the grid?")
 PLACE_FARS = {str(n): f"{n} away" for n in range(1, 13)} | {"more": "More than 12 away"}
+PLACE_SELECTED = "The place selected in `screen`, such as the selected cell, item or field."
+PLACE_STEPS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 MAX_PLACES = 3  # moves toward a named place before the line fails
 REPLACE_QUESTION = ("Is the input the next step types into a single-line box, such as a search, address or form "
                     "field, that already holds text?")
@@ -416,15 +418,23 @@ class JevOnlyPlanner:
             self.joined |= joined
         answered = replies[len(looks) + len(shown):len(replies) - len(rests)]
         if placing:
-            placed = replies[len(looks) + len(shown) - 1][0]
+            placed, size, padded = replies[len(looks) + len(shown) - 1]
             way = placed["way"].get("choice")
             if probability(placed["on"].get("noul")) < GATE:
-                if way not in ("up", "down", "left", "right") or placing[2] >= MAX_PLACES:
+                center = box_center(placed["selected"], size, padded)
+                if way not in PLACE_STEPS or center is None or placing[2] >= MAX_PLACES:
                     return _fail("the place it names isn't the one selected", planner=True)
                 far = placed["far"].get("choice")
-                keys = [Action("hotkey", keys=(way.upper(),))] * (12 if far == "more" else int(far) if far in PLACE_FARS else 1)
-                self.placing = keys[-1].brief(), placing[1], placing[2] + 1
-                return Plan(f"Jev moves {len(keys)} {way} to the place named", keys, [])
+                n = 12 if far == "more" else int(far) if far in PLACE_FARS else 1
+                # From the point clicked, inside the selected place, by the grid's own spacing: Jev's box for the
+                # selected cell was ~3 rows tall, and a click 1 up from A2 went to the column labels (2026-10-20).
+                (dx, dy), (w, h) = PLACE_STEPS[way], box_size(placed["selected"], size, padded)
+                clicked = _POINT.match(placing[0])
+                x, y = (int(clicked[2]) / 1000, int(clicked[3]) / 1000) if clicked else center
+                pitch = grid_pitch(image, (x, y), 1 if dx else 0) or (w if dx else h)
+                click = Action("click", x=min(max(x + dx * n * pitch, 0.0), 1.0), y=min(max(y + dy * n * pitch, 0.0), 1.0))
+                self.placing = click.brief(), placing[1], placing[2] + 1
+                return Plan(f"Jev clicks {n} {way} to the place named", [click], [])
             if placing[1].actions:
                 return placing[1]
         missing = bool(typed) and probability(replies[len(looks)][0]["typed"].get("noul")) < MISSING
@@ -851,11 +861,12 @@ class JevOnlyPlanner:
     @staticmethod
     def _placed(image: bytes, line: str) -> Ask:
         """Whether the place the line names is the one selected ("on"), else which way it is ("way") and how many
-        places away ("far"). Asked without
+        places away ("far") from the place selected ("selected"). Asked without
         the steps: with F6 selected for "In f 9", "click(340,325)" among them sent it up (4/4), without them down (4/4)."""
         return image, "placed", [({"on": {"type": "noul", "instructions": PLACED},
                                    "way": {"type": "choice", "instructions": PLACE_WAY, "criteria": PLACE_WAYS},
-                                   "far": {"type": "choice", "instructions": PLACE_FAR, "criteria": PLACE_FARS}},
+                                   "far": {"type": "choice", "instructions": PLACE_FAR, "criteria": PLACE_FARS},
+                                   "selected": {"type": "box", "instructions": PLACE_SELECTED}},
                                   {"goal": line})]
 
     def _copy_spot(self, image: bytes, ctx: StepContext, lines: list[str], context: list[str]) -> tuple[float, float] | None:

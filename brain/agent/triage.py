@@ -289,6 +289,42 @@ def mark(jpeg: bytes, point: tuple[float, float]) -> bytes:
     return buf.tobytes()
 
 
+def grid_pitch(jpeg: bytes, point: tuple[float, float], axis: int, reach: float = 0.2, band: float = 0.03,
+               line: float = 12) -> float | None:
+    """The spacing of the grid lines around `point` across rows (`axis` 0) or columns (1), as a fraction of the
+    screen: the usual gap between the lines that cross a band, the median over five bands around it. A band's median
+    keeps those lines, which cross all of it, and drops the text in the cells; a band over the grid's labels reads
+    off (Calc's columns from row 1: 34 px of 73), the others outvote it. On 6 Calc screens, 120 points each, every
+    row (13.6 px) read within 4% and all but 6 columns (73 px), on row 1 of one; their repeats instead read 101 rows
+    and 375 columns off (2026-10-20). None where no such lines show."""
+    gray = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_GRAYSCALE)
+    if gray is None:
+        return None
+    gray = gray.astype(float) if axis == 0 else gray.astype(float).T
+    n, m = gray.shape
+    along, across = int(point[1 - axis] * n), int(point[axis] * m)
+    rows = gray[max(0, along - int(reach * n)):along + int(reach * n)]
+    gaps = [_line_gap(rows[:, max(0, c - int(band * m)):c + int(band * m)], line)
+            for c in (across + int(k * 2 * band * m) for k in range(-2, 3)) if 0 <= c < m]
+    gaps = [g for g in gaps if g is not None]
+    return float(np.median(gaps)) / n if gaps else None
+
+
+def _line_gap(strip: np.ndarray, line: float) -> float | None:
+    """The usual gap in pixels between the lines darker than their cells that cross all of `strip`'s columns."""
+    # shortcut: lines darker than their cells only (a light theme); a dark theme's lighter lines read none, and its
+    # click steps by Jev's box. Accepting either read 26 columns off and 73 none on the light screens.
+    profile = np.median(strip, 1)
+    contrast = np.convolve(profile, np.ones(9) / 9, "same") - profile
+    at = np.flatnonzero((contrast > line) & (contrast >= np.roll(contrast, 1)) & (contrast >= np.roll(contrast, -1)))
+    gaps = np.diff(at)
+    gaps = gaps[gaps >= 3]
+    if len(gaps) < 2:
+        return None
+    usual = gaps[np.abs(gaps - np.median(gaps)) <= 0.15 * np.median(gaps)]
+    return float(usual.mean()) if len(usual) >= 2 else None
+
+
 def _crop_around(jpeg: bytes, point: tuple[float, float],
                  window: float = ZOOM_WINDOW) -> tuple[bytes, tuple[float, float, float, float]]:
     image = cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR)
