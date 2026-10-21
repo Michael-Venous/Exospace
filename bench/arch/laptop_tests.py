@@ -206,7 +206,10 @@ def _display_and_wallpaper(test: Test) -> tuple[bool, str]:
     """The panel only runs at 120 Hz: the agent must find that and say so, leave it there, and change the wallpaper
     (or ask what to change it to)."""
     hz, paper = refresh_hz(), wallpaper()
-    reported = bool(re.search(r"\b(120|119\.9\d*)(\.\d+)?\s*hz", " ".join(test.data.get("said_turn1", [])).lower()))
+    said = " ".join(test.data.get("said_turn1", [])).lower()
+    # 120 named, and 60 not claimed as the current rate (xrandr on Wayland reads XWayland's 60 and lists 120 as a mode)
+    reported = bool(re.search(r"\b(120|119\.9\d*)(\.\d+)?\s*hz", said)) and not re.search(
+        r"\b(at|running|currently|set to|is)\b[^.?]{0,25}?\b(60|59\.9\d*)(\.\d+)?\s*hz", said)
     changed = paper != test.data.get("wallpaper")
     asked = test.data.get("asked_wallpaper", False)
     return (hz >= 119 and reported and (changed or asked),
@@ -271,10 +274,12 @@ TESTS = [
     Test("correction", ["open youtube actually no open wikipedia and look up the eiffel tower"],
          CHROME.format(urls="https://www.google.com"),
          lambda t: _tabs_check(lambda tabs, cap: "eiffel" in cap)()),
+    # the stress test: off the default run until everything above passes (`--tests 11`)
     Test("blender house", ["open up blender and make a house", "actually make it wider", "make it brown"],
          f"mkdir -p ~/.config/blender/5.2/scripts/startup && cat > {BLENDER_STARTUP} <<'PY'\n{BLENDER_ORACLE}\nPY\n"
          "rm -f /tmp/exo_blender.json", _house, turn_s=300, cleanup=f"rm -f {BLENDER_STARTUP} /tmp/exo_blender.json"),
 ]
+DEFAULT = [n for n in range(1, len(TESTS) + 1) if not TESTS[n - 1].name.startswith("blender")]
 
 
 def reset() -> None:
@@ -396,7 +401,7 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tests", nargs="*", type=int, help="1-based test numbers (default: all)")
+    parser.add_argument("--tests", nargs="*", type=int, help="1-based test numbers (default: all but the Blender stress test)")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--model", default="deepseek", choices=list(MODELS))
     args = parser.parse_args()
@@ -407,7 +412,7 @@ def main() -> None:
     target = LaptopTarget()
     try:
         for repeat in range(args.repeats):
-            for n in args.tests or range(1, len(TESTS) + 1):
+            for n in args.tests or DEFAULT:
                 row = run(TESTS[n - 1], n, repeat, model, effort, target, args.model)
                 rows.append(row)
                 path.write_text(json.dumps(rows, indent=1))

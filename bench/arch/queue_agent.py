@@ -1,17 +1,14 @@
-"""Candidate architecture (study 16): a fast LLM at the front, a shared action queue, Jev as clicker and checker.
+"""Candidate architecture (study 16): a fast LLM decides the next actions for one screen at a time, Jev clicks.
 
-  Brain     one fast vision model. Called on new speech (latest wins: an update cancels the call in flight)
-            and whenever the executor stops (end of queue, a `look`, a failure) while a task is active. Each
-            call sees the user's words so far, the conversation, the executor's log and queue, and the screen as
-            it is. It streams one action per line and each is applied as it arrives: appended to the queue, or
-            `stop` (the queue is cleared; the rest of the reply refills it).
-  Executor  runs the queue in order: keys and typing go straight to the HID; a click names its target and Jev
-            places it on the fresh screen (locate + zoom), or Qwen 3.8 27B where Jev refuses. A target Jev can't find, or any error, pauses the
-            queue and is logged, and the brain's next call sees why.
-  Checks    the model says what it expects; Jev confirms it on the screen. At a `look` Jev reports whether the
-            screen shows what the model expected. A request ends only with `done`, which Jev's completion check
-            (goal + executed steps + screen) must confirm; otherwise the model is called again with the reason.
-Pixels in, keyboard and mouse out: nothing else of the target is read. Bench only.
+  Brain     one fast vision model. Each call sees the user's words so far, the conversation, the log of what ran
+            and the screen as it is now; it checks that its last actions worked and replies with the next ones:
+            as many as need no new look at the screen, or none to see the screen again. New speech cancels the
+            call in flight (latest wins). The next call starts only once every action of this one has run.
+  Executor  runs them in order: keys and typing go straight to the HID; a click names its target and Jev places
+            it on the screen as it is now (locate + zoom). A target Jev can't find, or any error, is logged and
+            drops the rest of the reply. `done` counts only if Jev's completion check (goal + steps + screen)
+            confirms it; `done`, `say` and `ask` end the request, and only new speech starts the next one.
+Strictly sequential: no call overlaps the actions of the one before. Pixels in, keyboard and mouse out. Bench only.
 """
 
 from __future__ import annotations
@@ -28,8 +25,7 @@ from pathlib import Path
 import cv2
 import httpx
 
-from bench.arch.pointer import Pointer
-from brain.agent.jev import JevVision, probability
+from brain.agent.jev import JevVision
 from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.triage import GATE, refine
 from brain.cancel import CancelToken
@@ -39,19 +35,18 @@ from brain.types import Action, DeviceProfile
 
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
 DEVICE = "Linux laptop, KDE Plasma desktop. The GUI key opens the application launcher. The panel hides itself."
-STATES = {"running": "running your actions", "paused": "stopped, waiting for your next actions",
-          "idle": "finished all the actions you queued"}
-SLEEP_S = 8.0  # no speech and nothing to do for this long: screen changes stop calling the model
+SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
-POINTER_MODEL = "qwen/qwen3.8-27b"  # the backup grounder
 SURE_BOX = 0.7  # Jev's box confidence at which a target its presence check refused still gets a zoomed look
 PROMPT = """You operate a computer for a user who speaks to you. You see its screen; you act only through
-its keyboard and mouse. Never open a terminal or type shell commands unless the user explicitly asks for one:
-do everything through the desktop's own interface, as the user would. The user's words arrive while they
-speak; you are called again as they grow, and whenever your queued actions run out, pause or fail.
+its keyboard and mouse. The user's words arrive while they speak.
 
-Reply with actions, ONE JSON object per line, nothing else. They run in order as soon as each line arrives:
+Each time you are called you get the screen as it is now and the log of the actions you took and their
+results. First check on the screen whether your last actions did what you meant. Then reply with the next
+actions, ONE JSON object per line, nothing else: as many as you can take without seeing the screen in between
+(CTRL+L, typing an address and ENTER are one reply), stopping at the first whose result you need to see. If the
+screen is still loading or changing, reply with nothing and you will see it again.
   {"key": ["CTRL","L"]}             a key or combination (CTRL SHIFT ALT GUI ENTER ESC TAB BACKSPACE DELETE UP
                                     DOWN LEFT RIGHT HOME END PAGEUP PAGEDOWN F1-F12, letters, digits)
   {"type": "lofi hip hop"}          type these words into whatever has focus
@@ -60,18 +55,11 @@ Reply with actions, ONE JSON object per line, nothing else. They run in order as
                                     top right"); also "double_click", "right_click"
   {"drag": ["the file report.pdf", "the Documents folder in the sidebar"]}   press on one spot, release on another
   {"scroll": 3, "at": "the list of results"}   mouse-wheel notches, positive down ("at" optional)
-  {"wait": 1.5}                     seconds, when something you expect is still loading or drawing
-  {"look": "the search results page"}   stop and show me the screen again; say what you expect to see, and
-                                    the log will say whether the screen shows it
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
                                     proves it; it is checked on the screen before it counts
-  {"stop": true}                    first, to cancel queued actions (e.g. the user changed their mind)
   {"say": "It's running at 120 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
-No key can be held during a click or drag. Judge what the user means from the screen and the conversation
-before acting. Use keyboard shortcuts where they are sure; click when the target is visible. After anything
-that changes the screen in a way you need to see (a page or app opening, a menu, a search), end with look.
-When you need the user's answer, end with ask. The executor log tells you what ran, what failed and why, and
-what each look and done found; never repeat what it shows done."""
+A confirmed done, say and ask end your turn: the user speaks next. No key can be held during a click or drag.
+Judge what the user means from the screen and the conversation before acting. Use keyboard shortcuts where they are sure."""
 
 
 @dataclass
@@ -86,11 +74,10 @@ class Record:
 class Shared:
     queue: deque = field(default_factory=deque)
     log: list[Record] = field(default_factory=list)
-    state: str = "idle"  # running | paused | idle
-    stop: bool = False
+    state: str = "idle"  # running | idle
     goal: str = ""  # what the user has asked for, for the done check
     turn_start: int = 0  # the log entry the current request starts at
-    finished: bool = False  # a done that Jev confirmed: only new speech wakes the model
+    finished: bool = False  # a confirmed done, say or ask ended the turn: only new speech wakes the model
 
 
 class Executor(threading.Thread):
@@ -101,12 +88,11 @@ class Executor(threading.Thread):
         self.shared, self.cond, self.started, self.trace = shared, cond, started, trace
         self.closed = False
         self.inputs: list[float] = []  # time of every input sent, for first-input latency
-        self.pointer = None  # the backup grounder (bench/arch/pointer.py), when one is given
 
     def run(self) -> None:
         while not self.closed:
             with self.cond:
-                while not self.closed and (not self.shared.queue or self.shared.state == "paused"):
+                while not self.closed and not self.shared.queue:
                     self.cond.wait(0.5)
                 if self.closed:
                     return
@@ -117,11 +103,9 @@ class Executor(threading.Thread):
                 self.shared.log.append(Record(round(time.monotonic() - self.started, 2), action, result, detail))
                 if result == "verified":
                     self.shared.finished = True
-                if self.shared.stop or result not in ("done", "verified") or "look" in action:
-                    if result not in ("done", "verified", "checked"):
-                        self.shared.queue.clear()  # what was queued after a failure assumed it worked
-                    self.shared.state, self.shared.stop = "paused", False
-                elif not self.shared.queue:
+                if result not in ("done", "verified"):
+                    self.shared.queue.clear()  # the rest of the reply assumed this worked
+                if not self.shared.queue:
                     self.shared.state = "idle"
                 self.cond.notify_all()
 
@@ -150,10 +134,6 @@ class Executor(threading.Thread):
                     if point is not None:
                         self.controller.hover(*point)
                 self._input(lambda: self.controller.execute(Action("scroll", dy=int(value)), self.profile))
-            elif kind == "wait":
-                time.sleep(min(float(value), 10.0))
-            elif kind == "look":
-                return "checked", self._shown(str(value))
             elif kind == "done":
                 return self._verify(str(value))
             else:
@@ -163,27 +143,18 @@ class Executor(threading.Thread):
             return "error", f"{type(exc).__name__}: {exc}"[:160]
 
     def _jpeg(self) -> bytes:
-        """The screen as it is now: no waiting for it to settle, so motion on screen (a video) costs nothing; the
-        model says `wait` when it expects something still to draw."""
+        """The screen as it is now: no waiting for it to settle."""
         return cv2.imencode(".jpg", self.controller.capture.grab(), [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
 
     def _input(self, send) -> None:
         self.inputs.append(time.monotonic())
         send()
 
-    def _shown(self, expected: str) -> str:
-        """Jev's answer to whether the screen shows what the model expected at this look."""
-        answers, _, _ = self.jev.evaluate(self._jpeg(), {"shown": {"type": "noul", "instructions":
-                                          f"Does `screen` show this: {expected}?"}}, label="look")
-        p = probability(answers["shown"].get("noul"))
-        return f"Jev: the screen {'shows' if p >= GATE else 'does not show'} that ({p:.2f})"
-
     def _verify(self, claim: str) -> tuple[str, str]:
         """The request counts as done only if Jev's completion check sees it done on the screen."""
         with self.cond:
             goal = self.shared.goal
-            steps = [json.dumps(r.action) for r in self.shared.log[self.shared.turn_start:]
-                     if r.result == "done" and not {"look", "wait"} & r.action.keys()]
+            steps = [json.dumps(r.action) for r in self.shared.log[self.shared.turn_start:] if r.result == "done"]
         score = self.jev.completion(self._jpeg(), goal, steps, evidence=claim)
         if score >= COMPLETION_GATE:
             return "verified", f"Jev sees the request done ({score:.2f})"
@@ -206,18 +177,13 @@ class Executor(threading.Thread):
                 point = refine(self.jev, jpeg, target, ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2))
         else:
             point = refine(self.jev, jpeg, target, point) or point
-        by = "jev"
-        if point is None and self.pointer is not None:
-            # A second grounder where Jev refuses: Jev never misclicks but refuses list rows and small labels (a
-            # Dolphin file row: present 0.98, box 0.24); Qwen 3.8 27B pointed 98 of 100 controls right (study 11).
-            point, by = self.pointer.point(jpeg, target), "pointer"
-        self.trace.append({"label": "ground", "target": target, "point": point, "by": by,
+        self.trace.append({"label": "ground", "target": target, "point": point,
                            "elapsed_s": round(time.monotonic() - started, 3)})
         return point
 
 
 class Brain(threading.Thread):
-    """The model loop: calls on speech or executor events, streams actions into the shared queue."""
+    """The model loop: one call, its actions run, then the next call."""
 
     def __init__(self, target, shared: Shared, cond: threading.Condition, executor: Executor, model: str,
                  effort: str, started: float) -> None:
@@ -225,20 +191,17 @@ class Brain(threading.Thread):
         self.target, self.shared, self.cond, self.executor = target, shared, cond, executor
         self.model, self.effort, self.started = model, effort, started
         self.client = self._client()
-        self.retry = False  # the last call failed: call again at once
         self.phase = ("waiting", 0.0)  # what the loop is doing, and since when (for stall reports)
         self.conversation: list[dict] = []  # earlier turns and what was said to the user
         self.words = ""  # the turn being spoken
         self.speaking = False
-        self.heard_at = 0.0  # last new speech
-        self.active_until = 0.0  # a task is active until then; afterwards only speech wakes the model
+        self.active_until = 0.0  # a request is active until then; afterwards only speech wakes the model
         self.dirty = False
         self.calling = False  # a model call is in flight
         self.cancel_call = threading.Event()
         self.closed = False
         self.calls: list[dict] = []
         self.said: list[str] = []
-        self.last_seen = -1  # executor log length the last call saw
         self.shots: Path | None = None  # a folder to keep each call's screenshot in
         self.history: list[dict] = []  # this request's earlier calls: what each saw and replied
 
@@ -253,12 +216,11 @@ class Brain(threading.Thread):
     def hear(self, words: str, speaking: bool) -> None:
         with self.cond:
             if not self.words:  # a new request starts here
-                self.shared.turn_start, self.shared.finished = len(self.shared.log), False
+                self.shared.turn_start = len(self.shared.log)
                 self.history = []
-            self.words, self.speaking = words, speaking
-            self.shared.goal = "\n".join([*(t["user"] for t in self.conversation if "user" in t), words])
-            self.heard_at = time.monotonic()
-            self.active_until = self.heard_at + SLEEP_S
+            self.words, self.speaking, self.shared.finished = words, speaking, False
+            self.shared.goal = words  # this request alone: the done check judges what was just asked
+            self.active_until = time.monotonic() + SLEEP_S
             self.dirty = True
             self.cancel_call.set()  # latest wins
             self.cond.notify_all()
@@ -295,26 +257,17 @@ class Brain(threading.Thread):
                                    "error": f"{type(exc).__name__}: {exc}"[:200]})
                 self.client.close()
                 self.client = self._client()
-                self.retry = True
             finally:
                 with self.cond:
                     self.calling = False
-                    if self.shared.state == "paused":
-                        self.shared.state = "idle" if not self.shared.queue else "running"  # ready again
                     self.cond.notify_all()
 
     def _due(self) -> bool:
-        if self.retry:
-            self.retry = False
-            return True
         if self.dirty:
-            return time.monotonic() - self.heard_at >= 0.25  # a short debounce between words
-        if self.shared.finished:
+            return True
+        if self.shared.finished or self.shared.queue or self.shared.state == "running":
             return False
-        # Paused (a look, a failure, an unconfirmed done) waits for this call, even with actions queued behind it.
-        stopped = self.shared.state == "paused" or (self.shared.state == "idle" and not self.shared.queue)
-        news = len(self.shared.log) != self.last_seen
-        return stopped and news and time.monotonic() < self.active_until
+        return time.monotonic() < self.active_until
 
     def _call(self) -> None:
         self.phase = ("grabbing", round(time.monotonic() - self.started, 2))
@@ -323,15 +276,12 @@ class Brain(threading.Thread):
         if self.shots is not None:  # what each call saw, for debugging
             (self.shots / f"call-{len(self.calls)}.jpg").write_bytes(image)
         with self.cond:
-            self.last_seen = len(self.shared.log)
             context = {
                 "device": DEVICE,
                 "user_is_speaking": self.speaking, "user_words_so_far" if self.speaking else "user_said": self.words,
                 "conversation_before": self.conversation[-12:],
-                "executor": {"state": STATES[self.shared.state],
-                             "queued": list(self.shared.queue),
-                             "log": [{"t": r.t, "action": r.action, "result": r.result, "detail": r.detail}
-                                     for r in self.shared.log[-LOG_TAIL:]]}}
+                "log": [{"t": r.t, "action": r.action, "result": r.result, "detail": r.detail}
+                        for r in self.shared.log[-LOG_TAIL:]]}
         # The request so far as a chat: each earlier call's situation and the model's own reply (text only), so it
         # remembers what it meant to do and already checked; the screenshot rides on this call alone.
         history = []
@@ -373,40 +323,40 @@ class Brain(threading.Thread):
             self._apply(text, record, started)  # the last line, which has no newline after it
         if not record["lines"]:
             record["raw"] = full[:600]  # a reply with no action in it: what it said instead
-        if not record["cancelled"]:
+        if not record["cancelled"] and full.strip():  # a call that added nothing isn't worth remembering
             past = {k: v for k, v in context.items() if k != "conversation_before"}
             self.history.append({"context": json.dumps(past), "reply": full.strip()})
         record["total_s"] = round(time.monotonic() - started, 3)
 
     def _apply(self, line: str, record: dict, started: float) -> None:
         line = line.strip().strip("`").strip()
-        if not line.startswith("{"):
-            return
-        try:
-            action = json.loads(line)
-        except json.JSONDecodeError:
-            record["lines"].append({"unparsed": line[:120]})
-            return
-        if not isinstance(action, dict) or not action:
-            return
+        decoder, at = json.JSONDecoder(), 0
+        while line.startswith("{", at):  # one object per line, but some replies put several on one
+            try:
+                action, at = decoder.raw_decode(line, at)
+            except json.JSONDecodeError:
+                record["lines"].append({"unparsed": line[at:at + 120]})
+                return
+            while at < len(line) and line[at] in " ,":
+                at += 1
+            if isinstance(action, dict) and action:
+                self._take(action, record, started)
+
+    def _take(self, action: dict, record: dict, started: float) -> None:
         record["lines"].append({"at_s": round(time.monotonic() - started, 3), **action})
         with self.cond:
-            if "stop" in action:
-                self.shared.queue.clear()
-                self.shared.stop = self.shared.state == "running"
-            elif "say" in action or "ask" in action:
+            if "say" in action or "ask" in action:
                 self.said.append(str(action.get("say") or action.get("ask")))
                 self.conversation.append({"you": self.said[-1]})
+                self.shared.finished = True
             else:
                 self.shared.queue.append(action)
                 self.active_until = time.monotonic() + SLEEP_S
-                if self.shared.state == "paused" and not self.shared.stop:
-                    self.shared.state = "running"  # this call saw why it paused: ready again
             self.cond.notify_all()
 
 
 class QueueAgent:
-    """The two threads and their shared queue, on one target."""
+    """The model and executor threads, taking turns, on one target."""
 
     def __init__(self, target, model: str, effort: str, jev_key: str, log_dir: Path) -> None:
         self.cancel = CancelToken()
@@ -414,13 +364,12 @@ class QueueAgent:
         self.started = time.monotonic()
         self.controller = Controller(target, target, self.cancel)
         self.jev = JevVision(jev_key, self.cancel, log_dir / "jev.jsonl", min_presence=GATE, min_confidence=GATE)
-        self.jev.trace = self.trace  # every look Jev takes is kept, beside the grounding records
+        self.jev.trace = self.trace  # every Jev call is kept, beside the grounding records
         frame = target.grab()
         h, w = frame.shape[:2]
         profile = DeviceProfile("linux", (0, 0, w, h), "mouse", time.time())
         self.shared, self.cond = Shared(), threading.Condition()
         self.executor = Executor(self.controller, self.jev, profile, self.shared, self.cond, self.started, self.trace)
-        self.executor.pointer = Pointer(self.cancel, self.jev, POINTER_MODEL)
         self.brain = Brain(target, self.shared, self.cond, self.executor, model, effort, self.started)
         self.brain.shots = log_dir
         self.executor.start()
@@ -434,5 +383,4 @@ class QueueAgent:
         self.brain.join(5)
         self.executor.join(5)
         self.jev.close()
-        self.executor.pointer.close()
         self.brain.client.close()
