@@ -446,8 +446,10 @@ class JevOnlyTests(unittest.TestCase):
         asked = [c.kwargs["state"]["goal"] for c in self.planner.jev.evaluate.call_args_list if c.kwargs["label"] == "copy"]
         self.assertEqual(asked, ["copy the header\npaste it in"] * 2)  # with the later line that names it
         boxes = iter([BIG, wide])
-        rowed = self.plan("copy the header\npaste it in", next="copy", looks=((.5, .31), ON), run="z")
-        self.assertEqual(rowed[0].brief(), "skill(select {'x': 0.605, 'y': 0.31})")  # the closer look's row, in the box
+        rowed = self.plan("copy the header\npaste it in", next="copy", looks=((.4, .31), ON), run="z",
+                          boxes=((.3, .3, .5, .32), None))
+        # past the end of the last line a closer look boxed, on its row, in the box
+        self.assertEqual(rowed[0].brief(), "skill(select {'x': 0.505, 'y': 0.31})")
         self.planner.jev.evaluate.side_effect = None
         pasted = self.plan("paste it in", next="paste", run="s")
         self.assertEqual([a.brief() for a in pasted], ["hotkey(CTRL+V)"])
@@ -562,6 +564,10 @@ class JevOnlyTests(unittest.TestCase):
         self.step(goal, run="s", **routed, next="new_tab")
         unseen = self.step(goal, run="s", next="stuck", question=.9, complete=.9, history=["hotkey(CTRL+T)"])
         self.assertEqual(unseen.brief(), "skill(open_app {'name': 'spreadsheet'})")  # whatever dead end
+        self.step(goal, run="w", **routed, next="new_tab")
+        self.planner.switched = "hotkey(CTRL+T)"  # as if a switch to a tab: the browser reached what the line names
+        switched = self.step(goal, run="w", next="stuck", question=.9, complete=.9, history=["hotkey(CTRL+T)"])
+        self.assertEqual(switched.type, "fail")
         self.assertEqual(self.step(goal, **routed, next="new_tab").brief(), "hotkey(CTRL+T)")
         typed = dict(composed=.6, next="type", history=["hotkey(CTRL+T)"])
         self.assertEqual(self.step(goal, **typed).brief(), "skill(open_app {'name': 'spreadsheet'})")

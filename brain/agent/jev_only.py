@@ -128,8 +128,9 @@ INPUT = ("Is the one control that the next step of the `goal` acts on an input t
 # Asked after the line typed: Brave still loading YouTube showed its new tab page, and "horses" was typed into
 # nothing, Enter on it searched nothing, and YouTube's home page with horse videos passed the line (left 0.17, v13-t1).
 # On 14 frames (4 tries each) text where it was typed scored 0.57-1.00, text not typed 0.00-0.06, a "Draft horses"
-# chip on that home page included.
-TYPED = ("Does `screen` show the text {text} where it was typed, such as in an input field, a cell, a document or a "
+# chip on that home page included. In any case: Docs capitalised "eggs" once Enter followed it, the line read it
+# 0.08-0.18, and "eggs" was typed again (2026-10-21); asked so, 0.39-0.60.
+TYPED = ("Does `screen` show the text {text}, in any letter case, where it was typed, such as in an input field, a cell, a document or a "
          "search query, rather than only in content the page already showed?")
 MISSING = 0.2  # below this the text typed isn't there: it is typed again, so only a clear miss counts
 # A line already true when it is reached takes no step: "scroll down to the wiki pedia link" with the link in view
@@ -211,7 +212,9 @@ OPENS = ("Is what the next step of the `goal` works in (a document, sheet, page 
          "while a control that creates or opens it is visible?")
 TAB_CONTROL = "the tab the `goal` names, other than the tab in front"
 OPENER_CONTROL = f"{STEP_CONTROL}: when what it works in isn't open yet, the control that creates or opens it"
-COPY_CONTROL = "the text that the first line of the `goal` copies (a later line names it by what it pastes)"
+# Its last line: past the end of a paragraph's first line, which ran to the column's edge, the triple click followed
+# the "mountain range" link there, 3 runs in 3 (2026-10-21). Zooms on the last line took its row 14 times in 14.
+COPY_CONTROL = "the last line of the text that the first line of the `goal` copies (a later line names it by what it pastes)"
 # A box this big holds the spot it was drawn on without a closer look, and a zoom loses where it sits among
 # its neighbours: on "click the third video" zooms chose the second or fourth of YouTube's Shorts row. Only when
 # Jev is sure of it: "copy the header" boxed four rows of Wikipedia's citations 0.54 sure, and the select at its
@@ -386,7 +389,10 @@ class JevOnlyPlanner:
         # A kind of app read as a website has its app to open: "open up a spreadsheet" with Google Docs in front read
         # a site (0.92), and on Chrome's new tab Jev had no words of the request to type, or no control (2026-10-20).
         launch = Action("skill", name="open_app", args={"name": self.kind})
-        if plan.reasoning == FAILED and self.kind and launch.brief() not in ctx.history[self.since:] + self.refused:
+        # Not once the line switched to a tab: the browser reached it. Back on the doc's tab "Paste after the last line in
+        # the google doc" doubted its click, and "google doc" typed into the launcher took the paste (2026-10-21).
+        if plan.reasoning == FAILED and self.kind and launch.brief() not in ctx.history[self.since:] + self.refused \
+                and self.switched not in ctx.history[self.since:]:
             plan = Plan("Open the app the line names", [launch], [], blind=True)
         self.screen, self.planned = image, (len(ctx.history), [action.brief() for action in plan.actions])
         return plan
@@ -1003,8 +1009,8 @@ class JevOnlyPlanner:
     def _text_spot(self, image: bytes, ctx: StepContext, lines: list[str], context: list[str],
                    step: str) -> tuple[float, float, bool] | None:
         """Where the line's copy or paste clicks, and whether a paste goes on a line of its own. A copy clicks on the
-        box's row a zoom finds, a paste on its last: the text it goes after ends there. A copy's triple click selects the text it
-        copies from just past the end of Jev's box around it, so it lands on no link in that text; a paste clicks
+        row of the text's last line a zoom finds, a paste on the box's last: the text it goes after ends there. A copy's
+        triple click selects the text it copies from just past the end of that line, so it lands on no link in it; a paste clicks
         the middle of the place it pastes into or after. Of two boxes the one reaching further: one look's
         box ended inside the citation, on its link or before it, 3 times in 15. Asked of each of the line's clause
         tails, the one Jev is surest of: whole, "Search up genghis khan, go to wikipedia, click his birthplace and copy
@@ -1028,8 +1034,6 @@ class JevOnlyPlanner:
                 for answers, size, padded in replies if (center := box_center(answers["copied"], size, padded))]
         if not ends:
             return None
-        # shortcut: a paragraph wrapping to its column's edge puts this point past the column; aim inside its first
-        # line if copies of long paragraphs need it.
         x, center, box, size, padded = max(ends, key=lambda end: end[0])
         if step == "paste":
             # "Copy the first line, paste after the last line." boxed both lines, and a click on its middle row,
@@ -1038,9 +1042,14 @@ class JevOnlyPlanner:
             _, top, _, bottom = _edges(box, size, padded)
             own = sum(probability(answers["own_line"].get("noul")) for answers, _, _ in replies) / len(replies)
             return center[0], bottom - (bottom - top) / 4, own >= OWN_LINE_GATE
-        point, _, _ = zoom(self.jev, image, state, control, center, COPY_WINDOW, ctx.run_id, ctx.step)
-        # Only its row: a zoom off the box went to the address bar above it (1 in 16).
-        y = point[1] if point and box_contains(box, size, padded, point) else center[1]
+        bottom = _edges(box, size, padded)[3]
+        point, _, last = zoom(self.jev, image, state, control, (center[0], bottom), COPY_WINDOW, ctx.run_id, ctx.step)
+        # Only in the box: a zoom off it went to the address bar above it (1 in 16). Past the last line's end, short of
+        # the box's: one zoom in 3 on Einstein's lead ran its last line into the infobox beside it.
+        if point and last and box_contains(box, size, padded, point):
+            x, y = min(x, last[2]), point[1]
+        else:
+            y = center[1]
         return min(1.0, x + COPY_PAST), y, False
 
     def _evaluate_all(self, ctx: StepContext, asks: list[Ask]) -> list[tuple[dict, tuple[int, int], tuple[int, int]]]:
