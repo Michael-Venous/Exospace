@@ -6,7 +6,7 @@
             it is. It streams one action per line and each is applied as it arrives: appended to the queue, or
             `stop` (the queue is cleared; the rest of the reply refills it).
   Executor  runs the queue in order: keys and typing go straight to the HID; a click names its target and Jev
-            places it on the fresh screen (locate + zoom). A target Jev can't find, or any error, pauses the
+            places it on the fresh screen (locate + zoom), or Qwen 3.8 27B where Jev refuses. A target Jev can't find, or any error, pauses the
             queue and is logged, and the brain's next call sees why.
   Checks    the model says what it expects; Jev confirms it on the screen. At a `look` Jev reports whether the
             screen shows what the model expected. A request ends only with `done`, which Jev's completion check
@@ -28,14 +28,14 @@ from pathlib import Path
 import cv2
 import httpx
 
+from bench.arch.pointer import Pointer
 from brain.agent.jev import JevVision, probability
 from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.triage import GATE, refine
 from brain.cancel import CancelToken
 from brain.controller import Controller
-from brain.hid import HIDError
 from brain.imaging import shrink
-from brain.types import Action, ActionError, DeviceProfile
+from brain.types import Action, DeviceProfile
 
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
 DEVICE = "Linux laptop, KDE Plasma desktop. The GUI key opens the application launcher. The panel hides itself."
@@ -43,6 +43,8 @@ STATES = {"running": "running your actions", "paused": "stopped, waiting for you
           "idle": "finished all the actions you queued"}
 SLEEP_S = 8.0  # no speech and nothing to do for this long: screen changes stop calling the model
 LOG_TAIL = 20  # executor log entries each call sees
+HISTORY = 4  # earlier calls of the request each call sees as chat turns
+POINTER_MODEL = "qwen/qwen3.8-27b"  # the backup grounder
 SURE_BOX = 0.7  # Jev's box confidence at which a target its presence check refused still gets a zoomed look
 PROMPT = """You operate a computer for a user who speaks to you. You see its screen; you act only through
 its keyboard and mouse. Never open a terminal or type shell commands unless the user explicitly asks for one:
@@ -99,6 +101,7 @@ class Executor(threading.Thread):
         self.shared, self.cond, self.started, self.trace = shared, cond, started, trace
         self.closed = False
         self.inputs: list[float] = []  # time of every input sent, for first-input latency
+        self.pointer = None  # the backup grounder (bench/arch/pointer.py), when one is given
 
     def run(self) -> None:
         while not self.closed:
@@ -156,7 +159,7 @@ class Executor(threading.Thread):
             else:
                 return "error", f"unknown action {kind!r}"
             return "done", ""
-        except (ActionError, HIDError, ValueError, TypeError, KeyError, StopIteration) as exc:
+        except Exception as exc:  # noqa: BLE001 - a failed action is logged for the model; the executor carries on
             return "error", f"{type(exc).__name__}: {exc}"[:160]
 
     def _jpeg(self) -> bytes:
@@ -203,7 +206,12 @@ class Executor(threading.Thread):
                 point = refine(self.jev, jpeg, target, ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2))
         else:
             point = refine(self.jev, jpeg, target, point) or point
-        self.trace.append({"label": "ground", "target": target, "point": point,
+        by = "jev"
+        if point is None and self.pointer is not None:
+            # A second grounder where Jev refuses: Jev never misclicks but refuses list rows and small labels (a
+            # Dolphin file row: present 0.98, box 0.24); Qwen 3.8 27B pointed 98 of 100 controls right (study 11).
+            point, by = self.pointer.point(jpeg, target), "pointer"
+        self.trace.append({"label": "ground", "target": target, "point": point, "by": by,
                            "elapsed_s": round(time.monotonic() - started, 3)})
         return point
 
@@ -232,6 +240,7 @@ class Brain(threading.Thread):
         self.said: list[str] = []
         self.last_seen = -1  # executor log length the last call saw
         self.shots: Path | None = None  # a folder to keep each call's screenshot in
+        self.history: list[dict] = []  # this request's earlier calls: what each saw and replied
 
     @staticmethod
     def _client() -> httpx.Client:
@@ -245,6 +254,7 @@ class Brain(threading.Thread):
         with self.cond:
             if not self.words:  # a new request starts here
                 self.shared.turn_start, self.shared.finished = len(self.shared.log), False
+                self.history = []
             self.words, self.speaking = words, speaking
             self.shared.goal = "\n".join([*(t["user"] for t in self.conversation if "user" in t), words])
             self.heard_at = time.monotonic()
@@ -322,9 +332,15 @@ class Brain(threading.Thread):
                              "queued": list(self.shared.queue),
                              "log": [{"t": r.t, "action": r.action, "result": r.result, "detail": r.detail}
                                      for r in self.shared.log[-LOG_TAIL:]]}}
+        # The request so far as a chat: each earlier call's situation and the model's own reply (text only), so it
+        # remembers what it meant to do and already checked; the screenshot rides on this call alone.
+        history = []
+        for past in self.history[-HISTORY:]:
+            history += [{"role": "user", "content": past["context"]},
+                        {"role": "assistant", "content": past["reply"] or "(nothing)"}]
         body = {"model": self.model, "stream": True, "temperature": 0, "provider": {"sort": "latency"},
                 "reasoning": {"effort": self.effort} if self.effort else {"enabled": False},
-                "messages": [{"role": "system", "content": PROMPT},
+                "messages": [{"role": "system", "content": PROMPT}, *history,
                              {"role": "user", "content": [
                                  {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,"
                                                                      + base64.b64encode(image).decode()}},
@@ -357,6 +373,9 @@ class Brain(threading.Thread):
             self._apply(text, record, started)  # the last line, which has no newline after it
         if not record["lines"]:
             record["raw"] = full[:600]  # a reply with no action in it: what it said instead
+        if not record["cancelled"]:
+            past = {k: v for k, v in context.items() if k != "conversation_before"}
+            self.history.append({"context": json.dumps(past), "reply": full.strip()})
         record["total_s"] = round(time.monotonic() - started, 3)
 
     def _apply(self, line: str, record: dict, started: float) -> None:
@@ -401,6 +420,7 @@ class QueueAgent:
         profile = DeviceProfile("linux", (0, 0, w, h), "mouse", time.time())
         self.shared, self.cond = Shared(), threading.Condition()
         self.executor = Executor(self.controller, self.jev, profile, self.shared, self.cond, self.started, self.trace)
+        self.executor.pointer = Pointer(self.cancel, self.jev, POINTER_MODEL)
         self.brain = Brain(target, self.shared, self.cond, self.executor, model, effort, self.started)
         self.brain.shots = log_dir
         self.executor.start()
@@ -414,4 +434,5 @@ class QueueAgent:
         self.brain.join(5)
         self.executor.join(5)
         self.jev.close()
+        self.executor.pointer.close()
         self.brain.client.close()
