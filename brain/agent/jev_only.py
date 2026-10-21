@@ -59,9 +59,28 @@ NEXT_CRITERIA = {
     "stuck": "The next step needs reasoning, writing new text, information that isn't visible, a key not "
              "named above, or the goal is unclear.",
 }
+# Naming the place too keeps a cell's own name out: "In d 5" typed "d 5" into its cell and "Go to row 11" chose "11";
+# with it both chose none, 12 goals × 2 unchanged otherwise (2026-10-20).
 TEXT_QUESTION = ("Which text does the next step type, or erase? It must be copied word for word from the `goal`, without the "
-                 "command words or field name around it. Choose none if the text must be computed, looked up, "
+                 "command words around it or the words that name where it goes, such as a field, a cell or its column "
+                 "and row. Choose none if the `goal` gives no such text, or if it must be computed, looked up, "
                  "translated or written rather than copied.")
+# A place named by a grid's labels is clicked alone, then checked selected: Jev's box for a spreadsheet cell lands a
+# row or two off (D5 clicked D4, C8 C7, both read done), and its zooms lose the headers (E14 failed). The goal named
+# so: 0.75-0.89 for cells, 0.07-0.10 for other goals. On the screen after the click, the named cell selected read
+# 0.83-0.95, another 0.01-0.23, and the way to it was right 21 of 22 times. How far: rows 1-8 away exactly (24/24),
+# columns 3-4 away as 2 (4/4), and a move short is checked again. One cell's move barely changes the screen, so a
+# key at a time read as the same step stuck three times over (2026-10-20).
+LABELLED = ("Does the `goal` name the spot the next step clicks by labels along two edges of a grid or table, such as "
+            "a column and a row?")
+PLACED = "Is the place the `goal` names the one selected in `screen`, such as the selected cell, item or field?"
+PLACE_WAY = "Which way from the place selected in `screen` is the place the `goal` names?"
+PLACE_WAYS = {"same": "It is the place selected", "up": "Above it", "down": "Below it", "left": "Left of it",
+              "right": "Right of it"}
+PLACE_FAR = ("How many places from the place selected in `screen` is the place the `goal` names, counted along the row "
+             "or column labels of the grid?")
+PLACE_FARS = {str(n): f"{n} away" for n in range(1, 13)} | {"more": "More than 12 away"}
+MAX_PLACES = 3  # moves toward a named place before the line fails
 REPLACE_QUESTION = ("Is the input the next step types into a single-line box, such as a search, address or form "
                     "field, that already holds text?")
 # Asked of the goal, not the next step: with a click on YouTube's search box next, "does the next step type text
@@ -287,6 +306,8 @@ class JevOnlyPlanner:
         # the address bar and typed "docs.new\n"; on the document it opened that text was nowhere (0.09), and it
         # was typed again into the document (2026-10-19).
         self.typed: str | None = None
+        # A click on a place a grid's labels name, as its step reads, the rest of its step and the arrow keys since.
+        self.placing: tuple[str, Plan, int] | None = None
         self.screen: bytes | None = None  # the last step's screen
         self.planned: tuple[int, list[str]] = (0, [])  # the history's length then, and the steps planned on it
         self.idle = False  # the last step looked again and the screen stayed as it was
@@ -332,7 +353,7 @@ class JevOnlyPlanner:
             self.run_id, self.line, self.since = ctx.run_id, self.finished.count("\n") + 1 if continued else 0, 0
             self.prev, self.routed, self.clicked, self.seen, self.typed, self.unmoved = 0, False, None, False, None, None
             self.kind = None
-            self.doubted = self.screen = None
+            self.doubted = self.screen = self.placing = None
             self.refused = []
             if not ctx.goal.startswith(self.goal + "\n"):
                 self.opened = None  # a new request: what an earlier one opened isn't its app
@@ -353,6 +374,7 @@ class JevOnlyPlanner:
         inputs = [done for done in ctx.history if done not in (LOOK_AGAIN.brief(), WAIT.brief())]
         if clicked and (inputs[-1:] != [clicked[2]] or "unchanged" in ctx.note):
             clicked = None  # not the last input, or one with no visible effect: nothing it did to judge
+        placing, self.placing = self.placing if self.placing and inputs[-1:] == [self.placing[0]] else None, None
         self.clicked = clicked  # still judged after looks again: the page it opened may take a few to draw
         guard = self.approved_run is not None and not self.approved_run(ctx)
         opened = _just_opened(ctx.history)
@@ -382,6 +404,7 @@ class JevOnlyPlanner:
             looks = [self._line_done(mark(*clicked[:2]), ctx, lines, LINE_LEFT_CLICKED) if clicked
                      else self._line_done(image, ctx, lines)]
             shown = [self._shown(image, ctx, lines[self.line], typed)] if typed else []
+            shown += [self._placed(image, lines[self.line])] if placing else []
             rests = [i for i in range(self.judged, len(raw)) if raw[i].startswith(CORRECTION)]
             self.judged = len(raw)
             replies = self._evaluate_all(ctx, looks + shown + [self._ask(image, ctx, *ask, guard, opened) for ask in asks]
@@ -392,7 +415,19 @@ class JevOnlyPlanner:
                 break
             self.joined |= joined
         answered = replies[len(looks) + len(shown):len(replies) - len(rests)]
-        missing = bool(shown) and probability(replies[len(looks)][0]["typed"].get("noul")) < MISSING
+        if placing:
+            placed = replies[len(looks) + len(shown) - 1][0]
+            way = placed["way"].get("choice")
+            if probability(placed["on"].get("noul")) < GATE:
+                if way not in ("up", "down", "left", "right") or placing[2] >= MAX_PLACES:
+                    return _fail("the place it names isn't the one selected", planner=True)
+                far = placed["far"].get("choice")
+                keys = [Action("hotkey", keys=(way.upper(),))] * (12 if far == "more" else int(far) if far in PLACE_FARS else 1)
+                self.placing = keys[-1].brief(), placing[1], placing[2] + 1
+                return Plan(f"Jev moves {len(keys)} {way} to the place named", keys, [])
+            if placing[1].actions:
+                return placing[1]
+        missing = bool(typed) and probability(replies[len(looks)][0]["typed"].get("noul")) < MISSING
         left = max(1 - probability(answers["left"].get("noul")) for answers, _, _ in replies[:len(looks)])
         # An input that changed nothing finished nothing: a Brave Search result clicked 1.3 s after the results drew
         # stayed put, the unchanged page read 0.35 left, and the snippet under it was clicked as the next line's
@@ -567,6 +602,7 @@ class JevOnlyPlanner:
                 return look
             focus = False
         certain = settled = True  # of the click's target: only a doubtful zoom says otherwise
+        labelled = step in ("click", "fill") and probability(answers["labelled"].get("noul")) >= GATE
         if step in ("click", "double_click", "right_click", "fill", "copy") or focus:
             point = box_center(answers["target"], size, padded)
             opens = probability(answers["opens"].get("noul"))
@@ -586,7 +622,7 @@ class JevOnlyPlanner:
             elif min(width, height) >= BIG_TARGET and sure >= self.jev.min_presence \
                     and probability(answers["target"].get("confidence")) < BIG_SURE:
                 return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
-            elif min(width, height) < BIG_TARGET or sure < self.jev.min_presence:
+            elif (min(width, height) < BIG_TARGET or sure < self.jev.min_presence) and not labelled:
                 # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
                 # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
                 # shortcuts). Keeping the zoom nearer the first box is a majority of the three looks. No tighter
@@ -711,6 +747,10 @@ class JevOnlyPlanner:
             self.clicked = image, point, actions[0].brief()
         if step in CLICKS and not settled:
             self.doubted = actions[0].brief()
+        if labelled:
+            # The rest waits for the selection checked on the next screen.
+            self.placing = actions[0].brief(), Plan(f"Jev next step: {step}", actions[1:], [], in_place=in_place), 0
+            actions, in_place = actions[:1], False
         return Plan(f"Jev next step: {step}", actions, [], blind=step in ("address", "new_tab"),
                     in_place=in_place)
 
@@ -781,6 +821,7 @@ class JevOnlyPlanner:
             "loading": {"type": "noul", "instructions": LOADING},
             "pending": {"type": "noul", "instructions": PENDING},
             "opens": {"type": "noul", "instructions": OPENS},
+            "labelled": {"type": "noul", "instructions": LABELLED},
         }
         return image, "jev", ([(routing, {"goal": line, "executed_steps": steps})] if routing else []) \
             + [(stepping, {"goal": line, "executed_steps": context})]
@@ -806,6 +847,16 @@ class JevOnlyPlanner:
         question = TYPED.format(text=json.dumps(text.removesuffix("…"), ensure_ascii=False))
         return image, "typed", [({"typed": {"type": "noul", "instructions": question}},
                                  {"goal": line, "executed_steps": ctx.history[self.since:]})]
+
+    @staticmethod
+    def _placed(image: bytes, line: str) -> Ask:
+        """Whether the place the line names is the one selected ("on"), else which way it is ("way") and how many
+        places away ("far"). Asked without
+        the steps: with F6 selected for "In f 9", "click(340,325)" among them sent it up (4/4), without them down (4/4)."""
+        return image, "placed", [({"on": {"type": "noul", "instructions": PLACED},
+                                   "way": {"type": "choice", "instructions": PLACE_WAY, "criteria": PLACE_WAYS},
+                                   "far": {"type": "choice", "instructions": PLACE_FAR, "criteria": PLACE_FARS}},
+                                  {"goal": line})]
 
     def _copy_spot(self, image: bytes, ctx: StepContext, lines: list[str], context: list[str]) -> tuple[float, float] | None:
         """Where a triple click selects the text the line copies: just past the end of Jev's box around it, on the

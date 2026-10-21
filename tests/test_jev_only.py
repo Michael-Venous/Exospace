@@ -30,7 +30,8 @@ class JevOnlyTests(unittest.TestCase):
              fits=.95, app_present=.1, app_name="none", launcher=.1, history=(), os="linux", looks=(ON, ON),
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, text_odds=None, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
-             lookup=.05, pending=.05, opens=.05, fresh=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two"):
+             lookup=.05, pending=.05, opens=.05, fresh=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two",
+             labelled=.05, on=.95, way="same", far="1"):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text, "probabilities": text_odds or {}}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
@@ -39,7 +40,8 @@ class JevOnlyTests(unittest.TestCase):
                 "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
-                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined}}
+                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined},
+                "labelled": {"noul": labelled}, "on": {"noul": on}, "way": {"choice": way}, "far": {"choice": far}}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
         profile = DeviceProfile(os, Rect(0, 0, 400, 300), device, 1)
         ctx = StepContext(goal, profile, Mock(), list(history), 2, 10, note=note, run_id=run)
@@ -679,6 +681,22 @@ class JevOnlyTests(unittest.TestCase):
         self.assertFalse(self.last.in_place)  # a search's Enter loads its results
         for unsure in ({"input": .7}, {"text": "none"}):  # a tile that opens a document, or nothing to type
             self.assertEqual([a.type for a in self.plan(goal, **{"next": "click", "text": horses} | unsure)], ["click"])
+
+    def test_a_cell_named_by_its_column_and_row_is_typed_into_once_seen_selected(self):
+        goal = "in d 5 type hello"
+        hello = str(spans(goal).index("hello"))
+        click = self.plan(goal, next="fill", text=hello, labelled=.85, commit=.9)
+        self.assertEqual([a.brief() for a in click], ["click(300,300)"])  # alone, and not zoomed
+        self.zoom.assert_not_called()
+        # a row off: an arrow key toward it, then the rest of the step once it is selected
+        moved = self.plan(goal, on=.1, way="down", far="2", history=["click(300,300)"])
+        self.assertEqual([a.brief() for a in moved], ["hotkey(DOWN)", "hotkey(DOWN)"])
+        rest = self.plan(goal, on=.9, history=["click(300,300)", "hotkey(DOWN)", "hotkey(DOWN)"])
+        self.assertEqual([a.brief() for a in rest], ["type_text('hello')", "hotkey(ENTER)"])
+        self.assertTrue(self.last.in_place)
+        self.plan(goal, next="click", labelled=.85, run="s")
+        with patch("brain.agent.jev_only.mark", return_value=b"marked"):  # the sure click is judged marked
+            self.assertEqual(self.step(goal, on=.1, way="same", history=["click(300,300)"], run="s").type, "fail")
 
     def test_text_typed_into_a_cell_is_entered_in_the_same_step(self):
         goal = "add hello to b1"
