@@ -25,6 +25,7 @@ from pathlib import Path
 import cv2
 import httpx
 
+from bench.arch.pointer import Pointer
 from brain.agent.jev import JevVision
 from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.triage import GATE, refine
@@ -38,6 +39,11 @@ DEVICE = "Linux laptop, KDE Plasma desktop. The GUI key opens the application la
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
+# Models whose quality depends on the host (study 17: Qwen 3.8 27B pointed 192/192 on ModelRun, 15/192 on Cerebras)
+PINNED = {"qwen/qwen3.8-27b": "modelrun/fp4"}
+# Pointing models that can click in Jev's place, each on the host study 17 measured it on.
+CLICKERS = {"qwen": ("qwen/qwen3.8-27b", PINNED["qwen/qwen3.8-27b"]),
+            "deepseek": ("deepseek/deepseek-v4.1-flash-1017", "inference-net/fp8")}
 SURE_BOX = 0.7  # Jev's box confidence at which a target its presence check refused still gets a zoomed look
 PROMPT = """You operate a computer for a user who speaks to you. You see its screen; you act only through
 its keyboard and mouse. The user's words arrive while they speak.
@@ -58,8 +64,25 @@ screen is still loading or changing, reply with nothing and you will see it agai
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
                                     proves it; it is checked on the screen before it counts
   {"say": "It's running at 120 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
-A confirmed done, say and ask end your turn: the user speaks next. No key can be held during a click or drag.
+A confirmed done, or a reply that ends with say or ask, ends your turn: the user speaks next.
+No key can be held during a click or drag.
 Judge what the user means from the screen and the conversation before acting. Use keyboard shortcuts where they are sure."""
+
+
+# Planning ahead (`plan="ahead"`): steps on screens not drawn yet are queued too, and a click waits for its target
+# to appear, so each step waits on the computer, not on the model.
+APPEAR_S = 5.0  # how long a click waits for its target to appear before it fails
+PROMPT_AHEAD = PROMPT.replace(
+    """Then reply with the next
+actions, ONE JSON object per line, nothing else: as many as you can take without seeing the screen in between
+(CTRL+L, typing an address and ENTER are one reply), stopping at the first whose result you need to see. If the
+screen is still loading or changing, reply with nothing and you will see it again.""",
+    """Then reply with the next
+actions, ONE JSON object per line, nothing else. Plan ahead: queue every step you can already foresee, also on
+screens that will only appear after earlier steps run; a click waits for its target to appear. Stop at the first
+step that depends on something you can't foresee (which result to pick, what a page says): you are called again
+when the queue runs out or a step fails. If the screen is still loading or changing, reply with nothing and you
+will see it again.""")
 
 
 @dataclass
@@ -88,6 +111,8 @@ class Executor(threading.Thread):
         self.shared, self.cond, self.started, self.trace = shared, cond, started, trace
         self.closed = False
         self.inputs: list[float] = []  # time of every input sent, for first-input latency
+        self.pointer: Pointer | None = None  # a pointing model that clicks in Jev's place, when one is given
+        self.appear_s = 0.0  # how long a click waits for its target to appear (0: it must be there already)
 
     def run(self) -> None:
         while not self.closed:
@@ -120,12 +145,12 @@ class Executor(threading.Thread):
             elif kind in ("click", "double_click", "right_click"):
                 point = self._find(str(value))
                 if point is None:
-                    return "not_found", f"Jev couldn't find {value!r} on the screen"
+                    return "not_found", f"{value!r} wasn't found on the screen"
                 self._input(lambda: self.controller.execute(Action(kind, x=point[0], y=point[1]), self.profile))
             elif kind == "drag":
                 a, b = self._find(str(value[0])), self._find(str(value[1]))
                 if a is None or b is None:
-                    return "not_found", f"Jev couldn't find {value[0] if a is None else value[1]!r}"
+                    return "not_found", f"{value[0] if a is None else value[1]!r} wasn't found on the screen"
                 self._input(lambda: self.controller.execute(Action("swipe", x=a[0], y=a[1], x2=b[0], y2=b[1], ms=600),
                                                             self.profile))
             elif kind == "scroll":
@@ -161,9 +186,21 @@ class Executor(threading.Thread):
         return "not_verified", f"Jev does not see the request done on the screen ({score:.2f}): it isn't done yet"
 
     def _find(self, target: str) -> tuple[float, float] | None:
-        """Jev places the target on the screen as it is now, zoomed in once and again."""
+        """The target's place, looking again on fresh screens until it appears or `appear_s` runs out."""
+        deadline = time.monotonic() + self.appear_s
+        while (point := self._place(target)) is None and time.monotonic() < deadline and not self.closed:
+            pass
+        return point
+
+    def _place(self, target: str) -> tuple[float, float] | None:
+        """The pointing model, or Jev zoomed in once and again, places the target on the screen as it is now."""
         jpeg = self._jpeg()
         started = time.monotonic()
+        if self.pointer is not None:
+            point = self.pointer.point(jpeg, target)
+            self.trace.append({"label": "ground", "target": target, "point": point, "by": "pointer",
+                               "elapsed_s": round(time.monotonic() - started, 3)})
+            return point
         point = self.jev.locate(jpeg, target)
         if point is None:
             # Jev's presence answer turns on the wording ("119.93 Hz option in the open refresh rate dropdown" 0.08,
@@ -177,7 +214,7 @@ class Executor(threading.Thread):
                 point = refine(self.jev, jpeg, target, ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2))
         else:
             point = refine(self.jev, jpeg, target, point) or point
-        self.trace.append({"label": "ground", "target": target, "point": point,
+        self.trace.append({"label": "ground", "target": target, "point": point, "by": "jev",
                            "elapsed_s": round(time.monotonic() - started, 3)})
         return point
 
@@ -203,6 +240,7 @@ class Brain(threading.Thread):
         self.calls: list[dict] = []
         self.said: list[str] = []
         self.shots: Path | None = None  # a folder to keep each call's screenshot in
+        self.prompt = PROMPT
         self.history: list[dict] = []  # this request's earlier calls: what each saw and replied
 
     @staticmethod
@@ -288,9 +326,11 @@ class Brain(threading.Thread):
         for past in self.history[-HISTORY:]:
             history += [{"role": "user", "content": past["context"]},
                         {"role": "assistant", "content": past["reply"] or "(nothing)"}]
-        body = {"model": self.model, "stream": True, "temperature": 0, "provider": {"sort": "latency"},
+        provider = ({"order": [PINNED[self.model]], "allow_fallbacks": False} if self.model in PINNED
+                    else {"sort": "latency"})
+        body = {"model": self.model, "stream": True, "temperature": 0, "provider": provider,
                 "reasoning": {"effort": self.effort} if self.effort else {"enabled": False},
-                "messages": [{"role": "system", "content": PROMPT}, *history,
+                "messages": [{"role": "system", "content": self.prompt}, *history,
                              {"role": "user", "content": [
                                  {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,"
                                                                      + base64.b64encode(image).decode()}},
@@ -321,6 +361,9 @@ class Brain(threading.Thread):
                         self._apply(done, record, started)
         if not record["cancelled"]:
             self._apply(text, record, started)  # the last line, which has no newline after it
+            if record["lines"] and record["lines"][-1].keys() & {"say", "ask"}:
+                with self.cond:  # a reply that ends by talking hands the turn back ("I'll open it" before acting doesn't)
+                    self.shared.finished = True
         if not record["lines"]:
             record["raw"] = full[:600]  # a reply with no action in it: what it said instead
         if not record["cancelled"] and full.strip():  # a call that added nothing isn't worth remembering
@@ -348,7 +391,6 @@ class Brain(threading.Thread):
             if "say" in action or "ask" in action:
                 self.said.append(str(action.get("say") or action.get("ask")))
                 self.conversation.append({"you": self.said[-1]})
-                self.shared.finished = True
             else:
                 self.shared.queue.append(action)
                 self.active_until = time.monotonic() + SLEEP_S
@@ -358,7 +400,9 @@ class Brain(threading.Thread):
 class QueueAgent:
     """The model and executor threads, taking turns, on one target."""
 
-    def __init__(self, target, model: str, effort: str, jev_key: str, log_dir: Path) -> None:
+    def __init__(self, target, model: str, effort: str, jev_key: str, log_dir: Path, clicker: str = "jev",
+                 plan: str = "screen") -> None:
+        """`plan` "screen": each reply covers one screen; "ahead": replies plan across screens, clicks wait."""
         self.cancel = CancelToken()
         self.trace: list[dict] = []
         self.started = time.monotonic()
@@ -370,7 +414,11 @@ class QueueAgent:
         profile = DeviceProfile("linux", (0, 0, w, h), "mouse", time.time())
         self.shared, self.cond = Shared(), threading.Condition()
         self.executor = Executor(self.controller, self.jev, profile, self.shared, self.cond, self.started, self.trace)
+        if clicker in CLICKERS:
+            self.executor.pointer = Pointer(self.cancel, self.jev, *CLICKERS[clicker])
         self.brain = Brain(target, self.shared, self.cond, self.executor, model, effort, self.started)
+        if plan == "ahead":
+            self.executor.appear_s, self.brain.prompt = APPEAR_S, PROMPT_AHEAD
         self.brain.shots = log_dir
         self.executor.start()
         self.brain.start()
@@ -383,4 +431,6 @@ class QueueAgent:
         self.brain.join(5)
         self.executor.join(5)
         self.jev.close()
+        if self.executor.pointer is not None:
+            self.executor.pointer.close()
         self.brain.client.close()

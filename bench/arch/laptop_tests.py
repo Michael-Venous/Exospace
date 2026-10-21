@@ -26,16 +26,17 @@ from pathlib import Path
 import cv2
 
 from bench.arch.laptop import HOST, LaptopTarget, shell
-from bench.arch.queue_agent import QueueAgent
+from bench.arch.queue_agent import CLICKERS, QueueAgent
 
 OUT = Path("work/arch/laptop")
 SPEECH_S = 0.35  # a word, about 170 words a minute
-QUIET_S = 3.0  # the agent counts as finished with a turn after this long with nothing running or queued
+QUIET_S = 2.0  # the agent counts as finished with a turn after this long with nothing running or queued
 # Fast vision models, the instruction-tuned (chat) variants OpenRouter serves; effort "" = reasoning off.
 MODELS = {"deepseek": ("deepseek/deepseek-v4.1-flash-1017", ""), "gemma31b": ("google/gemma-4-31b-it", ""),
           "flashlite": ("google/gemini-3.5-flash-lite", "minimal"), "flash38": ("google/gemini-3.8-flash", "minimal"),
           "luna": ("openai/gpt-6-luna", ""), "haiku": ("anthropic/claude-haiku-5.5", ""),
-          "qwen27b": ("qwen/qwen3.8-27b", ""), "glm": ("z-ai/glm-5.3-flashx", "minimal"),
+          "qwen27b": ("qwen/qwen3.8-27b", ""),
+          "qwen27b-think": ("qwen/qwen3.8-27b", "low"), "glm": ("z-ai/glm-5.3-flashx", "minimal"),
           "nemotron": ("nvidia/nemotron-3.5-super-vl", ""), "mimo": ("xiaomi/mimo-v2.6-flash", ""),
           "step5": ("stepfun/step-5-preview", "minimal"), "minimax": ("minimax/minimax-m3.1-flash:free", "minimal")}
 CHROME = ("setsid -f google-chrome-stable --user-data-dir=/tmp/exo-chrome --no-first-run --no-default-browser-check "
@@ -279,7 +280,9 @@ TESTS = [
          f"mkdir -p ~/.config/blender/5.2/scripts/startup && cat > {BLENDER_STARTUP} <<'PY'\n{BLENDER_ORACLE}\nPY\n"
          "rm -f /tmp/exo_blender.json", _house, turn_s=300, cleanup=f"rm -f {BLENDER_STARTUP} /tmp/exo_blender.json"),
 ]
-DEFAULT = [n for n in range(1, len(TESTS) + 1) if not TESTS[n - 1].name.startswith("blender")]
+# The default run, ~3.5 min: 2 (weather) and 9 (printer pdf) passed every run of the baseline and repeat others'
+# skills; 11 (Blender) waits until everything else passes.
+DEFAULT = [1, 3, 4, 5, 6, 7, 8, 10]
 
 
 def reset() -> None:
@@ -334,7 +337,8 @@ def wait_quiet(agent: QueueAgent, limit_s: float) -> tuple[float, str]:
     return time.monotonic() - started, f"over the {limit_s:.0f} s turn limit"
 
 
-def run(test: Test, index: int, repeat: int, model: str, effort: str, target: LaptopTarget, label: str) -> dict:
+def run(test: Test, index: int, repeat: int, model: str, effort: str, target: LaptopTarget, label: str,
+        clicker: str, plan: str) -> dict:
     folder = OUT / f"{label}-{index}-{repeat}"
     folder.mkdir(parents=True, exist_ok=True)
     reset()
@@ -343,7 +347,7 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
     if test.name.startswith("120hz"):
         test.data["wallpaper"] = wallpaper()
     grabs_before = len(target.grabs)
-    agent = QueueAgent(target, model, effort, os.environ["TYPESAFE_API_KEY"], folder)
+    agent = QueueAgent(target, model, effort, os.environ["TYPESAFE_API_KEY"], folder, clicker, plan)
     timeline: list[tuple[float, str]] = []  # the active window over the run, for debugging (oracle side only)
     watching = threading.Event()
 
@@ -401,9 +405,11 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tests", nargs="*", type=int, help="1-based test numbers (default: all but the Blender stress test)")
+    parser.add_argument("--tests", nargs="*", type=int, help="1-based test numbers (default: DEFAULT)")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--model", default="deepseek", choices=list(MODELS))
+    parser.add_argument("--clicker", default="jev", choices=["jev", *CLICKERS])
+    parser.add_argument("--plan", default="screen", choices=["screen", "ahead"])
     args = parser.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
     path = OUT / "report.json"
@@ -413,7 +419,8 @@ def main() -> None:
     try:
         for repeat in range(args.repeats):
             for n in args.tests or DEFAULT:
-                row = run(TESTS[n - 1], n, repeat, model, effort, target, args.model)
+                label = "+".join([args.model, *[x for x in (args.clicker, args.plan) if x not in ("jev", "screen")]])
+                row = run(TESTS[n - 1], n, repeat, model, effort, target, label, args.clicker, args.plan)
                 rows.append(row)
                 path.write_text(json.dumps(rows, indent=1))
                 print(json.dumps({k: row[k] for k in ("test", "model", "passed", "detail", "turns", "calls",

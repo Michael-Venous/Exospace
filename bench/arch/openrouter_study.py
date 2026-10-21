@@ -55,15 +55,17 @@ def parse_json(text: str) -> dict:
 
 class OpenRouterJSON:
     """`effort` "" turns reasoning off; `fastest` routes to the provider with the lowest latency, `only` to that
-    provider alone; `schema` off leaves the schema to the prompt (providers without structured output)."""
+    provider alone; `schema` off leaves the schema to the prompt (providers without structured output); `keepalive`
+    off opens a connection per call (a reused one failed with "bad record mac" in study 16)."""
 
     def __init__(self, model: str, key: str, effort: str = "low", fastest: bool = False, only: str = "",
-                 schema: bool = True) -> None:
+                 schema: bool = True, keepalive: bool = True) -> None:
         self.model, self.schema = model, schema
         self.reasoning = {"effort": effort} if effort else {"enabled": False}
         self.provider = ({"order": [only], "allow_fallbacks": False} if only
                          else {"sort": "latency"} if fastest else None)
-        self.client = httpx.Client(timeout=90, headers={"Authorization": f"Bearer {key}"})
+        limits = httpx.Limits(max_connections=100, max_keepalive_connections=20 if keepalive else 0)  # httpx defaults
+        self.client = httpx.Client(timeout=90, headers={"Authorization": f"Bearer {key}"}, limits=limits)
 
     def call(self, image: bytes | None, prompt: str, system: str, schema: dict) -> tuple[dict, dict]:
         """`image` None: a text-only call."""
