@@ -34,14 +34,15 @@ class _RouterClient(httpx.Client):
         return super().post(url, json=json, **kwargs)
 
 
-class RouterJSON(runtime_model.ZaiJSON):
-    effort = ""  # set by `routed`: "" turns reasoning off, else "minimal" / "low" / ...
+EFFORTS: dict[str, str] = {}  # per model, set by `routed`: "" turns reasoning off, else "minimal" / "low" / ...
 
+
+class RouterJSON(runtime_model.ZaiJSON):
     def __init__(self, api_key: str, model: str, thinking: str | None, cancel, timeout_s: float, log_path,
                  base_url: str, fallback_model: str = "") -> None:
         super().__init__(api_key, model, thinking, cancel, timeout_s, log_path, base_url, fallback_model)
         self.client.close()
-        self.client = _RouterClient(self.effort, base_url=base_url.rstrip("/") + "/", timeout=timeout_s,
+        self.client = _RouterClient(EFFORTS.get(model, ""), base_url=base_url.rstrip("/") + "/", timeout=timeout_s,
                                     headers={"Authorization": f"Bearer {api_key}"})
 
 
@@ -50,7 +51,7 @@ def routed(cfg: Config, model: str, effort: str = "") -> Config:
     key = os.environ.get("OPENROUTER_API_KEY", "")
     if not key:
         raise RuntimeError("OPENROUTER_API_KEY is not set")
-    RouterJSON.effort = effort
+    EFFORTS[model] = effort
     runtime_model.ZaiJSON = RouterJSON  # language_model() looks the class up at call time
     return replace(cfg, zai_api_key=key, zai_base_url=BASE_URL, zai_model=model, zai_planner_model=model,
                    zai_fallback_model="", zai_thinking=effort or "", model_timeout_s=20.0)

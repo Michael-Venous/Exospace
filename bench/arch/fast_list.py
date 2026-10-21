@@ -40,6 +40,7 @@ from brain.agent.race import RaceExecutor
 from brain.agent.triage import GATE
 from brain.cancel import CancelToken
 from brain.config import Config
+from brain.imaging import shrink
 from brain.types import Action, ActionError
 
 MODEL = "deepseek/deepseek-v4.1-flash-1017"
@@ -79,8 +80,9 @@ class FastList:
     """The fast planner itself: one element list and one fast call per step, on the race's own Jev client."""
 
     def __init__(self, cancel: CancelToken, jev: JevVision, approved_run: Callable[[StepContext], bool] | None,
-                 source: str) -> None:
+                 source: str, with_image: bool = False) -> None:
         self.cancel, self.jev, self.approved_run, self.source = cancel, jev, approved_run, source
+        self.with_image = with_image  # the screenshot rides along with the list (study 14's ocr+image)
         self.llm = OpenRouterJSON(MODEL, os.environ["OPENROUTER_API_KEY"], "", fastest=True)
         self.pointer = Pointer(cancel, jev, POINTER_MODEL)
         self.page = None
@@ -121,7 +123,8 @@ class FastList:
         listing = "\n".join(f"{i}: {text} @ {round(x * 1000)},{round(y * 1000)}" for i, text, (x, y) in elements)
         prompt = f"{context_prompt(ctx)}\nScreen elements:\n{listing or '(none found)'}"
         for attempt in range(2):
-            data, timing = self.cancel.run(lambda: self.llm.call(None, prompt, PROMPT, SCHEMA))
+            picture = shrink(image) if self.with_image else None
+            data, timing = self.cancel.run(lambda: self.llm.call(picture, prompt, PROMPT, SCHEMA))
             if done is not None and self.cancel.run(done.result) >= COMPLETION_GATE:
                 return Plan("Jev verified the completed goal", [Action("done", summary="Done.")], [])
             done = None
@@ -252,11 +255,12 @@ class HybridExecutor(RaceExecutor):
     """The runtime race as it is, the fast list in place of the Flash hand-off only."""
 
     source = "dom"
+    with_image = False
 
     def __init__(self, cfg: Config, cancel: CancelToken) -> None:
         super().__init__(replace(cfg, executor="race", jev_first=True), cancel)
         self.planner.__class__ = HybridPlanner  # the runtime's planner keeps its state, gains the fast list
-        self.planner.fast = FastList(cancel, self.planner.jev, self.approved_run, self.source)
+        self.planner.fast = FastList(cancel, self.planner.jev, self.approved_run, self.source, self.with_image)
 
     def attach_page(self, page) -> None:
         self.planner.fast.attach_page(page)
@@ -264,3 +268,7 @@ class HybridExecutor(RaceExecutor):
 
 class HybridOcrExecutor(HybridExecutor):
     source = "ocr"
+
+
+class HybridOcrImageExecutor(HybridOcrExecutor):
+    with_image = True
