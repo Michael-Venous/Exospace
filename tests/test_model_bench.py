@@ -2,6 +2,7 @@
 
 import json
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +13,7 @@ import numpy as np
 from bench.arch import model_matrix, router, vague
 from bench.arch.completion_log import CompletionLog
 from bench.arch.completion_study import errors
+from bench.arch.fast_list import FastListPlanner
 from bench.arch.option_scan import listing, ocr_point
 from bench.arch.plan_ground import PlanGroundPlanner
 from bench.arch.race_continue import LOOKAHEAD_PROMPT, ContinuePlanner, _HandBack
@@ -311,6 +313,40 @@ class OptionScanTests(unittest.TestCase):
 
     def test_a_listing_gives_ids_text_and_position_in_thousandths(self):
         self.assertEqual(listing(self.ELEMENTS[:1]), "t1: Starship flight 9 full launch replay @ 760,420")
+
+
+
+def _fast(reply: dict, done: float = 0.0) -> FastListPlanner:
+    planner = FastListPlanner.__new__(FastListPlanner)
+    jev = SimpleNamespace(trace=[], completion=lambda *a, **k: done, assess=lambda *a, **k: ({"irreversible": 0.0}, {}))
+    planner.__dict__.update(cancel=CancelToken(), approved_run=lambda ctx: False, source="dom", jev=jev, page=None,
+                            _dom=[("e1", "Reply", (0.5, 0.3)), ("e2", "Search", (0.2, 0.1))], _ocr=None,
+                            _check=ThreadPoolExecutor(max_workers=1),
+                            llm=SimpleNamespace(call=lambda *a: (reply, {"total": 0.3})),
+                            pointer=SimpleNamespace(point=lambda image, target: (0.9, 0.9)))
+    return planner
+
+
+class FastListTests(unittest.TestCase):
+    def test_a_click_lands_on_the_chosen_elements_centre_and_typing_follows(self):
+        plan = _fast({"actions": [{"type": "click", "element": "e2"}, {"type": "type_text", "text": "lofi"}],
+                      "done": False}).next_actions(SCREEN, _ctx("search lofi"))
+        self.assertEqual([(a.type, a.x, a.text) for a in plan.actions], [("click", 0.2, ""), ("type_text", None, "lofi")])
+
+    def test_a_target_the_list_lacks_goes_to_the_pointer(self):
+        plan = _fast({"actions": [{"type": "click", "target": "the gear icon"}], "done": False}).next_actions(
+            SCREEN, _ctx("open settings"))
+        self.assertEqual((plan.actions[0].x, plan.actions[0].y), (0.9, 0.9))
+
+    def test_jev_ends_a_request_whose_screen_shows_it_done_whatever_the_model_says(self):
+        ctx = replace(_ctx("open the reply"), history=["click(500,300)"])
+        plan = _fast({"actions": [{"type": "click", "element": "e1"}], "done": False}, done=0.9).next_actions(SCREEN, ctx)
+        self.assertEqual(plan.actions[0].type, "done")
+
+    def test_a_done_jev_doesnt_see_is_not_taken(self):
+        ctx = replace(_ctx("open the reply"), history=["click(500,300)"])
+        plan = _fast({"actions": [], "done": True}, done=0.1).next_actions(SCREEN, ctx)
+        self.assertNotEqual([a.type for a in plan.actions], ["done"])
 
 
 if __name__ == "__main__":

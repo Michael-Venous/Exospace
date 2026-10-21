@@ -19,6 +19,7 @@ from pathlib import Path
 from bench.arch.triage_executor import RaceExecutor, RaceLedgerExecutor, RaceRelaxedExecutor, TriageExecutor, TriageLedgerExecutor
 from bench.arch import correction, injection, studio, vague, workstation
 from bench.arch.completion_log import CompletionLog
+from bench.arch.fast_list import FastListExecutor, FastOcrExecutor
 from bench.arch.plan_ground import PlanGroundExecutor, PlanGroundPointerExecutor
 from bench.arch.race_continue import (RaceContinueExecutor, RaceGateExecutor, RaceLookaheadExecutor,
                                       RaceLookaheadPointerExecutor)
@@ -80,7 +81,8 @@ EXECUTORS = {"jev-flash (current)": JevFlashExecutor, "triage-first": TriageExec
              "final-concrete": RaceExecutor, "final-steps-aware": RaceLedgerExecutor,
              "runtime-race": RuntimeRaceExecutor, "race+pointer": RacePointerExecutor,
              "race+continue": RaceContinueExecutor, "race-gate0.6": RaceGateExecutor,
-             "race+lookahead": RaceLookaheadExecutor, "race+lookahead+pointer": RaceLookaheadPointerExecutor, "runtime-jev": runtime_as("jev"),
+             "race+lookahead": RaceLookaheadExecutor,
+             "race+fastlist-dom": FastListExecutor, "race+fastlist-ocr": FastOcrExecutor, "race+lookahead+pointer": RaceLookaheadPointerExecutor, "runtime-jev": runtime_as("jev"),
              "runtime-jev-only": runtime_as("jev-only"),
              "rewrite": RewriteExecutor, "rewrite-parallel": ParallelRewriteExecutor,
              "rewrite-on-stuck": RewriteOnStuckExecutor, "plan-ground": PlanGroundExecutor,
@@ -105,6 +107,8 @@ def run_segment(name: str, index: int, repeat: int, base: Config, scenario=works
         target.page.evaluate("s => load(s)", state)
         executor = EXECUTORS[name](cfg, token)
         cleanup.callback(executor.close)
+        if hasattr(executor, "attach_page"):  # a candidate that reads the page itself (fast_list.py's dom list)
+            executor.attach_page(target.page)
         trace: list[dict] = []
         log = None
         if hasattr(executor, "jev"):
