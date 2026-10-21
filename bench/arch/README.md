@@ -560,6 +560,53 @@ ocr 1 / 6 (p = 0.125).
    place of the Flash hand-off only (studio shows Jev's steps are faster where they work; vague shows the fast
    planner is faster than Flash where Jev hands off). A runtime change would be the Agent owner's.
 
+### Fast image models in the race, OCR + fast model, multi-turn dialogs (studies 14-15, 2026-10-20)
+`e2e_dialog.py`: a scripted user says each turn in order. Study 14 runs on `pc.py`, a simulated desktop
+(launcher, unlabelled taskbar icons, two browsers, Gmail, WhatsApp with two Nancys, files, PDF printing, printer
+settings, a driver installer behind an admin prompt). Study 15 runs on real Chrome on a virtual X display
+(`xdesk.py`, public sites, `web.py`; Xvfb, openbox and xdotool unpacked into `~/.local/opt/xbench`). Executors:
+the runtime race (Gemini 3.8 Flash); the race with its language model swapped for a fast image model on
+OpenRouter; and the race with the fast list (DeepSeek V4.1 Flash) at the hand-off over a CPU-OCR list, blind
+or with the screenshot. 2 repeats each, interleaved; `work/arch/dialog/`, `work/arch/web-dialog/`.
+
+**Measured, real Chrome, 7 tasks × 2**
+
+| Executor | Success | Unsafe | Total wall | LLM calls / s | Perception s |
+|---|---|---|---|---|---|
+| race (Gemini 3.8 Flash) | 11/14 | 0 | 192 s | 24 / 85 | – |
+| race@DeepSeek V4.1 Flash | 11/14 | 0 | 184 s | 56 / 50 | – |
+| race@Gemma 4 31B | 11/14 | 0 | 197 s | 46 / 54 | – |
+| race@Qwen 3.8 27B | 10/14 | 0 | 186 s | 36 / 35 | – |
+| race@Gemini 3.5 Flash-Lite | 10/14 | 0 | **116 s** | 21 / 32 | – |
+| hybrid, OCR list only | 7/14 | 0 | 200 s | 34 / 15 | 57 |
+| hybrid, OCR list + screenshot | 10/14 | 0 | 173 s | 17 / 10 | 35 |
+
+**Measured, simulated desktop, 6 dialogs × 2**: race 5/12 (478 s, 292 s of it LLM); DeepSeek 3/12 (244 s);
+Qwen 4/12 (241 s); Gemma 5/12 (174 s); Flash-Lite 4/12 (346 s); OCR hybrid 5/12 (341 s, 51 s perception);
+OCR + screenshot 5/12 (324 s). 0 unsafe for all. The simple dialogs (browse chain, files, reply to Alex)
+mostly pass for every executor; three fail for every one:
+- "close the youtube tab, then…": Jev chose its close-tab key, which closes the tab in front, not the named one.
+- WhatsApp: every executor opened WhatsApp in Firefox, met its QR login and asked the user to scan it; none
+  tried Chrome, where it is logged in. Triage also held "send a message to nancy" as irreversible before
+  anything was known, so the answers became new requests.
+- Printer: triage read "my pc is having issues" and "the printer isn't working" as remarks ("Noted."), so
+  nothing asked what was wrong or looked for the driver; printing then failed with no printer.
+- On real Chrome, Jev once typed the request's words "go to youtube" into Google as the search.
+
+**Measured, OCR** (`--ocr-recall`, RapidOCR on the CPU): of 126 interactive elements on 10 desktop screens it
+found 25 of the 37 with text; the other 89 are icons and symbols (taskbar, ✕, +, ←) that text can't find.
+0.5-0.6 s a screen there, ~1.7 s a step on real Chrome pages.
+
+#### What studies 14-15 support
+1. **A fast image model can replace Gemini 3.8 Flash in the race at no measured loss**: DeepSeek V4.1 Flash
+   and Gemma 4 31B matched its success on real Chrome (11/14) and on the desktop (Gemma 5/12) with a third to
+   two thirds of its model time; Flash-Lite was fastest overall. Two repeats: differences of 1-2 runs are noise.
+2. **CPU OCR doesn't earn its place**: blind it is worst (7/14); with the screenshot it matches the swapped
+   models but adds ~1-2 s a step and still can't see icons.
+3. **The complex dialogs fail on behaviour, not speed, for every model**: problem statements are taken as
+   remarks, an irreversible hold comes before clarifying questions, nothing tries another app when one is
+   blocked, and Jev's tab keys act on the tab in front. These are runtime changes (Agent owner).
+
 ### Streaming (study 2, `stream_study.py`)
 - Schema-enforced streaming is valid but only ~0.4 s faster (2.38 vs 2.79 s), because Flash
   plans **one stage per observation point** even when told to look ahead. That's sensible:
