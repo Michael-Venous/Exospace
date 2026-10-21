@@ -711,6 +711,13 @@ class JevOnlyTests(unittest.TestCase):
                          boxes=((.25, .0, .35, .05), (.0, .25, .05, .35)))
         self.assertEqual([a.brief() for a in kept], ["click(300,300)"])
 
+    def test_a_label_zoom_unsure_of_its_label_keeps_the_first_look(self):
+        goal = "in d 5 type hello"  # a zoom short of the sheet's edge put the crossing 3 rows off
+        kept = self.plan(goal, next="fill", text=str(spans(goal).index("hello")), labelled=.85,
+                         place=str(spans(goal).index("d 5")), looks=((.2, .9), (.8, .4)),
+                         boxes=((.15, .0, .25, .05), (.0, .35, .05, .45)), zoomed=.17)
+        self.assertEqual([a.brief() for a in kept], ["click(300,300)"])
+
     def test_text_typed_into_a_cell_is_entered_in_the_same_step(self):
         goal = "add hello to b1"
         hello = str(spans(goal).index("hello"))

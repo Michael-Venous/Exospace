@@ -80,9 +80,13 @@ LABELLED = ("Does the `goal` name the spot the next step clicks by labels along 
 # and a zoom around the first look's cell lost rows 10 away (2026-10-20). A first look already in that cell stays:
 # on Wikipedia's largest-cities table, "click the city in the third row of the table", the crossing put the click at
 # the City header's centre, x 0.245, past the "Tokyo" link main clicked at 0.240; main 3/3, crossing 0/3 (2026-10-20).
+# On Google Sheets "In d four, type high." boxed row 4's label beside the cell 6 of 8 times, and the zoom around it,
+# short of the sheet's left edge, was 0.17-0.26 sure of any; its 0.17 put the click 3 rows off. Told the labels are
+# along the outside edge, not a cell, the box was on the edge 8 of 8, both zooms 0.95-0.98 sure (2026-10-21).
 PLACE_NAME = "Which words of the `goal` name the place the next step acts on, such as a cell's column and row?"
 EDGES = ("column", "row")
-EDGE_LABEL = "The label of the {edge} the `goal` names, on the grid's edge."
+EDGE_LABEL = ("The label of the {edge} the `goal` names, among the {edge} labels along the outside edge of the grid, "
+              "not a cell inside it.")
 EDGE_ZOOM = "the label of the {edge} that \"{name}\" names, along the grid's edge"
 PLACED = "Is the place the `goal` names the one selected in `screen`, such as the selected cell, item or field?"
 PLACE_WAY = "Which way from the place selected in `screen` is the place the `goal` names?"
@@ -772,17 +776,17 @@ class JevOnlyPlanner:
                    first: tuple[float, float]) -> tuple[float, float] | None:
         """The cell `line` names by a grid's labels, its column and row each found by a zoom on its label told the
         words that name the place: the `first` look's point where it lies in that cell, else where they cross; None
-        where Jev picks no words or a zoom finds no label."""
+        where Jev picks no words or a zoom isn't sure of its label."""
         choice = answers["place"].get("choice")
         at = [box_center(answers[edge], size, padded) for edge in EDGES]
         if choice not in {str(i) for i in range(len(texts))} or None in at:
             return None
         state = {"goal": line}
         with ThreadPoolExecutor(2) as pool:
-            (column, _, across), (row, _, down) = pool.map(
+            (column, column_sure, across), (row, row_sure, down) = pool.map(
                 lambda edge, center: zoom(self.jev, image, state, EDGE_ZOOM.format(edge=edge, name=texts[int(choice)]),
                                           center, ZOOM_WINDOW, ctx.run_id, ctx.step), EDGES, at)
-        if not (column and row and across and down):
+        if not (column and row and across and down) or min(column_sure, row_sure) < GATE:
             return None
         inside = across[0] <= first[0] <= across[2] and down[1] <= first[1] <= down[3]
         return first if inside else (column[0], row[1])
