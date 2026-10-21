@@ -100,7 +100,8 @@ in Chromium kiosk mode on the Touch Display 2; on the projector it is the demo v
 ## Recordings
 
 `--recordings PORT --recordings-host ADDR` (with `--display`) saves every request to `work/recordings/<time>-<run>/`
-(its events plus each screen frame; the newest 50 are kept) and serves a player for a phone at `http://ADDR:PORT`.
+(its events plus each screen frame; the newest 50 are kept, and apart from them the newest 50 test runs, sent
+with `"test": true` and saved as `<time>-<run>-test`) and serves a player for a phone at `http://ADDR:PORT`.
 Each request plays back as a video: the screen at 4 fps on the Pi (once per step elsewhere), pausing 2.5 s on each
 decision with Jev's boxes and the click points, the plan in force (with its model and the current stage), and that
 step's Jev checks and scores. The server is read-only (it lists and serves saved files, never queues work), so on

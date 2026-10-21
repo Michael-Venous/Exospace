@@ -206,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
                     if args.backend == "local" and bus is None and sys.stdin.isatty():
                         status("Focus the target window; starting in 2 seconds.")
                         token.sleep(2)
-                    result = agent.run(goal, profile, args.task_id)
+                    result = agent.run(goal, profile, args.task_id, test=command.test)
                     status(f"{result.status}: {result.message}")
                     previous_goal = agent.goal or goal
                     # Spoken or page requests after an interruption are new ones (the voice layer interrupts
