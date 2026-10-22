@@ -95,6 +95,10 @@ Name what until expects in a few words you are sure of: a window or page title, 
 never details you guess (a checkbox, a thumbnail). Describe both until and done as they look ("only the
 wallpaper, no windows"), not by a name ("the desktop"): a fast vision check compares them with the screen.
   {"say": "It's running at 120 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
+  {"resume": true}                  when the user spoke in the middle of a task ("interrupted": that request and
+                                    its steps left), your new actions run first; end with resume to carry on with
+                                    the steps left (they added something, like "and make it fullscreen"), or leave
+                                    it out to drop them (they changed their mind, or want it to stop)
 A confirmed done, or a reply that ends with say or ask, ends your turn: the user speaks next.
 Rules:
 - Judge what the user means from the screen and the conversation before acting.
@@ -139,6 +143,8 @@ class Shared:
     turn_start: int = 0  # the log entry the current request starts at
     finished: bool = False  # a confirmed done, say or ask ended the turn: only new speech wakes the model
     request: int = 0  # counts requests: a wait from an earlier one gives up when a new one starts
+    held: list = field(default_factory=list)  # the steps an interrupted request still had queued
+    held_goal: str = ""  # that request's words
 
 
 class Executor(threading.Thread):
@@ -166,6 +172,7 @@ class Executor(threading.Thread):
                 self.shared.log.append(Record(round(time.monotonic() - self.started, 2), action, result, detail))
                 if result == "verified":
                     self.shared.finished = True
+                    self.shared.held, self.shared.held_goal = [], ""  # the request is done: nothing to resume
                 if result not in ("done", "verified"):
                     self.shared.queue.clear()  # the rest of the reply assumed this worked
                 if not self.shared.queue:
@@ -326,7 +333,10 @@ class Brain(threading.Thread):
 
     def hear(self, words: str, speaking: bool) -> None:
         with self.cond:
-            if not self.words:  # a new request starts here: it interrupts whatever the last one left queued
+            if not self.words:  # a new request starts here: what the last one left queued is held, not run
+                busy = not self.shared.finished and (self.shared.queue or self.shared.state == "running")
+                last = next((t["user"] for t in reversed(self.conversation) if "user" in t), "")
+                self.shared.held, self.shared.held_goal = (list(self.shared.queue), last) if busy else ([], "")
                 self.shared.turn_start = len(self.shared.log)
                 self.shared.queue.clear()
                 self.shared.request += 1
@@ -397,6 +407,9 @@ class Brain(threading.Thread):
                 "conversation_before": self.conversation[-12:],
                 "log": [{"t": r.t, "action": r.action, "result": r.result, "detail": r.detail}
                         for r in self.shared.log[-LOG_TAIL:]]}
+            if self.shared.held:  # the user spoke in the middle of a request: the model decides what becomes of it
+                context["interrupted"] = {"request": self.shared.held_goal, "steps_left": self.shared.held[:20],
+                                          "count": len(self.shared.held)}
             if self.shared.log:  # the screen is this old relative to the last action: loading takes a moment
                 context["seconds_since_last_action"] = round(time.monotonic() - self.started - self.shared.log[-1].t, 1)
         # The request so far as a chat: each earlier call's situation and the model's own reply (text only), so it
@@ -478,6 +491,13 @@ class Brain(threading.Thread):
             return
         record["lines"].append({"at_s": round(time.monotonic() - started, 3), **action})
         with self.cond:
+            if "resume" in action:  # carry on with the interrupted request's steps, after the new ones
+                if self.shared.held:
+                    self.shared.queue.extend(self.shared.held)
+                    self.shared.goal = f"{self.shared.held_goal}; and: {self.words}"
+                    self.shared.held, self.shared.held_goal = [], ""
+                self.cond.notify_all()
+                return
             if "say" in action or "ask" in action:
                 self.said.append(str(action.get("say") or action.get("ask")))
                 self.conversation.append({"you": self.said[-1]})
