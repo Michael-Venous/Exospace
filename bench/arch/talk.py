@@ -278,6 +278,7 @@ def main() -> None:
                 if call.get("total_s") is not None or call.get("error") or call.get("cancelled"):
                     # a cancelled call's actions that had already streamed still run: show them too
                     print(f"  [{call['t']:.2f}] model {'(cancelled by new words) ' if call.get('cancelled') else ''}"
+                          f"{'(stuck: stepping back, reasoning) ' if call.get('step_back') else ''}"
                           f"first token {call.get('ttft_s')} s: "
                           f"{[{k: v for k, v in a.items() if k != 'at_s'} for a in call['lines']] or call.get('error', '')}",
                           flush=True)

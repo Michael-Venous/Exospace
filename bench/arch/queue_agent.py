@@ -51,6 +51,11 @@ READ_S = 3.0  # longest wait for the model's next streamed bytes, its first toke
 RUNAWAY = 8  # the same action this many times in a row ends a reply
 LOOPS = 3  # the same reply this many times in one request: it is going in circles, and stops
 DONE_TAIL = 300  # actions of this request each call sees, compactly
+FAILED = {"not_shown", "not_found", "error", "not_verified"}
+STEP_BACK_EFFORT = "low"  # medium took 3.9 s, or ran out of tokens reasoning (11.6 s)
+STEP_BACK = ("\n\nYou are stuck. Step back before you act: say in one sentence what is actually on the screen and why "
+             "your last steps didn't work, then reply with actions for a different approach, or ask the user one "
+             "specific question if you see no way.")
 REPEATING = ("You sent this same reply twice in this request, and the screen still doesn't show what you meant: "
              "don't send it again. Look closer (make the window bigger, zoom in) or check another way, or try a "
              "different approach.")
@@ -98,7 +103,8 @@ you will see it again.
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
                                     proves it; it is checked on the screen before it counts
 Name what until expects in a few words you are sure of: a window or page title, a heading ("the Bluetooth page"),
-never details you guess (a checkbox, a thumbnail). Describe both until and done as they look ("only the
+never details you guess (a checkbox, a thumbnail), and only what isn't on the screen yet: waiting for what already
+shows passes at once and proves nothing. Describe both until and done as they look ("only the
 wallpaper, no windows"), not by a name ("the desktop"): a fast vision check compares them with the screen.
   {"say": "It's running at 120 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
   {"resume": true}                  when the user spoke in the middle of a task ("interrupted": that request and
@@ -337,6 +343,7 @@ class Brain(threading.Thread):
         self.said: list[str] = []
         self.shots: Path | None = None  # a folder to keep each call's screenshot in
         self.prompt = PROMPT
+        self.stepped_back = -1  # the log length at the last stepping-back call: once per stuck spell
         self.replies: dict[str, int] = {}  # this request's replies and how often each came (a loop guard)
         self.hosts = list(PINNED.get(model, ()))  # the providers in the order tried; empty: the fastest serves
         self.history: list[dict] = []  # this request's earlier calls: what each saw and replied
@@ -445,19 +452,27 @@ class Brain(threading.Thread):
         for past in self.history[-HISTORY:]:
             history += [{"role": "user", "content": past["context"]},
                         {"role": "assistant", "content": past["reply"] or "(nothing)"}]
+        # Stuck (a reply sent twice, or two failures running): one call reasons and steps back. At a loop it found
+        # the image viewer the model kept clicking in (2/2, 2.2-2.7 s), where the usual call repeated its click.
+        recent = [r.result for r in self.shared.log[self.shared.turn_start:][-2:]]
+        stuck = "repeating" in context or (len(recent) == 2 and all(r in FAILED for r in recent))
+        step_back = stuck and self.stepped_back != len(self.shared.log)
+        if step_back:
+            self.stepped_back = len(self.shared.log)
+        effort = STEP_BACK_EFFORT if step_back else self.effort
         provider = ({"order": self.hosts, "allow_fallbacks": False} if self.hosts else {"sort": "latency"})
         body = {"model": self.model, "stream": True, "temperature": 0, "provider": provider,
-                "reasoning": {"effort": self.effort} if self.effort else {"enabled": False},
+                "reasoning": {"effort": effort} if effort else {"enabled": False},
                 "messages": [{"role": "system", "content": self.prompt}, *history,
                              {"role": "user", "content": [
                                  {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,"
                                                                      + base64.b64encode(image).decode()}},
-                                 {"type": "text", "text": json.dumps(context)}]}]}
+                                 {"type": "text", "text": json.dumps(context) + (STEP_BACK if step_back else "")}]}]}
         started = time.monotonic()
         heard = started  # when the reply last brought new text
         self.phase = ("streaming", round(started - self.started, 2))
         record = {"t": round(started - self.started, 2), "speaking": self.speaking, "words": self.words,
-                  "lines": [], "cancelled": False}
+                  "lines": [], "cancelled": False, "step_back": step_back}
         self.calls.append(record)
         text, full = "", ""
         with self.client.stream("POST", OPENROUTER, json=body) as response:
@@ -474,8 +489,9 @@ class Brain(threading.Thread):
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue
                 for choice in json.loads(line[6:]).get("choices", []):
-                    piece = (choice.get("delta") or {}).get("content") or ""
-                    if piece:
+                    delta = choice.get("delta") or {}
+                    piece = delta.get("content") or ""
+                    if piece or delta.get("reasoning"):  # a stepping-back call reasons before it answers
                         heard = time.monotonic()
                     if piece and "ttft_s" not in record:
                         record["ttft_s"] = round(time.monotonic() - started, 3)
@@ -490,7 +506,9 @@ class Brain(threading.Thread):
                     self.shared.finished = True
         if not record["lines"]:
             record["raw"] = full[:600]  # a reply with no action in it: what it said instead
-        if not record["cancelled"] and record["lines"]:
+        if not record["cancelled"] and record["lines"] and not record["speaking"]:
+            # only replies to the finished request: while the user speaks, calls on growing words repeat the same
+            # first steps by design (a profile switch was stopped as "in circles" after 2.6 s)
             reply = json.dumps([{k: v for k, v in line.items() if k != "at_s"} for line in record["lines"]])
             self.replies[reply] = self.replies.get(reply, 0) + 1
             if self.replies[reply] >= LOOPS:  # the same reply again and again: stop and say so
