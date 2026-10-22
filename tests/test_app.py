@@ -18,7 +18,7 @@ class ReconnectTests(unittest.TestCase):
             def __init__(self, *args, **kwargs):
                 self.reconnect, self.goal = args[-1], ""
 
-            def run(self, goal, profile, task_id):
+            def run(self, goal, profile, task_id, test=False):
                 seen.append((goal, profile.connected_at, detect.call_count))
                 if goal == "restart":
                     monitor.generation += 1
@@ -61,7 +61,7 @@ class DisplayGoalTests(unittest.TestCase):
             def __init__(self, *args, **kwargs):
                 self.goal = ""
 
-            def run(self, goal, profile, task_id):
+            def run(self, goal, profile, task_id, test=False):
                 goals.append(goal)
                 return Mock(status=statuses[len(goals) - 1], message="")
 

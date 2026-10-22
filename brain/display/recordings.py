@@ -23,9 +23,10 @@ from typing import TextIO
 from brain.events import Event, EventBus
 
 RECORDINGS = Path("work/recordings")
-KEEP_RUNS = 50  # older recordings are deleted when a new request starts
+KEEP_RUNS = 50  # of the user's runs and of test runs each: older ones go when a new one of its kind starts
 MAX_FRAMES = 2400  # live frames per run: 10 min of the Pi's 4 fps view; step screens are always saved
-NAME = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9a-z]{1,12}")  # <date>-<time>-<run id>, the recording's folder
+NAME = re.compile(r"[0-9]{8}-[0-9]{6}-[0-9a-z]{1,12}(-test)?")  # <date>-<time>-<run id>[-test], the recording's folder
+TEST = "-test"
 SHUTDOWN_POLL_S = 0.05
 
 
@@ -75,10 +76,12 @@ class Recorder:
 
     def _start(self, event: Event) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
-        for old in recordings(self.root)[KEEP_RUNS - 1:]:
+        # Test runs pushed the user's own out: the WhatsApp runs they asked about were gone hours later (2026-10-21).
+        test = event.get("test") is True
+        for old in [n for n in recordings(self.root) if n.endswith(TEST) == test][KEEP_RUNS - 1:]:
             shutil.rmtree(self.root / old, ignore_errors=True)
         run_id = re.sub(r"[^0-9a-z]", "", str(event.get("run_id", "")).lower())[:12] or "run"
-        self._dir = self.root / f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(event['t']))}-{run_id}"
+        self._dir = self.root / f"{time.strftime('%Y%m%d-%H%M%S', time.localtime(event['t']))}-{run_id}{TEST * test}"
         self._dir.mkdir()
         self._log = (self._dir / "log.jsonl").open("a", buffering=1)  # line-buffered: a live run is viewable
         self._frames, self._live = set(), 0

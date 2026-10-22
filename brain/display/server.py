@@ -6,6 +6,7 @@ GET  /screen.jpg  latest screen image (active rect, so tap coordinates map 1:1)
 GET  /frame/N.jpg  the screen a step was decided on (N from its plan event; the last KEPT_FRAMES steps)
 POST /goal        {"text": "...", "continues": bool} a typed or transcribed request; continues: it
                                                   extends the last request (more of the same utterance)
+                  "test": true marks a test run, recorded apart from the user's (brain/README.md, "Recordings")
 POST /tap         {"x": 0-1, "y": 0-1, "mode": "click"|"point"}
 POST /stop        cancel whatever is running (same path as barge-in) and drop queued requests
 
@@ -44,6 +45,7 @@ class Command:
     kind: Literal["goal", "click", "point"]
     text: str = ""
     continues: bool = False  # more of the same spoken request
+    test: bool = False  # a test run, not the user's
     x: float = 0.0
     y: float = 0.0
 
@@ -122,7 +124,8 @@ class _Handler(BaseHTTPRequestHandler):
                 text = str(body.get("text", "")).strip()
                 if not text:
                     raise ValueError("text is required")
-                self.commands.put(Command("goal", text=text, continues=body.get("continues") is True))
+                self.commands.put(Command("goal", text=text, continues=body.get("continues") is True,
+                                          test=body.get("test") is True))
             elif self.path == "/tap":
                 mode = body.get("mode", "click")
                 if mode not in ("click", "point"):

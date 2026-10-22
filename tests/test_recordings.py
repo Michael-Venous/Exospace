@@ -22,8 +22,8 @@ class RecorderTests(unittest.TestCase):
         while not self.recorder._client.empty():
             self.recorder.handle(self.recorder._client.get_nowait())
 
-    def request(self, run_id, goal="open mail"):
-        self.bus.publish("run", goal=goal, run_id=run_id)
+    def request(self, run_id, goal="open mail", test=False):
+        self.bus.publish("run", goal=goal, run_id=run_id, test=test)
         self.bus.set_frame(b"live")
         self.pump()  # the recorder keeps up, so it sees each frame
         step = self.bus.set_frame(b"step", keep=True)
@@ -64,6 +64,13 @@ class RecorderTests(unittest.TestCase):
         names = recordings(self.root)
         self.assertEqual([n.rsplit("-", 1)[1] for n in names], ["d4", "c3"])
         self.assertEqual(summary(self.root, names[0])["status"], "running")
+
+    def test_test_runs_never_push_out_the_users_runs(self):
+        with patch("brain.display.recordings.KEEP_RUNS", 2):
+            self.request("a1")
+            for run_id in ("t1", "t2", "t3"):
+                self.request(run_id, test=True)
+        self.assertEqual([n.split("-", 2)[2] for n in recordings(self.root)], ["t3-test", "t2-test", "a1"])
 
     def test_a_disk_error_drops_the_recording_not_the_agent(self):
         self.recorder.root = self.root / "file"

@@ -66,7 +66,7 @@ class Agent:
         self.more_words = more_words
         self.goal = ""  # the running request, with any words that joined it
 
-    def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive") -> TaskResult:
+    def run(self, goal: str, profile: DeviceProfile, task_id: str = "interactive", test: bool = False) -> TaskResult:
         ctl, token = self.controller, self.controller.cancel
         started = time.monotonic()
         run_id = self.telemetry.new_run()
@@ -83,7 +83,7 @@ class Agent:
         self.memory.set_task(goal, "running")
         self.memory.add_turn("user", goal)
         self.on_status("Working on your request…")
-        self._emit("run", goal=goal, run_id=run_id)
+        self._emit("run", goal=goal, run_id=run_id, test=test)
         try:
             progress_at = time.monotonic()
             for step in range(1, self.max_steps + 1):
