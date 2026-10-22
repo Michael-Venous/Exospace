@@ -36,8 +36,8 @@ from brain.imaging import shrink
 from brain.types import Action, DeviceProfile
 
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
-DEVICE = os.environ.get("EXO_DEVICE", "Linux laptop, KDE Plasma desktop. The GUI key opens the application launcher. "
-                                      "The panel hides itself.")  # the target as the model is told it
+DEVICE = os.environ.get("EXO_DEVICE", "Linux laptop, KDE Plasma desktop. The GUI key opens the application "
+                                      "launcher; GUI+PAGEUP maximizes the window in front. The panel hides itself.")  # the target as the model is told it
 MODIFIERS = {"CTRL", "SHIFT", "ALT"}  # pressed alone they do nothing (GUI alone opens the launcher)
 SEE_SIDE = int(os.environ.get("EXO_SEE_SIDE", "1280"))  # the longest side of the screenshot the brain sees
 # CTRL+L then typing 0.06 s later lost the first letters ("youtube.com" became "tube.com") while Chrome focused its
@@ -83,8 +83,9 @@ you will see it again.
   {"type": "lofi hip hop"}          type these words into whatever has focus
   {"click": "Reply"}                click a visible control, named by its exact visible text when it has any
                                     ("Reply", "119.93 Hz"); an icon by its look and place ("the gear icon at the
-                                    top right"); when the text shows more than once, say which ("the Home link in
-                                    the first paragraph"); also "double_click", "right_click"; add "hold": ["CTRL"] to
+                                    top right"); when the text shows more than once, say which ("the Home link
+                                    in the first paragraph") or name it by what only it shows (an email address, a
+                                    date); also "double_click", "right_click"; add "hold": ["CTRL"] to
                                     click while holding keys (CTRL or SHIFT to select several files or items)
   {"drag": ["the file report.pdf", "the Documents folder in the sidebar"]}   press on one spot, release on another
   {"scroll": 3, "at": "the list of results"}   mouse-wheel notches, positive down ("at" optional)
@@ -112,6 +113,8 @@ Rules:
 - If the log shows an action failed, or the screen shows it changed nothing, don't repeat it: try another way.
 - When steps keep not showing their result, the screen may be too small to show it: make the window bigger or zoom
   in to check before doing them again.
+- A click that changed nothing probably missed: maximize the window, or click the target by other text it shows,
+  before asking the user. In a small window, maximize it before working in small text (a list, a menu).
 - Pages, apps and dialogs take a moment to appear: end such a reply with until. If you only just asked for one
   (seconds_since_last_action) and the screen doesn't show it yet, reply with nothing: never ask for it again while
   it may still be coming.
