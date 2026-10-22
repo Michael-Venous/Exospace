@@ -19,6 +19,8 @@ import re
 import shutil
 import sqlite3
 import statistics
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -408,6 +410,7 @@ def reset() -> None:
     """Close every app window the run opened, the apps it started and its leftover files: each test starts on the
     desktop as the run found it (empty on the test laptop). The test browsers (their own profiles) always go, even
     from an earlier run that crashed."""
+    shell("kscreen-doctor --dpms on >/dev/null 2>&1")  # an idle laptop turns its display off: every test starts lit
     kwin(close_js())
     time.sleep(1.5)
     shell(f"pkill -f exo-chrome; pkill -f 'profile /tmp/exo-f[f]'; for app in blender okular kate kwrite kcalc kamoso systemsettings dolphin konsole "
@@ -518,6 +521,61 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
     return row
 
 
+class Friend:
+    """Another branch's runtime agent (`friend_run.py`) in its own process, its own `brain` on PYTHONPATH: one
+    request in, its result out."""
+
+    def __init__(self, tree: Path) -> None:
+        env = {**os.environ, "PYTHONPATH": str(tree), "EXECUTOR": os.environ.get("EXECUTOR", "jev-only")}
+        self.proc = subprocess.Popen([sys.executable, "-u", str(Path(__file__).with_name("friend_run.py"))],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
+        assert json.loads(self.proc.stdout.readline()).get("ready")
+
+    def run(self, goal: str) -> dict:
+        self.proc.stdin.write(json.dumps({"goal": goal}) + "\n")
+        self.proc.stdin.flush()
+        return json.loads(self.proc.stdout.readline())
+
+    def close(self) -> None:
+        self.proc.stdin.close()
+        self.proc.wait(timeout=20)
+
+
+def run_friend(test: Test, index: int, repeat: int, friend: Friend, out: Path) -> dict:
+    """One test with the other agent: the same setup, words and oracle; it hears each turn whole when it's said."""
+    reset()
+    test.data = {}
+    shell(f"touch /tmp/exo_test_start; {test.setup}", timeout=60)
+    started = time.monotonic()
+    timeline: list[tuple[float, str]] = []
+    watching = threading.Event()
+
+    def watch() -> None:
+        while not watching.is_set():
+            timeline.append((round(time.monotonic() - started, 1), active_caption()))
+            watching.wait(0.5)
+
+    threading.Thread(target=watch, daemon=True).start()
+    turns, said = [], []
+    try:
+        for words in test.turns:
+            time.sleep(SPEECH_S * len(words.split()))  # as long as saying it takes; the agent starts at its end
+            result = friend.run(words)
+            said += result["said"] + [result["message"]]
+            turns.append({"turn": words, "after_speech_s": result["s"], "status": result["status"],
+                          "stalled": "" if result["s"] <= test.turn_s else f"over the {test.turn_s:.0f} s turn limit",
+                          "first_input_vs_speech_end_s": result["inputs"][0] if result["inputs"] else None})
+        test.data.update(timeline=timeline, said=said)
+        passed, detail = test.check(test)
+        passed = passed and not any(t["stalled"] for t in turns)
+    finally:
+        watching.set()
+        if test.cleanup:
+            shell(test.cleanup)
+    return {"test": test.name, "index": index, "repeat": repeat, "model": "friend", "passed": passed,
+            "detail": detail, "turns": turns, "said": said}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tests", nargs="*", type=int, help="1-based test numbers (default: the --suite)")
@@ -527,6 +585,7 @@ def main() -> None:
     parser.add_argument("--clicker", default="qwen", choices=["jev", *CLICKERS])
     parser.add_argument("--plan", default="screen", choices=["screen", "ahead"])
     parser.add_argument("--out", type=Path, default=OUT)
+    parser.add_argument("--friend", type=Path, help="another branch's checkout: run its runtime agent instead")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
     path = args.out / "report.json"
@@ -534,6 +593,21 @@ def main() -> None:
     kwin(minimize_js(True))
     rows = json.loads(path.read_text()) if path.exists() else []
     model, effort = MODELS[args.model]
+    if args.friend:
+        friend = Friend(args.friend)
+        try:
+            for repeat in range(args.repeats):
+                for n in args.tests or SUITES[args.suite]:
+                    row = run_friend(TESTS[n - 1], n, repeat, friend, args.out)
+                    rows.append(row)
+                    path.write_text(json.dumps(rows, indent=1))
+                    print(json.dumps({k: row[k] for k in ("test", "model", "passed", "detail", "turns")})[:600],
+                          flush=True)
+        finally:
+            reset()
+            kwin(minimize_js(False))
+            friend.close()
+        return
     target = LaptopTarget()
     try:
         for repeat in range(args.repeats):
