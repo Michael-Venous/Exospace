@@ -82,10 +82,12 @@ you will see it again.
                                     click while holding keys (CTRL or SHIFT to select several files or items)
   {"drag": ["the file report.pdf", "the Documents folder in the sidebar"]}   press on one spot, release on another
   {"scroll": 3, "at": "the list of results"}   mouse-wheel notches, positive down ("at" optional)
-  {"until": "the Bluetooth settings page"}   end a reply with this when a page, an app or a
-                                    dialog has to load: you are called again as soon as the screen shows it. Menus,
-                                    the launcher, dropdowns, typed text and closing something are instant: no until
-                                    (launching an app stays one reply: GUI, its name, ENTER, until the app)
+  {"until": "the Bluetooth settings page"}   wait until the screen shows it, when a page, an app or a dialog
+                                    has to load. The actions after it in the same reply run as soon as it shows, so
+                                    keep going when you know the next steps (launching an app is one reply: GUI,
+                                    its name, ENTER, until the app; then what you do in it). End the reply at an
+                                    until only when the next step depends on what will show. Typed text and
+                                    closing something are instant: no until.
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
                                     proves it; it is checked on the screen before it counts
 Name what until expects in a few words you are sure of: a window or page title, a heading ("the Bluetooth page"),
