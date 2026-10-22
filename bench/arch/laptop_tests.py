@@ -55,9 +55,13 @@ user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.tabs.warnOnClose", false);
 JS
 setsid -f firefox --no-remote --profile /tmp/exo-ff https://www.google.com >/dev/null 2>&1; sleep 4"""
-LOCK = "--file kscreenlockerrc --group Daemon --key Autolock"
-AUTOLOCK_ON = f"kreadconfig6 {LOCK} > /tmp/exo_autolock; kwriteconfig6 {LOCK} true"  # the owner's value is kept
-AUTOLOCK_BACK = f"kwriteconfig6 {LOCK} \"$(cat /tmp/exo_autolock)\""
+# Auto-lock on after 5 minutes (the page shows "Never" for a 0 timeout whatever Autolock says); the owner's values
+# are kept and put back.
+LOCK = "--file kscreenlockerrc --group Daemon --key"
+AUTOLOCK_ON = (f"kreadconfig6 {LOCK} Autolock > /tmp/exo_autolock; kreadconfig6 {LOCK} Timeout > /tmp/exo_locktime; "
+               f"kwriteconfig6 {LOCK} Autolock true; kwriteconfig6 {LOCK} Timeout 5")
+AUTOLOCK_BACK = (f"kwriteconfig6 {LOCK} Autolock \"$(cat /tmp/exo_autolock)\"; "
+                 f"kwriteconfig6 {LOCK} Timeout \"$(cat /tmp/exo_locktime)\"")
 WINDOWS_JS = """var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
 for (var i = 0; i < ws.length; i++) { var w = ws[i]; if (w.normalWindow || w.dialog)
   print("EXOWIN " + JSON.stringify({id: String(w.internalId), caption: w.caption, cls: w.resourceClass,
@@ -260,6 +264,13 @@ def _setting(file: str, group: str, key: str, want: str) -> tuple[bool, str]:
     return value == want, f"{file} [{group}] {key} = {value!r}"
 
 
+def _autolock_off() -> tuple[bool, str]:
+    """Off either way the page saves it: the switch, or a "Never" timeout."""
+    on = shell("kreadconfig6 --file kscreenlockerrc --group Daemon --key Autolock").strip()
+    minutes = shell("kreadconfig6 --file kscreenlockerrc --group Daemon --key Timeout").strip()
+    return on == "false" or minutes == "0", f"Autolock {on!r}, Timeout {minutes!r}"
+
+
 def _camera(test: Test) -> tuple[bool, str]:
     shots = shell("find ~/Pictures -maxdepth 1 -newer /tmp/exo_test_start -name '*.jpg'").split()
     open_ = [w["caption"] for w in windows() if "kamoso" in w["cls"].lower() and not w["minimized"]]
@@ -359,7 +370,7 @@ TESTS = [
                           "close chrome"], "true", _steps, turn_s=30, suite="steps"),
     # (Night light has no on/off switch in this Plasma's settings: replaced by a plain switch that needs Apply.)
     Test("autolock off", ["open system settings, go to screen locking, turn off lock screen automatically, and apply"],
-         AUTOLOCK_ON, lambda t: _setting("kscreenlockerrc", "Daemon", "Autolock", "false"), turn_s=30, suite="steps",
+         AUTOLOCK_ON, lambda t: _autolock_off(), turn_s=30, suite="steps",
          cleanup=AUTOLOCK_BACK),
     Test("camera picture", ["open the camera app, take a picture, then close it"], "true", _camera, turn_s=30,
          suite="steps", cleanup="find ~/Pictures -maxdepth 1 -newer /tmp/exo_test_start -name '*.jpg' -delete"),

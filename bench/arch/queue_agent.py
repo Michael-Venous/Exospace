@@ -76,20 +76,20 @@ you will see it again.
   {"type": "lofi hip hop"}          type these words into whatever has focus
   {"click": "Reply"}                click a visible control, named by its exact visible text when it has any
                                     ("Reply", "119.93 Hz"); an icon by its look and place ("the gear icon at the
-                                    top right"); when the text shows more than once, say which ("the Paris link in
+                                    top right"); when the text shows more than once, say which ("the Home link in
                                     the first paragraph"); also "double_click", "right_click"; add "hold": ["CTRL"] to
                                     click while holding keys (CTRL or SHIFT to select several files or items)
   {"drag": ["the file report.pdf", "the Documents folder in the sidebar"]}   press on one spot, release on another
   {"scroll": 3, "at": "the list of results"}   mouse-wheel notches, positive down ("at" optional)
-  {"until": "a video player with the title above its comments"}   end a reply with this when a page, an app or a
+  {"until": "the Bluetooth settings page"}   end a reply with this when a page, an app or a
                                     dialog has to load: you are called again as soon as the screen shows it. Menus,
                                     the launcher, dropdowns, typed text and closing something are instant: no until
                                     (launching an app stays one reply: GUI, its name, ENTER, until the app)
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
                                     proves it; it is checked on the screen before it counts
-Describe what until and done expect as it looks on the screen ("only the wallpaper, no windows"), not by a name
-("the desktop"), and only what you are sure will be there (a title, a heading), not details you guess: a fast
-vision check compares it with the screen.
+Name what until expects in a few words you are sure of: a window or page title, a heading ("the Bluetooth page"),
+never details you guess (a checkbox, a thumbnail). Describe both until and done as they look ("only the
+wallpaper, no windows"), not by a name ("the desktop"): a fast vision check compares them with the screen.
   {"say": "It's running at 120 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
 A confirmed done, or a reply that ends with say or ask, ends your turn: the user speaks next.
 Rules:
@@ -101,6 +101,7 @@ Rules:
   (seconds_since_last_action) and the screen doesn't show it yet, reply with nothing: never ask for it again while
   it may still be coming.
 - State only what the screen shows; never guess a result.
+- The user hears say and ask, never done: when they asked to be told something, say it before done.
 - Use keyboard shortcuts where they are sure.
 - Words typed in a browser's address bar search the web, not the site that is open: to search a site, use its
   own search box."""
