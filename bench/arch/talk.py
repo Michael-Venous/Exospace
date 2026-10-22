@@ -29,7 +29,8 @@ from websockets.sync.client import connect
 from bench.arch.laptop import SESSION, LaptopTarget
 from bench.arch.queue_agent import QueueAgent
 
-KEY_HOME, EV_KEY = 102, 1
+# Home, and the keypad's 7/Home, which this laptop's Home key sends (code 71; Home while Num Lock is off).
+HOME_KEYS, EV_KEY = {102, 71}, 1
 EVENT = struct.Struct("llHHi")  # struct input_event on 64-bit Linux
 RATE = 16000
 DEEPGRAM = (f"wss://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sample_rate={RATE}&channels=1"
@@ -142,7 +143,7 @@ def main() -> None:
                 data = f.read(EVENT.size * 64)
                 for i in range(0, len(data) - EVENT.size + 1, EVENT.size):
                     _, _, kind, code, value = EVENT.unpack_from(data, i)
-                    if kind != EV_KEY or code != KEY_HOME or value == 2:  # 2: key repeat
+                    if kind != EV_KEY or code not in HOME_KEYS or value == 2:  # 2: key repeat
                         continue
                     if value == 1 and talking is None:
                         agent.brain.end_turn()  # the last request is over; this is the next one
