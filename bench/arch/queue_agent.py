@@ -49,6 +49,8 @@ FIRST_TOKEN_S = 2.5  # a reply that brings no new text for this long is asked ag
 # one stalled 7.8 s before it, another mid-reply)
 READ_S = 3.0  # longest wait for the model's next streamed bytes, its first token included
 RUNAWAY = 8  # the same action this many times in a row ends a reply
+LOOPS = 3  # the same reply this many times in one request: it is going in circles, and stops
+DONE_TAIL = 300  # actions of this request each call sees, compactly
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
 # Each model on one host. Qwen's quality depends on it (study 17: 192/192 pointed on ModelRun, 15/192 on Cerebras);
@@ -297,6 +299,12 @@ class Executor(threading.Thread):
         return point
 
 
+def _brief(action: dict) -> str:
+    """An action in a few characters: "key CTRL+L", "type 'Add Cone'", "click Save"."""
+    kind, value = next(iter(action.items()))
+    return f"{kind} {'+'.join(value) if isinstance(value, list) else repr(value) if kind == 'type' else value}"
+
+
 class Brain(threading.Thread):
     """The model loop: one call, its actions run, then the next call."""
 
@@ -319,6 +327,7 @@ class Brain(threading.Thread):
         self.said: list[str] = []
         self.shots: Path | None = None  # a folder to keep each call's screenshot in
         self.prompt = PROMPT
+        self.replies: dict[str, int] = {}  # this request's replies and how often each came (a loop guard)
         self.hosts = list(PINNED.get(model, ()))  # the providers in the order tried; empty: the fastest serves
         self.history: list[dict] = []  # this request's earlier calls: what each saw and replied
 
@@ -334,6 +343,7 @@ class Brain(threading.Thread):
     def hear(self, words: str, speaking: bool) -> None:
         with self.cond:
             if not self.words:  # a new request starts here: what the last one left queued is held, not run
+                self.replies = {}
                 busy = not self.shared.finished and (self.shared.queue or self.shared.state == "running")
                 last = next((t["user"] for t in reversed(self.conversation) if "user" in t), "")
                 self.shared.held, self.shared.held_goal = (list(self.shared.queue), last) if busy else ([], "")
@@ -407,6 +417,10 @@ class Brain(threading.Thread):
                 "conversation_before": self.conversation[-12:],
                 "log": [{"t": r.t, "action": r.action, "result": r.result, "detail": r.detail}
                         for r in self.shared.log[-LOG_TAIL:]]}
+            # Everything this request has run, compactly: the log's tail alone held one long reply, and a snowman
+            # model forgot the nose and eyes it had made and made them again and again (2026-10-22).
+            context["done_this_request"] = [_brief(r.action) for r in self.shared.log[self.shared.turn_start:]
+                                            if r.result == "done"][-DONE_TAIL:]
             if self.shared.held:  # the user spoke in the middle of a request: the model decides what becomes of it
                 context["interrupted"] = {"request": self.shared.held_goal, "steps_left": self.shared.held[:20],
                                           "count": len(self.shared.held)}
@@ -463,6 +477,15 @@ class Brain(threading.Thread):
                     self.shared.finished = True
         if not record["lines"]:
             record["raw"] = full[:600]  # a reply with no action in it: what it said instead
+        if not record["cancelled"] and record["lines"]:
+            reply = json.dumps([{k: v for k, v in line.items() if k != "at_s"} for line in record["lines"]])
+            self.replies[reply] = self.replies.get(reply, 0) + 1
+            if self.replies[reply] >= LOOPS:  # the same reply again and again: stop and say so
+                with self.cond:
+                    self.shared.queue.clear()
+                    self.shared.finished = True
+                    self.said.append("I'm going in circles, so I've stopped. Tell me what to change.")
+                    self.cond.notify_all()
         if not record["cancelled"] and full.strip():  # a call that added nothing isn't worth remembering
             past = {k: v for k, v in context.items() if k != "conversation_before"}
             self.history.append({"context": json.dumps(past), "reply": full.strip()})
