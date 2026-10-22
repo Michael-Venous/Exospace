@@ -33,6 +33,9 @@ class Telemetry:
         self, run_id: str, device: str, task_id: str, step: int, *,
         t_capture: float, t_upload: float, t_model: float, t_execute: float, t_settle: float,
     ) -> None:
+        print(f"timing run={run_id} step={step} model={t_model:.2f}s "
+              f"execute={t_execute:.2f}s settle={t_settle:.2f}s "
+              f"capture+prepare={t_capture + t_upload:.2f}s", flush=True)
         self._write({
             "run_id": run_id, "config": self._config, "device": device,
             "task_id": task_id, "step": step,

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 import math
+import time
 
 from brain.capture import thumbnail
 from brain.types import ActionError, DeviceProfile
@@ -25,6 +26,8 @@ OPEN_APP_KEYS: dict[str, list[str]] = {
 # A launcher that needs a second key before its search takes typing: Android's app drawer (measured on a
 # Samsung through the Pico: Meta opens the drawer, Ctrl+F its search; touch input didn't register there).
 SEARCH_KEYS: dict[str, list[str]] = {"android": ["CTRL", "F"]}
+# Samsung's launcher search ignores Enter in the search box: Tab focuses the first result, which Enter opens.
+FIRST_RESULT_KEYS: dict[str, list[str]] = {"android": ["TAB"]}
 # System shortcuts for apps a launcher search finds but won't open by keyboard (Samsung's search ignored Enter).
 # Android's own: Meta+I settings, +S messages, +B the default browser, +C contacts, +L calendar, +E email.
 _ANDROID = {("settings",): ["GUI", "I"], ("messages", "messaging", "texts", "sms", "google messages"): ["GUI", "S"],
@@ -67,13 +70,19 @@ def run_skill(
     if any(ord(char) < 32 or ord(char) == 127 for char in app):
         raise ActionError("open_app name must not contain control characters")
 
+    started = time.monotonic()
+    frame = controller.capture.grab()
+    start = thumbnail(frame) if frame is not None else None
     shortcut = APP_KEYS.get(profile.os, {}).get(app.strip().lower())
     if shortcut:
         controller.hotkey(shortcut)
+        # Wait for the app itself: checked on the settled-but-unchanged screen, "Brave" looked unopened
+        # and the request went to the planner.
+        if start is not None:
+            controller.wait_for_change(APP_START_S, since=start)
         controller.wait_settled()
+        print(f"open_app app={app.strip()!r} shortcut={time.monotonic() - started:.2f}s", flush=True)
         return
-    frame = controller.capture.grab()
-    start = thumbnail(frame) if frame is not None else None
     controller.hotkey(OPEN_APP_KEYS[profile.os])
     # Type only once the launcher shows: through the capture card the screen looked "settled" before the
     # launcher appeared, the name went nowhere, and Enter opened the launcher's first entry (an emulator).
@@ -84,9 +93,14 @@ def run_skill(
         controller.hotkey(SEARCH_KEYS[profile.os])
         controller.wait_settled()
     controller.cancel.check()
+    launcher_done = time.monotonic()
     controller.type_text(app.strip())
     controller.wait_settled()
     controller.cancel.check()
+    search_done = time.monotonic()
+    if profile.os in FIRST_RESULT_KEYS:
+        controller.hotkey(FIRST_RESULT_KEYS[profile.os])
+        controller.wait_settled()
     controller.hotkey(["ENTER"])
     # Apps take a second or two to map their window; the screen is "settled" before that, and a
     # check on that screen saw no app and launched it again (measured: three KCalc instances).
@@ -94,3 +108,5 @@ def run_skill(
     if start is not None:
         controller.wait_settled()
         controller.wait_for_change(APP_START_S, since=start)
+    print(f"open_app app={app.strip()!r} launcher={launcher_done - started:.2f}s "
+          f"search={search_done - launcher_done:.2f}s launch={time.monotonic() - search_done:.2f}s", flush=True)

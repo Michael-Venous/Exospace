@@ -71,6 +71,8 @@ skill(name=open_app,text=app: the app's full name as the user said it, in the sc
 language, e.g. "system settings" not "settings"), skill(name=wait) as its own stage ONLY when the
 screenshot shows a spinner, progress bar or blank page that is still loading (a
 loaded page never needs it), remember(key,text), ask_user(message), fail(message).
+To open a website, in a browser already open, click the address bar, type its address
+and press Enter in one stage (e.g. gmail.com), then wait for it to load before checking.
 To search a website you know, in a browser already open, go straight to its search
 results: click the address bar and type the site's search URL with the words, then Enter,
 in one stage (e.g. youtube.com/results?search_query=lofi+hip+hop).

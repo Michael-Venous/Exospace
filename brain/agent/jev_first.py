@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 
-from brain.agent.executor import Plan, StepContext
+from brain.agent.executor import Plan, StepContext, STALE_SCREEN_NOTE
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.jev_only import FAILED, JevOnlyPlanner
 from brain.cancel import CancelToken
@@ -33,7 +33,9 @@ class JevFirstPlanner:
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
         why = ""
-        if ctx.note and self.handoff and self._flash_run != ctx.run_id:  # a recovery note: Jev doesn't read it
+        # A new screen only needs fresh grounding, not an expensive planner escalation. No action from
+        # the old screen ran; Jev can judge the new frame normally. Actual failures still hand off.
+        if ctx.note and ctx.note != STALE_SCREEN_NOTE and self.handoff and self._flash_run != ctx.run_id:
             self._flash_run, why = ctx.run_id, f"recovery note: {ctx.note[:80]}"
         if self._flash_run != ctx.run_id:
             plan = self.steps.next_actions(image, ctx)

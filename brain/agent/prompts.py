@@ -69,10 +69,14 @@ Your recent actions:
 {history}
 Note: {note}"""
 
+# Evidence only: the Linux laptop's full-screen apps on a blue wallpaper read as "windows" 6 times in 8. An
+# unknown desktop gets the OS key (brain/device.py), and the launcher it opens shows the OS.
 OS_PROMPT = (
-    "Which operating system is this screen from? Look at the taskbar, menu bar, "
-    "status bar and window styling. Answer unknown for boot, firmware and other screens "
-    "that show no operating system."
+    "Which operating system is this screen from? Answer only from something that shows it: a start menu, "
+    "launcher or dock, the logo on a taskbar or menu bar, or a phone's status and navigation bars. Wallpapers, "
+    "app windows and web pages look the same on every desktop, and a taskbar alone does not tell Windows from "
+    "Linux desktops such as KDE Plasma, so if nothing like that is visible, answer unknown. Answer unknown for "
+    "boot, firmware and other screens that show no operating system."
 )
 
 DONE_PROMPT = """You check another agent's claim that it finished a goal on a device. Judge \

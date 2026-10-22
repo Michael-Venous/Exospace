@@ -2,7 +2,6 @@
 
 import tempfile
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -109,12 +108,10 @@ class RaceTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         race = object.__new__(RaceExecutor)
         race.planner, race.jev, race.cancel = Mock(), Mock(), CancelToken()
-        race._pool = ThreadPoolExecutor(max_workers=1)
-        race._plan, race._key, race.mode, race._point, race._clicked, race._pending = None, None, "", None, False, None
+        race._key, race.mode, race._point, race._clicked, race._pending = None, "", None, False, None
         race._gesture, race._utterance, race._triage_step, race._approved_goal = "click", "", 0, None
         race._scroll, race._launched, race._tries, race._aim = 0, "", 0, (0.0, 0.0)
         race._earlier, race._approved_connected_at = "", 0.0
-        self.addCleanup(race._pool.shutdown)
         race.planner.next_actions.return_value = Plan("planned", [Action("hotkey", keys=("ENTER",))], [])
         self.race = race
         self.memory = Memory(Path(self.temp.name) / "m.json")
@@ -122,6 +119,17 @@ class RaceTests(unittest.TestCase):
     def ctx(self, goal, run="a", note="", step=1, connected_at=1):
         return StepContext(goal, DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", connected_at), self.memory,
                            [], step, 10, note=note, run_id=run)
+
+    def test_a_direct_click_never_starts_a_plan(self):
+        with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
+            self.race.next_actions(b"img", self.ctx("open john's email"))
+        self.race.planner.next_actions.assert_not_called()
+
+    def test_the_planner_runs_once_when_triage_asks_for_a_plan(self):
+        with patch("brain.agent.race.triage", return_value=Triage("plan", None, False)):
+            result = self.race.next_actions(b"img", self.ctx("write a poem"))
+        self.assertEqual(result.reasoning, "planned")
+        self.race.planner.next_actions.assert_called_once()
 
     def test_confident_jev_clicks_without_waiting_for_the_plan(self):
         with patch("brain.agent.race.triage", return_value=Triage("act", (.3, .4), False)):
@@ -412,18 +420,58 @@ class RaceTests(unittest.TestCase):
             first = self.race.next_actions(b"img", self.ctx(goal))
         self.assertEqual((first.actions[0].name, first.actions[0].args), ("open_app", {"name": "calculator"}))
         self.race.acknowledge(True)
-        self.race.jev.evaluate.return_value = ({"launched": {"noul": .95}}, None, None)
-        self.race.jev.completion.return_value = .1  # open, but nothing worked out yet
+        self.race.jev.evaluate.return_value = ({"launched": {"noul": .95}, "complete": {"noul": .1}}, None, None)
         self.assertEqual(self.race.next_actions(b"img", self.ctx(goal)).reasoning, "planned")
         self.race.planner.forget_plan.assert_called_once()
+
+    def test_discarded_launch_retriages_fresh_screen_and_preserves_approval(self):
+        from brain.agent.executor import STALE_SCREEN_NOTE
+        with patch("brain.agent.race.triage", side_effect=[
+            Triage("launch", None, False, app="Firefox"),
+            Triage("plan", None, True)]) as route:
+            self.race.next_actions(b"old", self.ctx("open Firefox"))
+            result = self.race.next_actions(b"fresh", self.ctx("open Firefox", step=2, note=STALE_SCREEN_NOTE))
+        self.assertEqual(result.actions[0].type, "ask_user")
+        self.assertEqual(route.call_args.args[1], b"fresh")
+        self.race.jev.evaluate.assert_not_called()
+        self.race.planner.forget_plan.assert_not_called()
+
+    def test_launch_completion_keeps_both_gates_in_one_call(self):
+        from brain.agent.jev import COMPLETION_QUESTION
+        from brain.agent.race import LAUNCHED
+
+        for launched, complete, expected in ((.95, .9, "done"), (.49, .9, "hotkey"),
+                                              (.95, .54, "hotkey"), (.5, .55, "done")):
+            with self.subTest(launched=launched, complete=complete):
+                self.race._key = ("a", "open Firefox")
+                self.race.mode, self.race._launched, self.race._utterance = "launch", "Firefox", "open Firefox"
+                self.race.jev.reset_mock()
+                self.race.jev.evaluate.return_value = ({"launched": {"noul": launched},
+                                                        "complete": {"noul": complete}}, None, None)
+                result = self.race.next_actions(b"current screen", self.ctx("open Firefox", step=2))
+                self.assertEqual(result.actions[0].type, expected)
+                self.race.jev.evaluate.assert_called_once()
+                self.race.jev.completion.assert_not_called()
+                args, kwargs = self.race.jev.evaluate.call_args
+                self.assertEqual(args[0], b"current screen")
+                self.assertEqual(args[1], {"launched": {"type": "noul", "instructions": LAUNCHED},
+                                          "complete": {"type": "noul", "instructions": COMPLETION_QUESTION}})
+                self.assertEqual(kwargs["state"], {"utterance": "open Firefox", "goal": "open Firefox",
+                                                   "executed_steps": ["open the app Firefox"]})
+
+    def test_unchanged_launch_cannot_be_claimed_done(self):
+        self.race._key = ("a", "open Firefox")
+        self.race.mode, self.race._launched = "launch", "Firefox"
+        result = self.race.next_actions(b"old screen", self.ctx("open Firefox", note="Screen unchanged"))
+        self.assertEqual(result.reasoning, "planned")
+        self.race.jev.evaluate.assert_not_called()
 
     def test_a_stage_held_after_a_launch_asks(self):
         goal = "open mail and send john six"
         with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="mail")):
             self.race.next_actions(b"img", self.ctx(goal))
         self.race.acknowledge(True)
-        self.race.jev.evaluate.return_value = ({"launched": {"noul": .95}}, None, None)
-        self.race.jev.completion.return_value = .1
+        self.race.jev.evaluate.return_value = ({"launched": {"noul": .95}, "complete": {"noul": .1}}, None, None)
         self.race.planner.next_actions.return_value = Plan("held", [], [], held="click Send button")
         self.assertEqual(self.race.next_actions(b"mail", self.ctx(goal)).actions[0].type, "ask_user")
 
@@ -437,8 +485,7 @@ class RaceTests(unittest.TestCase):
         with patch("brain.agent.race.triage", return_value=Triage("launch", None, False, app="calculadora")):
             self.race.next_actions(b"img", self.ctx("abre la calculadora"))
         self.race.acknowledge(True)
-        self.race.jev.evaluate.return_value = ({"launched": {"noul": .1}}, None, None)  # a web search instead
-        self.race.jev.completion.return_value = .9
+        self.race.jev.evaluate.return_value = ({"launched": {"noul": .1}, "complete": {"noul": .9}}, None, None)  # a web search instead
         self.assertEqual(self.race.next_actions(b"img", self.ctx("abre la calculadora")).reasoning, "planned")
         self.assertIn("did not open", self.race.planner.next_actions.call_args.args[1].note)
 

@@ -8,10 +8,11 @@ from typing import Callable
 
 import numpy as np
 
-from brain.agent.executor import Executor, StepContext
+from brain.agent.executor import Executor, StepContext, STALE_SCREEN_NOTE
+from brain.agent.jev import JevError
 from brain.agent.memory import Memory
 from brain.cancel import Cancelled
-from brain.capture import active_rect, frame_change, is_blank, thumbnail
+from brain.capture import active_rect, area_change, frame_change, is_blank, thumbnail
 from brain.controller import Controller
 from brain.errors import describe
 from brain.events import EventBus
@@ -66,6 +67,7 @@ class Agent:
         failures = 0
         unchanged_steps = 0  # consecutive steps whose input left the screen as it was
         recovery_used = False
+        jev_retried = False  # one more look after Jev failed even its own retry
         attempts: dict[tuple[str, ...], list[np.ndarray]] = {}  # each batch's starting screens
         settled_s: float | None = None  # how long the last action's settle took; None = settle first
         self.memory.set_task(goal, "running")
@@ -116,6 +118,13 @@ class Agent:
                     stamp = time.monotonic()
                     try:
                         plan = self.executor.next_actions(jpeg, ctx)
+                    except JevError:
+                        # The Pi's uploads stall at times (WriteTimeout twice in a row): that ended requests whose
+                        # app had already opened. Look once more; the stall limit still bounds the run.
+                        if jev_retried:
+                            raise
+                        jev_retried = True
+                        continue
                     finally:
                         times["t_model"] += time.monotonic() - stamp
                     token.check()
@@ -133,8 +142,9 @@ class Agent:
                         if latest is None or is_blank(latest):
                             token.cancel("video lost")
                             token.check()
-                        if not moving and frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
-                            note = "Screen changed during inference; previous actions were discarded. Reground on this screen."
+                        if not moving and _stale(plan.actions, frame, latest, profile, ctl.settle.threshold):
+                            self.on_status(f"Step {step}: discarded, the screen changed where it acts")
+                            note = STALE_SCREEN_NOTE
                             continue
                     notes = list(plan.rejected)
                     acted = sent_input = False
@@ -152,13 +162,14 @@ class Agent:
                                 terminal = action
                             break
                         else:
-                            if acted and action.x is not None and not moving:
+                            if acted and action.x is not None and action.y is not None and not moving:
                                 # Aimed at the screen the batch was planned on, e.g. a tapped field
                                 # opened the keyboard over it.
                                 stamp = time.monotonic()
                                 latest = ctl.capture.grab()
                                 times["t_capture"] += time.monotonic() - stamp
-                                if latest is None or frame_change(before, thumbnail(latest)) >= ctl.settle.threshold:
+                                if latest is None or area_change(frame, latest, profile.rect, action.x,
+                                                                 action.y) >= ctl.settle.threshold:
                                     notes.append("The screen changed mid-batch, so the rest was skipped. "
                                                  "Reground on this screen.")
                                     break
@@ -299,3 +310,16 @@ def _may_load(action: Action) -> bool:
     if action.type in ("click", "tap", "double_click"):
         return True
     return action.type == "hotkey" and [k.upper() for k in action.keys] in (["ENTER"], ["RETURN"])
+
+
+def _stale(actions: list[Action], planned: Frame, latest: Frame, profile: DeviceProfile, threshold: float) -> bool:
+    """Whether the screen changed where `actions` act since the frame they were planned on. An aimed action
+    looks only around its point: judged on the whole screen, a page loading elsewhere (YouTube's thumbnails,
+    a streaming chat window) discarded 5 of 9 plans in one live run, about 5 s each. A completion claim is
+    about the whole screen; keys, typing and launches go to the focus wherever it is."""
+    aimed = [a for a in actions if a.x is not None and a.y is not None]
+    if aimed:
+        return any(area_change(planned, latest, profile.rect, a.x, a.y) >= threshold for a in aimed)
+    if any(a.type == "done" for a in actions):
+        return frame_change(thumbnail(planned), thumbnail(latest)) >= threshold
+    return False

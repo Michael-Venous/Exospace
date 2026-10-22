@@ -8,12 +8,14 @@ from collections.abc import Callable
 from brain.agent.executor import Executor
 from brain.calibrate import pointer_rect
 from brain.cancel import Cancelled, CancelToken
-from brain.capture import Capture, active_rect, is_blank
+from brain.capture import Capture, active_rect, frame_change, is_blank, thumbnail
 from brain.imaging import prepare
 from brain.types import DeviceProfile, OSName
 
 
-PROBE_S = 1.2  # for the launcher or Start menu to open after the OS key
+PROBE_S = 3.0  # longest wait for the launcher or Start menu to appear after the OS key
+PROBE_SETTLE_S = 0.5  # then for its opening animation to finish
+PROBE_CHANGE = 1.5  # mean thumbnail change (0-255) that counts as the launcher appearing, as in settling
 
 
 def detect_profile(capture: Capture, executor: Executor, override_os: OSName | None = None,
@@ -47,8 +49,16 @@ def _probe(capture: Capture, executor: Executor, rect, press: Callable[[list[str
     """A screen that shows nothing to tell the OS by (a black, empty desktop) gets the OS key once: a
     Start menu or desktop launcher is unmistakable, and Escape closes it again. Without an OS the app
     launcher is off and every request fell to the planner guessing at a black screen."""
+    before = capture.grab()
     press(["GUI"])
-    token.sleep(PROBE_S)
+    # Wait for the launcher itself: after a fixed 1.2 s the Linux laptop's startup still classified "unknown".
+    deadline = time.monotonic() + PROBE_S
+    frame = capture.grab()
+    while (before is not None and frame is not None and time.monotonic() < deadline
+           and frame_change(thumbnail(before), thumbnail(frame)) < PROBE_CHANGE):
+        token.sleep(0.05)
+        frame = capture.grab()
+    token.sleep(PROBE_SETTLE_S)
     frame = capture.grab()
     os = _classify(executor, prepare(frame, rect, grid=False)) if frame is not None and not is_blank(frame) else "unknown"
     press(["ESCAPE"])

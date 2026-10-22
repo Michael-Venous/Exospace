@@ -19,8 +19,11 @@ class ProbeTests(unittest.TestCase):
         self.addCleanup(sleep.stop)
 
     def test_an_unknown_os_is_probed_with_the_os_key_then_escape(self):
-        executor, press = Mock(), Mock()
+        executor = Mock()
         executor.classify_os.side_effect = ["unknown", "linux"]  # a black desktop, then its launcher
+        launcher = self.capture.grab.return_value.copy()
+        launcher[:50] = 200
+        press = Mock(side_effect=lambda keys: setattr(self.capture.grab, "return_value", launcher))
         profile = detect_profile(self.capture, executor, press=press)
         self.assertEqual(profile.os, "linux")
         self.assertEqual([c.args[0] for c in press.call_args_list], [["GUI"], ["ESCAPE"]])

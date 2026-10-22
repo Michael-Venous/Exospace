@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
 
             executor = build_executor(cfg, token, cleanup, notify)
             if args.backend == "pi":
-                capture = V4L2Capture(cfg.capture_device, cfg.capture_width, cfg.capture_height)
+                capture = V4L2Capture(cfg.capture_device, cfg.capture_width, cfg.capture_height, cfg.capture_fps)
                 cleanup.callback(capture.close)
                 hid = PicoHID(cfg.pico_serial, cfg.pico_baud)
             elif args.backend == "browser":
@@ -132,18 +132,27 @@ def main(argv: list[str] | None = None) -> int:
             pointed: tuple[float, float] | None = None
 
             status(f"Executor: {cfg.executor}; model: {cfg.model_name}. Ctrl+C interrupts; idle Ctrl+C exits.")
-            if monitor.connected:  # detect now, not on the first request: it took ~8 s on the Pi (OS check, calibration)
+            idle_attempted_generation = -1
+
+            def prepare_idle_target() -> None:
+                nonlocal profile, generation, idle_attempted_generation
+                if not monitor.connected or idle_attempted_generation == monitor.generation or \
+                        (profile is not None and generation == monitor.generation):
+                    return
+                idle_attempted_generation = monitor.generation
                 try:
                     profile, generation = _connected_profile(
                         monitor, capture, executor, args.os, token, profile, generation, status, controller.hover, controller.hotkey)
                 except (Cancelled, RuntimeError, HIDError):
-                    pass  # detected again on the first request
+                    pass  # only a request or a new connection may retry an interrupted preparation
+
+            prepare_idle_target()
             while True:
                 try:
                     if bus is None:
                         command = Command("goal", text=input("Correction (or /new GOAL)> " if correction else "Goal> "))
                     else:
-                        command = _next_command(commands)
+                        command = _next_command(commands, prepare_idle_target if args.backend == "pi" else None)
                 except (EOFError, KeyboardInterrupt):
                     status("Goodbye.")
                     return 0
@@ -224,13 +233,14 @@ def _more_words(commands: queue.Queue[Command]) -> str | None:
     return None
 
 
-def _next_command(commands: queue.Queue[Command]) -> Command:
+def _next_command(commands: queue.Queue[Command], idle: Callable[[], None] | None = None) -> Command:
     """Block for the next goal or tap; the timeout keeps Ctrl+C responsive."""
     while True:
         try:
             return commands.get(timeout=0.5)
         except queue.Empty:
-            continue
+            if idle is not None:
+                idle()
 
 
 def _read_stdin(commands: queue.Queue[Command]) -> None:

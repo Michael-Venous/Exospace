@@ -136,10 +136,13 @@ class JevOnlyTests(unittest.TestCase):
     def test_no_suited_app_opens_the_launcher_waits_once_for_the_app_then_fails(self):
         goal = "find a video about horses"
         named = str(spans(goal, 250).index("video"))
-        self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), "hotkey(GUI)")
-        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)"]).brief(), "skill(wait {'s': 3.0})")
-        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=["hotkey(GUI)", "skill(wait {'s': 3.0})"]).type,
-                         "fail")
+        launched = "skill(open_app {'name': 'video'})"
+        self.assertEqual(self.step(goal, fits=.1, app_name=named).brief(), launched)  # the skill knows each launcher
+        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=[launched]).brief(), "hotkey(GUI)")
+        self.assertEqual(self.step(goal, fits=.1, app_name=named, history=[launched, "hotkey(GUI)"]).brief(),
+                         "skill(wait {'s': 3.0})")
+        self.assertEqual(self.step(goal, fits=.1, app_name=named,
+                                   history=[launched, "hotkey(GUI)", "skill(wait {'s': 3.0})"]).type, "fail")
 
     def test_launcher_is_searched_for_the_app_the_goal_names_before_an_icon_is_clicked(self):
         goal = "open up camera and take a picture"
@@ -221,6 +224,24 @@ class JevFirstTests(unittest.TestCase):
                           10, note="the launch landed elsewhere", run_id="a")
         self.assertTrue(self.planner.next_actions(b"img", ctx).reasoning.startswith("Stage 1/1: planned [Jev handed off"))
         self.planner.steps.next_actions.assert_not_called()
+
+    def test_a_stale_screen_rechecks_with_jev_without_forcing_flash(self):
+        from dataclasses import replace
+        from brain.agent.executor import STALE_SCREEN_NOTE
+        ctx = replace(self.ctx("a"), note=STALE_SCREEN_NOTE)
+        self.planner.steps.next_actions.return_value = Plan("fresh verification", [Action("done")], [])
+        result = self.planner.next_actions(b"new screen", ctx)
+        self.assertEqual(result.reasoning, "fresh verification")
+        self.planner.steps.next_actions.assert_called_once_with(b"new screen", ctx)
+        self.planner.flash.next_actions.assert_not_called()
+
+    def test_jev_failure_on_a_fresh_screen_still_hands_off(self):
+        from dataclasses import replace
+        from brain.agent.executor import STALE_SCREEN_NOTE
+        ctx = replace(self.ctx("a"), note=STALE_SCREEN_NOTE)
+        self.planner.steps.next_actions.return_value = Plan(FAILED, [Action("fail", reason="ambiguous")], [])
+        self.assertIn("Jev handed off: ambiguous", self.planner.next_actions(b"new screen", ctx).reasoning)
+        self.planner.flash.next_actions.assert_called_once()
 
     def test_jev_steps_need_no_flash_call(self):
         self.planner.steps.next_actions.return_value = Plan("Jev next step: click", [Action("click", x=.1, y=.1)], [])

@@ -69,13 +69,13 @@ def check_pico(port: str, baud: int) -> Check:
     return Check("Pico", True, "answers; USB host " + ("connected" if mounted else "not connected yet"))
 
 
-def check_capture(device: str, width: int, height: int) -> Check:
+def check_capture(device: str, width: int, height: int, fps: int = 60) -> Check:
     if not Path(device).exists():
         return Check("capture card", False, f"{device} not found: plug in the HDMI capture card")
     from brain.capture import CaptureError, V4L2Capture
 
     try:
-        capture = V4L2Capture(device, width, height)
+        capture = V4L2Capture(device, width, height, fps)
     except CaptureError as exc:
         return Check("capture card", False, f"{exc} (in use, or not a capture device?)")
     try:
@@ -86,8 +86,15 @@ def check_capture(device: str, width: int, height: int) -> Check:
         if frame is None:
             return Check("capture card", False, "opened, but no frames arrived")
         h, w = frame.shape[:2]
+        start = capture.frames
+        started = time.monotonic()
+        time.sleep(1.0)
+        count = capture.frames - start
+        rate = count / max(time.monotonic() - started, 0.001)
+        if not count or capture.grab() is None:
+            return Check("capture card", False, "video stopped during the frame-rate check")
         signal = "showing video" if capture.signal_present() else "blank (no HDMI signal yet)"
-        return Check("capture card", True, f"{w}x{h}, {signal}")
+        return Check("capture card", True, f"{w}x{h} at {rate:.1f} fps (asked for {fps}), {signal}")
     finally:
         capture.close()
 
@@ -100,7 +107,7 @@ def run() -> list[Check]:
     checks += [uart]
     if uart.ok:
         checks.append(check_pico(cfg.pico_serial, cfg.pico_baud))
-    checks.append(check_capture(cfg.capture_device, cfg.capture_width, cfg.capture_height))
+    checks.append(check_capture(cfg.capture_device, cfg.capture_width, cfg.capture_height, cfg.capture_fps))
     return checks
 
 

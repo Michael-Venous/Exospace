@@ -38,6 +38,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from brain.net import IPV4
 from brain.voice import button
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
@@ -110,8 +111,9 @@ class Agent:
         except (OSError, HTTPException):  # an agent that dies mid-frame raises IncompleteRead
             return None
 
-    def interrupt(self) -> None:
+    def interrupt(self, why: str) -> None:
         if self.busy:
+            print(f"barge-in: {why}", flush=True)  # which input cancelled the running request
             self.post("/stop", {})
 
     def follow(self, lines: queue.Queue[dict[str, Any]]) -> None:
@@ -160,11 +162,11 @@ class Agent:
             time.sleep(0.5)
             line = filler(time.monotonic() - self._said_at, self._spoken) if self.busy else None
             if line:
-                self._say(lines, line)
+                self._say(lines, line, repeat=True)
 
-    def _say(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
+    def _say(self, lines: queue.Queue[dict[str, Any]], line: str, *, repeat: bool = False) -> None:
         self._said_at, self._spoken = time.monotonic(), True
-        if line != self._last:
+        if repeat or line != self._last:
             self._last = line
             lines.put({"say": line})
 
@@ -200,13 +202,20 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[s
             if self.headers.get("Host") not in hosts or origin not in hosts or \
                     self.headers.get("Content-Type", "").split(";")[0] != "application/json":
                 return self._reply(403, b'{"error":"forbidden"}')
-            length = int(self.headers.get("Content-Length") or 0)
-            body = json.loads(self.rfile.read(length)) if 0 < length <= MAX_BODY else {}
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                if not 0 < length <= MAX_BODY:
+                    return self._reply(400, b'{"error":"invalid body length"}')
+                body = json.loads(self.rfile.read(length))
+                if not isinstance(body, dict):
+                    return self._reply(400, b'{"error":"body must be an object"}')
+            except (ValueError, UnicodeError):
+                return self._reply(400, b'{"error":"invalid JSON body"}')
             try:
                 if self.path == "/talk":  # the user started speaking: barge in on running work
                     if agent.describer is not None:
                         agent.describer.cancel()
-                    agent.interrupt()
+                    agent.interrupt("talk pressed")
                 elif self.path == "/describe":
                     agent.describe_on = body.get("on") is True and agent.describer is not None
                     return self._reply(200, json.dumps({"ok": True, "on": agent.describe_on}).encode())
@@ -215,8 +224,9 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[s
                     if not 0 < len(text) <= 500:
                         return self._reply(400, b'{"error":"text must be 1-500 characters"}')
                     continues = body.get("continues") is True
+                    print(f"heard ({'more' if continues else 'new'}): {text}", flush=True)
                     if not continues:  # a new request barges in; more words of this one join it at the next step
-                        agent.interrupt()
+                        agent.interrupt("new request")
                     agent.submit(text, continues)
                 else:
                     return self._reply(404, b'{"error":"not found"}')
@@ -261,7 +271,11 @@ def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
     threading.Thread(target=agent.follow, args=(lines,), name="agent-events", daemon=True).start()
     threading.Thread(target=agent.pace, args=(lines,), name="agent-pace", daemon=True).start()
     if button.available():  # the Pi's push-to-talk button: the page holds and lets go of its orb
-        threading.Thread(target=button.watch, args=(lambda down: lines.put({"button": "down" if down else "up"}),),
+        def pressed(down: bool) -> None:
+            print(f"button {'down' if down else 'up'}", flush=True)
+            lines.put({"button": "down" if down else "up"})
+
+        threading.Thread(target=button.watch, args=(pressed,),
                          name="ptt-button", daemon=True).start()
     page_server(agent, port, ws_port, lines)
     print(f"Voice layer on http://127.0.0.1:{port} -> agent {agent.base}", flush=True)
@@ -275,7 +289,7 @@ async def _relay_forever(port: int, ws_port: int, key: str) -> None:
     from websockets.exceptions import ConnectionClosed
 
     async def relay(browser) -> None:
-        async with connect(DG_URL, additional_headers={"Authorization": f"Token {key}"}) as dg:
+        async with connect(DG_URL, additional_headers={"Authorization": f"Token {key}"}, family=IPV4) as dg:
             async def upload() -> None:
                 try:
                     async for chunk in browser:

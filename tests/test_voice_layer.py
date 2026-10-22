@@ -9,7 +9,7 @@ import unittest
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import cv2
 import numpy as np
@@ -56,6 +56,16 @@ class NarrationTests(unittest.TestCase):
         self.assertIsNone(narrate({"ev": "plan", "reasoning": "Jev direct action"}))
         self.assertIsNone(narrate({"ev": "action", "action": "click(0.1,0.2)"}))
 
+    def test_long_running_request_keeps_receiving_progress(self):
+        agent, lines = Agent("http://127.0.0.1:1"), queue.Queue()
+        agent.busy = agent._spoken = True
+        with patch("brain.voice.layer.time.sleep", side_effect=[None, None, InterruptedError]), \
+                patch("brain.voice.layer.time.monotonic", side_effect=[11, 11, 22, 22]):
+            with self.assertRaises(InterruptedError):
+                agent.pace(lines)
+        self.assertEqual([lines.get_nowait(), lines.get_nowait()],
+                         [{"say": "Still working on it."}] * 2)
+
 
 class AgentLinkTests(unittest.TestCase):
     def setUp(self):
@@ -72,10 +82,10 @@ class AgentLinkTests(unittest.TestCase):
         self.assertEqual(self.commands.get(timeout=2), Command("goal", text="and search lofi", continues=True))
 
     def test_talking_interrupts_only_running_work(self):
-        self.agent.interrupt()
+        self.agent.interrupt("talk pressed")
         self.stop.assert_not_called()
         self.agent.busy = True
-        self.agent.interrupt()
+        self.agent.interrupt("talk pressed")
         self.stop.assert_called_once_with("barge-in")
 
     def test_follow_tracks_busy_state_and_narrates_only_new_events(self):
@@ -195,6 +205,17 @@ class PageServerTests(unittest.TestCase):
     def test_cross_site_and_empty_requests_are_refused(self):
         self.assertEqual(self.post("/segment", {"text": "send it"}, origin=False), 403)
         self.assertEqual(self.post("/segment", {"text": ""}), 400)
+        self.agent.submit.assert_not_called()
+
+    def test_non_object_and_malformed_bodies_are_refused(self):
+        for body in ([], None, "text", 5):
+            self.assertEqual(self.post("/segment", body), 400)
+        for raw in (b"{", b"\xff", b"{}" * 3000):
+            request = urllib.request.Request(self.base + "/segment", raw,
+                                             {"Content-Type": "application/json", "Origin": self.base})
+            with self.assertRaises(urllib.error.HTTPError) as caught:
+                urllib.request.urlopen(request, timeout=2)
+            self.assertEqual(caught.exception.code, 400)
         self.agent.submit.assert_not_called()
 
 

@@ -22,6 +22,7 @@ class Config:
     session_path: Path
     bench_csv: Path
     fallback_model: str = "gemini-3.5-flash-lite"
+    capture_fps: int = 60
     planner_model: str = "gemini-4-argon"
     planner_thinking: str | None = "medium"
     model_timeout_s: float = 30.0
@@ -74,6 +75,7 @@ class Config:
             capture_device=env("CAPTURE_DEVICE", "/dev/video0"),
             capture_width=int(env("CAPTURE_WIDTH", "1920")),
             capture_height=int(env("CAPTURE_HEIGHT", "1080")),
+            capture_fps=int(env("CAPTURE_FPS", "60")),
             session_path=Path(env("SESSION_PATH", "session.json")),
             replan_thinking=env("REPLAN_THINKING", "") or None,
             deep_model=env("DEEP_MODEL", "gemini-4-argon"),

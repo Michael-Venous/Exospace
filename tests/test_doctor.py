@@ -3,6 +3,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
+import numpy as np
 
 from brain.doctor import check_capture, check_groups, check_keys, check_uart
 
@@ -28,6 +30,23 @@ class DoctorTests(unittest.TestCase):
     def test_missing_uart_and_capture(self):
         self.assertFalse(check_uart("/dev/does-not-exist").ok)
         self.assertIn("plug in", check_capture("/dev/does-not-exist", 1920, 1080).detail)
+
+    def test_capture_rate_uses_elapsed_time_and_rejects_stalls(self):
+        for frames, ok in ((60, True), (0, False)):
+            with self.subTest(frames=frames):
+                capture = Mock(frames=0)
+                capture.grab.return_value = np.full((10, 20, 3), 100, np.uint8)
+                def advance(_):
+                    capture.frames = frames
+                with patch("brain.doctor.Path.exists", return_value=True), \
+                     patch("brain.capture.V4L2Capture", return_value=capture), \
+                     patch("brain.doctor.time.sleep", side_effect=advance), \
+                     patch("brain.doctor.time.monotonic", side_effect=[0, 0, 0, 2]):
+                    result = check_capture("/dev/test", 20, 10)
+                self.assertEqual(result.ok, ok)
+                if ok:
+                    self.assertIn("30.0 fps", result.detail)
+                capture.close.assert_called_once()
 
     def test_accessible_uart(self):
         with tempfile.NamedTemporaryFile() as port:

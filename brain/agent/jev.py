@@ -13,11 +13,15 @@ import httpx
 import numpy as np
 
 from brain.cancel import CancelToken
+from brain.net import ipv4_transport
 
 
 ATTEMPTS = 2  # one retry: a single timeout ended 3 of 14 live runs
 RETRY_STATUS = {429, 500, 502, 503, 504}
 RETRY_DELAY_S = 0.5
+# Sending the screenshot takes ~2 s from the Pi. A stalled upload (WriteTimeout) used to hold the whole 20 s
+# before its retry; past this it goes to the retry on a new connection. Answers keep the full timeout.
+UPLOAD_S = 8.0
 
 
 class JevError(RuntimeError):
@@ -86,7 +90,8 @@ class JevVision:
         self.cancel, self.log_path, self.model = cancel, log_path, model
         self.min_presence = probability(min_presence)
         self.min_confidence = probability(min_confidence)
-        self.client = httpx.Client(timeout=timeout_s, headers={
+        timeout = httpx.Timeout(timeout_s, connect=UPLOAD_S, write=min(UPLOAD_S, timeout_s))
+        self.client = httpx.Client(timeout=timeout, transport=ipv4_transport(), headers={
             'Authorization': f'Bearer {key}', 'TypeSafe-Danger-Zone-Images': 'true'})
 
     def evaluate(self, jpeg: bytes, questions: dict, *, run_id: str = '', step: int = 0,

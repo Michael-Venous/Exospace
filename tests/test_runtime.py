@@ -11,6 +11,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from brain.agent.executor import ModelExecutor, Plan, StepContext, context_prompt, detect_os, parse_plan
+from brain.agent.jev import JevError
 from brain.agent.loop import Agent
 from brain.agent.memory import Memory
 from brain.agent.orchestrator import Guidance, Orchestrator
@@ -279,6 +280,38 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result.status, "ask_user")
         self.assertEqual(self.hid.commands, [{"op": "release_all"}])
 
+    def test_a_jev_failure_gets_one_more_look(self):
+        self.fast.next_actions.side_effect = [JevError("Jev transport failure (WriteTimeout)"),
+                                              Plan("ask", [Action("ask_user", question="Which one?")], [])]
+        self.assertEqual(self.agent().run("Open settings", self.profile).status, "ask_user")
+        self.assertEqual(self.fast.next_actions.call_count, 2)
+
+    def test_a_second_jev_failure_ends_the_run(self):
+        self.fast.next_actions.side_effect = JevError("Jev transport failure (WriteTimeout)")
+        self.assertEqual(self.agent().run("Open settings", self.profile).status, "fail")
+        self.assertEqual(self.fast.next_actions.call_count, 2)
+
+    def test_a_change_away_from_the_aimed_point_keeps_the_click(self):
+        def next_actions(image, ctx):
+            if ctx.step == 1:
+                self.capture.frame[:, 120:] = 210  # a page loading on the right while the plan was made
+                return Plan("click", [Action("click", x=.2, y=.5)], [])
+            return Plan("ask", [Action("ask_user", question="Next?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.assertEqual(self.agent().run("Click the button", self.profile).status, "ask_user")
+        self.assertIn("click", [command["op"] for command in self.hid.commands])
+
+    def test_typing_is_not_discarded_by_a_changed_screen(self):
+        def next_actions(image, ctx):
+            if ctx.step == 1:
+                self.capture.frame[:] = 210
+                return Plan("type", [Action("type_text", text="horse videos")], [])
+            return Plan("ask", [Action("ask_user", question="Next?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        self.agent().run("Search for horse videos", self.profile)
+        self.assertNotIn("discarded", self.fast.next_actions.call_args_list[-1].args[1].note or "")
+        self.assertIn("type", [command["op"] for command in self.hid.commands])
+
     def test_a_screen_that_never_settles_still_runs_the_plan(self):
         frames = iter(range(10**6))  # a live camera preview: every grab differs
         self.capture.grab = lambda: np.full((100, 160, 3), 60 + next(frames) % 2 * 40, dtype=np.uint8)
@@ -286,6 +319,19 @@ class RuntimeTests(unittest.TestCase):
                                               Plan("ask", [Action("ask_user", question="Again?")], [])]
         self.assertEqual(self.agent(self.fast).run("Take a picture", self.profile).status, "ask_user")
         self.assertIn("click", [command["op"] for command in self.hid.commands])
+
+    def test_a_done_claim_on_a_changed_screen_is_still_rechecked(self):
+        def next_actions(image, ctx):
+            if ctx.step == 1:
+                self.capture.frame[:] = 210
+                return Plan("old completion", [Action("done", summary="Done")], [])
+            self.assertIn("discarded", ctx.note)
+            return Plan("fresh check", [Action("ask_user", question="Which window?")], [])
+        self.fast.next_actions.side_effect = next_actions
+        result = self.agent().run("Open the app", self.profile)
+        self.assertEqual(result.status, "ask_user")
+        self.assertEqual(self.fast.next_actions.call_count, 2)
+        self.assertEqual(self.hid.commands, [{"op": "release_all"}])
 
     def test_restart_resumes_on_the_new_screen(self):
         def send(command):

@@ -83,6 +83,7 @@ class CaptureReadLoopTests(unittest.TestCase):
         capture = object.__new__(V4L2Capture)
         capture._cap, capture._lock, capture._frame, capture._stamp = Card(), threading.Lock(), None, 0.0
         capture._running = True
+        capture.frames = 0
         thread = threading.Thread(target=capture._read_loop, daemon=True)
         thread.start()
         deadline = time.monotonic() + 2

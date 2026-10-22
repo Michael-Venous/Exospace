@@ -21,12 +21,19 @@ import numpy as np
 from brain.types import Frame, Rect
 
 STALE_S = 0.5  # a frame older than this counts as no signal
+# Driver buffers. With one, a read that runs past a frame interval misses the next frame, and 30 fps
+# reads as 15; two let the continuously running reader catch up. Actual rate is measured by doctor.
+BUFFERS = 2
 BLANK_MAX = 12  # brightest pixel below this (0-255) = blank / no signal
 # Pillarbox bars must each be at least this wide. A 16:10 laptop mirrored into a 16:9 capture has bars of
 # exactly 5%, which JPEG edges blur to 4.8%: at 0.05 they weren't cropped and every click landed off.
 BAR_MIN_FRACTION = 0.02
 ASPECT_RANGE = (0.3, 3.4)  # width/height of any real screen; a tall phone is ~0.43
 THUMB_SIZE = (64, 36)
+AIM_SPAN = 0.08  # an aimed action is stale when this far around its point (fraction of the screen) changed
+# The area is compared this small: on the phone it is only ~80x170 px, and a coarser grid averages out the
+# capture card's per-pixel noise as the whole-screen thumbnail does.
+AREA_THUMB_SIZE = (24, 16)
 
 
 class CaptureError(RuntimeError):
@@ -46,18 +53,19 @@ class Capture(Protocol):
 class V4L2Capture:
     """HDMI capture card via V4L2, read continuously on a background thread."""
 
-    def __init__(self, device: str, width: int, height: int) -> None:
+    def __init__(self, device: str, width: int, height: int, fps: int = 60) -> None:
         self._cap = cv2.VideoCapture(device, cv2.CAP_V4L2)
         if not self._cap.isOpened():
             raise CaptureError(f"cannot open capture device {device}")
         self._cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter.fourcc(*"MJPG"))
         self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        self._cap.set(cv2.CAP_PROP_FPS, 30)
-        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self._cap.set(cv2.CAP_PROP_FPS, fps)
+        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, BUFFERS)
         self._lock = threading.Lock()
         self._frame: Frame | None = None
         self._stamp = 0.0
+        self.frames = 0  # frames read so far: the rate the card really delivers (brain.doctor reports it)
         self._running = True
         self._thread = threading.Thread(target=self._read_loop, name="capture", daemon=True)
         self._thread.start()
@@ -77,6 +85,7 @@ class V4L2Capture:
             with self._lock:
                 self._frame = frame
                 self._stamp = time.monotonic()
+                self.frames += 1
 
     def grab(self) -> Frame | None:
         with self._lock:
@@ -157,15 +166,26 @@ def is_blank(frame: Frame) -> bool:
     return int(frame[::4, ::4].max()) < BLANK_MAX
 
 
-def thumbnail(frame: Frame) -> np.ndarray:
+def thumbnail(frame: Frame, size: tuple[int, int] = THUMB_SIZE) -> np.ndarray:
     """Tiny grayscale copy for cheap change detection."""
-    small = cv2.resize(frame, THUMB_SIZE, interpolation=cv2.INTER_AREA)
+    small = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
     return cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
 
 def frame_change(a: np.ndarray, b: np.ndarray) -> float:
     """Mean absolute difference between two thumbnails (0-255)."""
     return float(np.mean(cv2.absdiff(a, b)))
+
+
+def area_change(a: Frame, b: Frame, rect: Rect, x: float, y: float, span: float = AIM_SPAN) -> float:
+    """frame_change of the area around (x, y), fractions of the screen at `rect`, between two frames."""
+    w, h = rect.x1 - rect.x0, rect.y1 - rect.y0
+    cx, cy = rect.x0 + x * w, rect.y0 + y * h
+    x0, x1 = max(rect.x0, round(cx - span * w)), min(rect.x1, round(cx + span * w))
+    y0, y1 = max(rect.y0, round(cy - span * h)), min(rect.y1, round(cy + span * h))
+    if x1 <= x0 or y1 <= y0:
+        return 0.0
+    return frame_change(thumbnail(a[y0:y1, x0:x1], AREA_THUMB_SIZE), thumbnail(b[y0:y1, x0:x1], AREA_THUMB_SIZE))
 
 
 def active_rect(frame: Frame) -> Rect:

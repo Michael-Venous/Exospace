@@ -15,7 +15,7 @@ Built at SwampHacks XII (October 16–18, 2026).
 
 - **Pi 5 (brain):** captures the screen, listens to the user, keeps memory, runs the agent loop and controller. It has its own power, so swapping targets never reboots it.
 - **Pico (hands):** shows up on the target as a keyboard, absolute mouse and touchscreen, and runs commands from the Pi.
-- **Models (race architecture):** for every spoken request, Jev 1.14 and the language model (Gemini 3.8 Flash or z.ai GLM, interchangeable) start at once. If Jev confidently sees one control to click, it acts in about a second and Flash's plan is thrown away; remarks are remembered without touching anything; everything else uses Flash's plan, grounded and checked step by step by Jev. Anything irreversible (send, delete, pay, BIOS changes) waits for a spoken "yes". Measured: 89% task success vs 53% for a Flash-planner-only agent, with 0 unsafe actions ([bench/arch/README.md](bench/arch/README.md)). No separate slow planner or B200 is required. An isolated browser backend supports testing before the hardware adapter is available.
+- **Models (race architecture):** for every spoken request, Jev 1.14 and the language model (Gemini 3.8 Flash or z.ai GLM, interchangeable) start at once. If Jev confidently sees one control to click, it can act without waiting for the planner; remarks are remembered without touching anything; everything else uses Flash's plan, grounded and checked step by step by Jev. Anything irreversible (send, delete, pay, BIOS changes) waits for a spoken "yes". Measured on synthetic browser scenarios: 89% task success vs 53% for a Flash-planner-only agent, with 0 unsafe actions ([bench/arch/README.md](bench/arch/README.md)). No separate slow planner or B200 is required. An isolated browser backend supports testing before the hardware adapter is available.
 - **Any screen, one path:** the same prompts and controller drive every device; the detected OS only picks touch or mouse input. A run survives a restart, replug or blank screen and continues the same goal.
 - **Voice:** a push-to-talk page (one button or the Space bar, so a single accessibility switch works) sends what you say to the agent and speaks back its questions and results.
 
@@ -44,6 +44,18 @@ Built at SwampHacks XII (October 16–18, 2026).
    ```
 4. On the Pi: `scripts/pi/deploy.sh` from the laptop, then follow [docs/hardware-bringup.md](docs/hardware-bringup.md).
 5. Tests: `.venv/bin/python -m unittest discover -s tests` (offline, no API calls).
+
+## Latency and regression checks
+
+Run `.venv/bin/python -m bench.demo_smoke` for the compact routing, cancellation and voice-browser
+regression gate. Run the full suite before deploying. Neither suite measures live ASR or API latency.
+Step logs separate model, input, settle and capture/prepare time; raw timings live in `bench/results.csv`.
+`CAPTURE_FPS` defaults to 60; `brain.doctor` reports actual throughput rather than trusting the requested rate.
+The Pi prepares a newly connected target while idle so identification need not delay its first command.
+
+The current physical rig is **not near-real-time**: a combined calculator launch/calculation took 24.6 s
+on October 18, mostly in model calls. See [HANDOFF.md](HANDOFF.md) for deployment state and live failures.
+Voice submits finalized segments while speech may continue; partial-transcript planning is not implemented.
 
 ## Documentation
 

@@ -39,6 +39,26 @@ class ReconnectTests(unittest.TestCase):
         self.assertEqual(seen, [("first", 1, 1), ("second", 1, 1), ("restart", 1, 1), 2, ("after", 2, 2)])
 
 
+class IdlePreparationTests(unittest.TestCase):
+    def test_late_target_prepares_while_waiting_for_a_command(self):
+        import queue
+        command = app.Command('goal', text='open settings')
+        commands = Mock()
+        commands.get.side_effect = [queue.Empty, command]
+        idle = Mock()
+        self.assertIs(app._next_command(commands, idle), command)
+        idle.assert_called_once_with()
+
+    def test_a_queued_command_is_not_delayed_by_idle_preparation(self):
+        import queue
+        commands = queue.Queue()
+        command = app.Command('goal', text='open settings')
+        commands.put(command)
+        idle = Mock()
+        self.assertIs(app._next_command(commands, idle), command)
+        idle.assert_not_called()
+
+
 class DisplayGoalTests(unittest.TestCase):
     def run_goals(self, statuses, continues=False):
         goals = []

@@ -1,23 +1,25 @@
-"""Race executor: Jev triage and the Flash planner start together on every segment.
+"""Race executor: Jev triage routes every segment; the planner runs only when triage asks for it.
 
-  act   confident Jev target -> one zoom-refined click, no LLM wait; the plan is discarded
+  act   confident Jev target -> one zoom-refined click, no LLM wait
   none  a remark or context -> remembered, no input
-  plan  the planner's already-running result is used, so a Jev miss costs no extra time
+  plan  the planner plans on this screen
+The planner used to start alongside triage. On the Pi both uploads share one slow link (two calls took 4.1 s
+in parallel and in sequence), so the speculative plan slowed triage, and after a launch the next plan waited
+for the discarded one to finish.
 Irreversible requests never execute until the user approves them in the next turn.
 Measured in bench/arch: 89% end-to-end vs 53% for the planner alone, 0 unsafe actions.
 """
 
 from __future__ import annotations
 
-from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 
-from brain.agent.executor import Plan, StepContext
-from brain.agent.jev import probability
+from brain.agent.executor import Plan, StepContext, STALE_SCREEN_NOTE
+from brain.agent.jev import COMPLETION_QUESTION, probability
 from brain.agent.jev_first import JevFirstPlanner
 from brain.agent.jev_flash import JevFlashExecutor
 from brain.agent.triage import GATE, answer_to_pending, pointed, triage
-from brain.cancel import Cancelled, CancelToken
+from brain.cancel import CancelToken
 from brain.skills import OPEN_APP_KEYS
 from brain.config import Config
 from brain.types import Action, OSName
@@ -54,10 +56,6 @@ class RaceExecutor:
             self.planner = planner(cfg, cancel, approved_run=self.approved_run)
         self.jev = self.planner.jev
         self.cancel = cancel
-        # One worker: a speculative plan for an earlier segment always finishes before
-        # the next one starts, so the planner's state is never touched concurrently.
-        self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="race-planner")
-        self._plan: Future[Plan] | None = None
         self._key: tuple | None = None
         self.mode = ""
         self._point: tuple[float, float] | None = None
@@ -97,12 +95,17 @@ class RaceExecutor:
         if self.mode == "hover":
             return self._after_hover(image, ctx)
         if self.mode == "launch":
-            launched = "unchanged" not in (ctx.note or "") and self._launched_app(image, ctx)
-            if launched and self._goal_met(image, ctx):
+            if not self._clicked and ctx.note == STALE_SCREEN_NOTE:
+                # The loop discarded this launch before sending input. Reassess the current
+                # screen instead of claiming an executed step or recovering a failed launch.
+                return self._route(image, ctx, self._utterance, self._earlier,
+                                   confirmed=self.approved_run(ctx))
+            launched, complete = ((False, False) if "unchanged" in (ctx.note or "")
+                                  else self._launch_status(image, ctx))
+            if launched and complete:
                 return Plan("Jev launch done", [Action("done", summary="Done.")], [])
             self.mode = "plan"  # more to do in the app ("... and work out 12 times 9"): plan on its screen
-            self._settle_speculation()
-            self.planner.forget_plan()  # the speculative plan was made before the launch
+            self.planner.forget_plan()  # any stages it kept were planned before the launch
             if not launched:
                 ctx = replace(ctx, note=ctx.note or f'Opening "{self._launched}" from the launcher did not open '
                                                     "that app; find it another way.")
@@ -116,7 +119,6 @@ class RaceExecutor:
             if "unchanged" not in (ctx.note or "") and self._goal_met(image, ctx):
                 return Plan("Jev direct action done", [Action("done", summary="Done.")], [])
             self.mode = "plan"  # no visible effect, or not the goal (a neighbouring button): the planner recovers
-        self._settle_speculation()
         return self._plan_now(image, ctx)
 
     def _start(self, image: bytes, ctx: StepContext) -> Plan:
@@ -135,7 +137,6 @@ class RaceExecutor:
                 self._approved_connected_at = pending.connected_at
                 if pending.step:
                     self.mode = "plan"
-                    self._settle_speculation()
                     return self._plan_now(image, ctx)
                 return self._route(image, ctx, pending.utterance, confirmed=True)
             # Neither: a new command or a correction. Handle it as its own request.
@@ -145,9 +146,6 @@ class RaceExecutor:
     def _route(self, image: bytes, ctx: StepContext, utterance: str, earlier: str = "", *, confirmed: bool,
                declined: bool = False) -> Plan:
         self._utterance, self._earlier, self._triage_step = utterance, earlier, ctx.step
-        # The single planner worker queues this behind any discarded speculation, so triage
-        # (the fast path) never waits for an old plan to finish.
-        self._plan = self._pool.submit(self.planner.next_actions, image, self._planner_ctx(ctx))
         result = self.cancel.run(lambda: triage(self.jev, image, utterance, self.cancel, earlier=earlier,
                                                 run_id=ctx.run_id))
         if result.irreversible and not confirmed:
@@ -178,7 +176,7 @@ class RaceExecutor:
         if self.mode == "launch":
             self._launched = result.app
             return Plan("Jev launch", [Action("skill", name="open_app", args={"name": result.app})], [])
-        return self._planned(self.cancel.run(self._plan.result), ctx)
+        return self._plan_now(image, ctx)
 
     def approved_run(self, ctx: StepContext) -> bool:
         return self._approved_goal is not None and ctx.profile.connected_at == self._approved_connected_at
@@ -202,8 +200,7 @@ class RaceExecutor:
         """One Jev completion call on the new screen: a changed screen alone is no proof
         (measured: "close the calculator" minimized it and reported done)."""
         executed = ([f"scroll {'down' if self._scroll > 0 else 'up'} {abs(self._scroll)} notches"]
-                    if self.mode == "scroll" else [f"open the app {self._launched}"]
-                    if self.mode == "launch" else [f"{self._gesture} on the control for: {self._utterance}"])
+                    if self.mode == "scroll" else [f"{self._gesture} on the control for: {self._utterance}"])
         score = self.cancel.run(lambda: self.jev.completion(image, ctx.goal, executed, run_id=ctx.run_id,
                                                             step=ctx.step))
         # Direct-click scores vs the real outcome: true 0.56-0.93 (two at 0.50 and 0.53), false 0.54 ("close the
@@ -228,17 +225,22 @@ class RaceExecutor:
         if self._tries < len(NEIGHBOURS):
             return self._hover(self._tries + 1)
         self.mode = "plan"  # never click a small control Jev could not confirm
-        self._settle_speculation()
         note = f"No control near where Jev aimed does what was asked ({self._utterance}); find it another way."
         return self._plan_now(image, replace(ctx, note=ctx.note or note))
 
-    def _launched_app(self, image: bytes, ctx: StepContext) -> bool:
+    def _launch_status(self, image: bytes, ctx: StepContext) -> tuple[bool, bool]:
         """The launcher can land elsewhere: "abre la calculadora" on an English desktop became a web
-        search with a calculator widget, which the plain completion check passed (0.9)."""
-        answers, _, _ = self.cancel.run(lambda: self.jev.evaluate(image, {"launched": {"type": "noul", "instructions": LAUNCHED}},
-                                                                  run_id=ctx.run_id, step=ctx.step,
-                                                                  state={"utterance": self._utterance}))
-        return probability(answers["launched"].get("noul")) >= GATE
+        search with a calculator widget, which the plain completion check passed (0.9).
+        Ask both independent questions on the same frame in one call; both original gates still apply."""
+        answers, _, _ = self.cancel.run(lambda: self.jev.evaluate(image, {
+            "launched": {"type": "noul", "instructions": LAUNCHED},
+            "complete": {"type": "noul", "instructions": COMPLETION_QUESTION},
+        }, run_id=ctx.run_id, step=ctx.step, state={
+            "utterance": self._utterance, "goal": ctx.goal,
+            "executed_steps": [f"open the app {self._launched}"],
+        }))
+        return (probability(answers["launched"].get("noul")) >= GATE,
+                probability(answers["complete"].get("noul")) >= DIRECT_GATE)
 
     def _planner_ctx(self, ctx: StepContext) -> StepContext:
         return replace(ctx, goal=self._approved_goal) if self.approved_run(ctx) else ctx
@@ -246,19 +248,8 @@ class RaceExecutor:
     def _direct(self) -> Plan:
         return Plan("Jev direct action", [Action(self._gesture, x=self._point[0], y=self._point[1])], [])
 
-    def _settle_speculation(self) -> None:
-        """Wait out a discarded speculative plan before the planner is used again."""
-        if self._plan is not None and not self._plan.done():
-            try:
-                self.cancel.run(self._plan.result)
-            except Cancelled:
-                raise
-            except Exception:  # noqa: BLE001 - a discarded plan's own failure is irrelevant
-                pass
-
     def classify_os(self, image: bytes) -> OSName:
         return self.planner.classify_os(image)
 
     def close(self) -> None:
-        self._pool.shutdown(wait=False, cancel_futures=True)
         self.planner.close()

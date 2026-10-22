@@ -15,6 +15,8 @@ from brain.cancel import CancelToken
 from brain.config import Config
 from brain.types import OS_NAMES, Action, ActionError, DeviceProfile, OSName
 
+STALE_SCREEN_NOTE = "Screen changed during inference; previous actions were discarded. Reground on this screen."
+
 
 @dataclass(frozen=True)
 class StepContext:

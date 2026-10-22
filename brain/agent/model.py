@@ -15,6 +15,7 @@ import httpx
 
 from brain.cancel import CancelToken
 from brain.config import Config
+from brain.net import ipv4_transport
 
 RETRY_STATUS = {429, 500, 502, 503, 504}
 OVERLOADED = frozenset({429, 503})  # high demand or quota: switch models instead of waiting
@@ -42,6 +43,7 @@ class GeminiJSON:
             http_options=types.HttpOptions(
                 timeout=int(timeout_s * 1000),
                 retry_options=types.HttpRetryOptions(attempts=1),
+                client_args={"transport": ipv4_transport()},
             ),
         )
 

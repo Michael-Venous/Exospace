@@ -234,3 +234,46 @@ drifted between runs (Jev 0.19 s vs 0.38 s median per call), so timing is only c
 an interleaved run. BIOS,
 phone and Blender were tested for triage and first steps only, not end-to-end. No voice
 input, physical HID or capture-card latency yet.
+
+### Batched launch verification (2026-10-18)
+
+`python -m bench.arch.launch_check_study` compares the original sequential app-identity and whole-goal
+checks with one call containing both original questions. Production retains the app gate (0.5), goal
+gate (0.55), cancellation, fresh-screen guard and fallback/approval paths; there are no app-specific rules.
+Six rendered fixtures, two repetitions each, alternating method order: both methods classified 12/12
+correctly, including web-search, desktop-shortcut, unfinished-calculation and login-not-inbox traps.
+Median verification time was 0.300 s sequential versus 0.150 s combined on this laptop. These are hosted
+model calls against synthetic screenshots, not a real-device or speech-to-completion speed measurement.
+Scores can differ when questions share a call; this small study is regression evidence, not a guarantee.
+Raw scores: `work/launch-check-study/results.json`; timings: `bench/results.csv` configurations
+`launch-check-sequential` and `launch-check-combined`. The user deferred end-to-end testing.
+
+### Physical-rig follow-up and limits (2026-10-18)
+
+The architecture-study timings above are synthetic browser results, not current Pi performance.
+Current deployment and reproducible log locations are in [HANDOFF.md](../../HANDOFF.md).
+The user subsequently authorized live checks; the earlier end-to-end deferral above is historical.
+
+| Live request | Run | Submission to result | Outcome |
+|---|---|---:|---|
+| Open calculator and calculate 18×7 | `3c5b1952` |24.604 s |126 visibly confirmed |
+| Open system settings and select Appearance | `82f44d13` |34.985 s |Failed |
+
+These start from a transcribed request, excluding microphone capture and ASR. The calculator's run
+started 0.010 s after submission because idle identification had finished; model steps totaled 20.918 s.
+No near-real-time claim is supported. Network/API latency varies, so single different tasks cannot
+establish a speedup. Pi benchmark rows retain the detected `windows` label even though the target is
+Linux: this is an outstanding OS-identification bug, not corrected benchmark metadata.
+
+Additional read-only studies, not deployed:
+- `post_action_study.py`: merging completion and routing used fewer calls, but both modes falsely
+  required approval for a normal search. Corrected scoring: 6/8 laptop and 3/4 Pi per mode. Do not use
+  the original stdout correctness flags; final JSON/CSV account for false holds.
+- `jpeg_study.py`: quality 90 versus 70 reduced bytes 610700→444246 over the fixture set. Both modes
+  scored 8/14, with six refusals; this is insufficient grounding evidence to reduce production quality.
+- A Pi eager/deferred speculation comparison (`work/demo-speculation-study.log`) failed with upload
+  WriteTimeout before yielding usable comparison data. Production speculation was not changed.
+
+The 20 s Jev timeout remains: 26 of the latest 87 successful calls in the 100-call audit exceeded 5 s.
+A 5 s timeout would discard many responses that currently succeed. Retry count remains one. No
+assumption about sorted-key server caching is used to justify a change.
