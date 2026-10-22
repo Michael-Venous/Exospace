@@ -34,7 +34,7 @@ from brain.cancel import CancelToken
 from brain.controller import Controller
 from brain.hid import HID_MAX
 from brain.imaging import shrink
-from brain.types import Action, DeviceProfile
+from brain.types import Action, DeviceProfile, Rect
 
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
 DEVICE = os.environ.get("EXO_DEVICE", "Linux laptop, KDE Plasma desktop. The GUI key opens the application "
@@ -679,7 +679,7 @@ class QueueAgent:
         self.jev.trace = self.trace  # every Jev call is kept, beside the grounding records
         frame = target.grab()
         h, w = frame.shape[:2]
-        profile = DeviceProfile("linux", (0, 0, w, h), "mouse", time.time())
+        profile = DeviceProfile("linux", Rect(0, 0, w, h), "mouse", time.time())
         self.shared, self.cond = Shared(), threading.Condition()
         self.executor = Executor(self.controller, self.jev, profile, self.shared, self.cond, self.started, self.trace)
         if clicker in CLICKERS:
