@@ -25,6 +25,7 @@ from brain.imaging import shrink
 MODEL = "perceptron/perceptron-mk1.5"
 READ_S = 3.0  # longest wait for a reply's next bytes
 HEDGE_S = 1.5  # a pointing reply not back by then gets a second request beside it (usually 0.5 s)
+TRIES = 3  # pointing requests at most, hedge included
 GIVE_UP_S = 8.0  # no reply from either by then: the click fails
 PROMPT = ('Find {target}. Reply with JSON {{"found": true|false, "x": 0-1000, "y": 0-1000}}: the centre of that '
           "control, x from the left edge and y from the top edge of the image; found false if it isn't visible. "
@@ -86,6 +87,9 @@ class Pointer:
                 if future.exception() is None:
                     self.cancel.check()
                     return future.result()[0]
+            if not pending and len(tries) < TRIES:  # every try failed (both once got a stale TLS connection): again
+                tries.append(self.pool.submit(ask))
+                pending = {tries[-1]}
         raise TimeoutError(f"no pointing reply in {GIVE_UP_S} s") if pending else tries[-1].exception()
 
     def close(self) -> None:

@@ -44,6 +44,12 @@ SEE_SIDE = int(os.environ.get("EXO_SEE_SIDE", "1280"))  # the longest side of th
 # CTRL+L then typing 0.06 s later lost the first letters ("youtube.com" became "tube.com") while Chrome focused its
 # address bar: no input follows another sooner than this (input pacing, not a wait for the screen).
 INPUT_GAP_S = float(os.environ.get("EXO_INPUT_GAP_S", "0.08"))
+# A still screen loads nothing more: an until it doesn't show yet gives up after UNTIL_STILL_S. Over 4 rounds 48
+# untils waited the full 4 s for what never came (often a guess, "the picture taken"); every one met came by 3.4 s.
+UNTIL_STILL_S = 2.0
+# Any spot of a 160x100 thumbnail changing this much is movement: a loading page's tab spinner counts (most slow
+# untils were pages after ENTER, met by 3.4 s), and so does a blinking caret, which only keeps the full wait.
+STILL_DIFF = 12
 UNTIL_S = 4.0  # longest an "until" waits for what the model expects (pages appeared within 2.7 s on the laptop)
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
 HEDGE_S = 1.2  # no answer yet from the first host: the same request goes to the next one too (p90 first token 0.8 s)
@@ -127,8 +133,9 @@ Rules:
   still opening can miss it: if it doesn't fill the screen afterwards, press it again.
 - A list or page can go on past the window's edge (a scroll bar shows it): see all of it (maximize, scroll) before
   you pick the newest, last or biggest item or say what it holds.
-- A click that changed nothing probably missed: maximize the window, or click the target by other text it shows,
-  before asking the user.
+- A click that changed nothing probably missed: its log entry says where it landed, in the screenshot's pixels.
+  If that isn't on the target, name it another way (by other text it shows, or what is next to it), use the
+  keyboard, or maximize the window, before asking the user.
 - Pages, apps and dialogs take a moment to appear: end such a reply with until. If you only just asked for one
   (seconds_since_last_action) and the screen doesn't show it yet, reply with nothing: never ask for it again while
   it may still be coming.
@@ -232,6 +239,7 @@ class Executor(threading.Thread):
                          "count": 2 if kind == "double_click" else 1, "hold": hold}))
                 else:
                     self._input(lambda: self.controller.execute(Action(kind, x=point[0], y=point[1]), self.profile))
+                return "done", self._where(point)
             elif kind == "drag":
                 a, b = self._find(str(value[0])), self._find(str(value[1]))
                 if a is None or b is None:
@@ -254,6 +262,13 @@ class Executor(threading.Thread):
         except Exception as exc:  # noqa: BLE001 - a failed action is logged for the model; the executor carries on
             return "error", f"{type(exc).__name__}: {exc}"[:160]
 
+    def _where(self, point: tuple[float, float]) -> str:
+        """Where a click landed, in the pixels of the screenshot the model sees: a pointer that put "Never" on its
+        dropdown's box (16 px too high) was clicked three times, the model not knowing where it went (2026-10-22)."""
+        r = self.profile.rect
+        scale = SEE_SIDE / max(r.x1 - r.x0, r.y1 - r.y0)
+        return f"at ({round(point[0] * (r.x1 - r.x0) * scale)}, {round(point[1] * (r.y1 - r.y0) * scale)})"
+
     def _jpeg(self) -> bytes:
         """The screen as it is now: no waiting for it to settle."""
         return cv2.imencode(".jpg", self.controller.capture.grab(), [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
@@ -271,12 +286,22 @@ class Executor(threading.Thread):
         # the name alone isn't it: "until Kamoso" passed on the launcher's result row, and the app was launched again
         ask = (f"Does `screen` show this: {expected}? Only the thing itself counts, open on the screen: its name typed "
                "in a search field, listed in search results or on a button doesn't")
+        before, moved = None, started  # the last poll's thumbnail, and when the screen last changed
         while not self.closed and self.shared.request == request:
-            answers, _, _ = _again(lambda: self.jev.evaluate(self._jpeg(), {"shown": {
+            frame = self.controller.capture.grab()
+            thumb = cv2.resize(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (160, 100), interpolation=cv2.INTER_AREA)
+            if before is None or cv2.absdiff(thumb, before).max() > STILL_DIFF:
+                moved = time.monotonic()
+            before = thumb
+            jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
+            answers, _, _ = _again(lambda: self.jev.evaluate(jpeg, {"shown": {
                 "type": "noul", "instructions": ask}}, label="until"))
             waited = round(time.monotonic() - started, 1)
             if probability(answers["shown"].get("noul")) >= GATE:
                 return "done", f"shown after {waited} s"
+            if waited >= UNTIL_STILL_S and time.monotonic() - moved >= UNTIL_STILL_S - 0.5:
+                return "not_shown", (f"not shown after {waited} s, and the screen has stopped changing: look at it. "
+                                     "If the action had its effect, go on; if nothing changed, try another way")
             if waited >= UNTIL_S:
                 return "not_shown", (f"not shown after {waited} s: look at the screen. If the action had its effect, "
                                      "go on; if nothing changed, it didn't work: try another way rather than wait")
@@ -292,7 +317,9 @@ class Executor(threading.Thread):
         score = _again(lambda: self.jev.completion(self._jpeg(), goal, steps, evidence=claim))
         if score >= COMPLETION_GATE:
             return "verified", f"Jev sees the request done ({score:.2f})"
-        return "not_verified", f"Jev does not see the request done on the screen ({score:.2f}): it isn't done yet"
+        return "not_verified", (f"Jev does not see the request done on the screen ({score:.2f}): find what isn't "
+                                "done yet. A still screen can't prove some things (that a video plays, a sound): if "
+                                "the screen shows all it can, tell the user what you see with say instead of done")
 
     def _find(self, target: str) -> tuple[float, float] | None:
         """The target's place, looking again on fresh screens until it appears or `appear_s` runs out."""
