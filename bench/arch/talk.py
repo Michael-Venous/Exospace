@@ -200,8 +200,15 @@ def main() -> None:
                 out.writeheader()
             out.writerow(row)
 
+    def save(folder: Path) -> None:  # every call, action and click point so far, for looking into a run later
+        (folder / "calls.json").write_text(json.dumps(agent.brain.calls, indent=0, default=str))
+        (folder / "log.json").write_text(json.dumps([{"t": r.t, "action": r.action, "result": r.result,
+                                                      "detail": r.detail} for r in agent.shared.log], indent=0))
+        (folder / "trace.json").write_text(json.dumps(agent.trace, indent=0, default=str))
+
     def trace() -> None:  # each model reply and each action as it runs, in seconds since the agent started
         calls = ran = 0
+        saved = (0, 0)
         while True:
             open_ = [r for r in requests if "words" in r and not r.get("summarized")]
             for request in open_:
@@ -210,7 +217,8 @@ def main() -> None:
                     request["summarized"] = True
             for call in agent.brain.calls[calls:]:
                 if call.get("total_s") is not None or call.get("error") or call.get("cancelled"):
-                    print(f"  [{call['t']:.2f}] model {'(cancelled) ' if call.get('cancelled') else ''}"
+                    # a cancelled call's actions that had already streamed still run: show them too
+                    print(f"  [{call['t']:.2f}] model {'(cancelled by new words) ' if call.get('cancelled') else ''}"
                           f"first token {call.get('ttft_s')} s: "
                           f"{[{k: v for k, v in a.items() if k != 'at_s'} for a in call['lines']] or call.get('error', '')}",
                           flush=True)
@@ -218,8 +226,15 @@ def main() -> None:
                 else:
                     break
             for record in agent.shared.log[ran:]:
-                print(f"  [{record.t:.2f}] ran {record.action} -> {record.result} {record.detail}", flush=True)
+                point = next((t["point"] for t in reversed(agent.trace)
+                              if t.get("label") == "ground" and t.get("target") == next(iter(record.action.values()))),
+                             None) if {"click", "double_click", "right_click"} & record.action.keys() else None
+                print(f"  [{record.t:.2f}] ran {record.action}{f' at {point}' if point else ''} -> {record.result} "
+                      f"{record.detail}", flush=True)
                 ran += 1
+            if (calls, ran) != saved:  # only when something new happened
+                save(session)
+                saved = (calls, ran)
             time.sleep(0.1)
 
     threading.Thread(target=speak_back, daemon=True).start()
