@@ -501,12 +501,13 @@ class Brain(threading.Thread):
         for past in self.history[-HISTORY:]:
             history += [{"role": "user", "content": past["context"]},
                         {"role": "assistant", "content": past["reply"] or "(nothing)"}]
-        # Stuck (a reply sent twice, or two failures running): one call reasons and steps back. At a loop it found
-        # the image viewer the model kept clicking in (2/2, 2.2-2.7 s), where the usual call repeated its click.
-        recent = [r.result for r in self.shared.log[self.shared.turn_start:][-2:]]
-        # Only right after a repeat: one breeze-light reply sent twice made every later call step back (7 calls).
-        stuck = self.repeated or (len(recent) == 2 and all(r in FAILED for r in recent))
-        step_back = stuck and self.stepped_back != len(self.shared.log)
+        # Stuck (a reply sent twice, or two of the last 4 results failed): one call reasons and steps back. At a loop
+        # it found the image viewer the model kept clicking in (2/2, 2.2-2.7 s), where the usual call repeated its
+        # click. Failures, not only exact repeats: "click Paris, until Paris" ran 3 times, the first in a longer reply.
+        recent = [r.result for r in self.shared.log[self.shared.turn_start:][-4:]]
+        stuck = self.repeated or sum(r in FAILED for r in recent) >= 2
+        # Once per stuck spell: one breeze-light repeat once made every later call step back (7 calls).
+        step_back = stuck and len(self.shared.log) - self.stepped_back >= len(recent)
         if step_back:
             self.stepped_back = len(self.shared.log)
         effort = STEP_BACK_EFFORT if step_back else self.effort
