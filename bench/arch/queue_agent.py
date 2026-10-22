@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import queue
 import threading
 import time
 from collections import deque
@@ -45,6 +46,7 @@ SEE_SIDE = int(os.environ.get("EXO_SEE_SIDE", "1280"))  # the longest side of th
 INPUT_GAP_S = float(os.environ.get("EXO_INPUT_GAP_S", "0.08"))
 UNTIL_S = 4.0  # longest an "until" waits for what the model expects (pages appeared within 2.7 s on the laptop)
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
+HEDGE_S = 1.2  # no answer yet from the first host: the same request goes to the next one too (p90 first token 0.8 s)
 FIRST_TOKEN_S = 4.0  # a reply that brings no new text for this long is asked again, on the next host. First tokens
 # over 465 calls: p50 0.49 s, p95 1.3 s, p99 2.3 s; a 2.5 s limit cut 2% of calls short (one stall was 7.8 s).
 READ_S = FIRST_TOKEN_S  # the connection's own read timeout: a host that sends nothing at all
@@ -479,36 +481,22 @@ class Brain(threading.Thread):
                                                                      + base64.b64encode(image).decode()}},
                                  {"type": "text", "text": json.dumps(context) + (STEP_BACK if step_back else "")}]}]}
         started = time.monotonic()
-        heard = started  # when the reply last brought new text
         self.phase = ("streaming", round(started - self.started, 2))
         record = {"t": round(started - self.started, 2), "speaking": self.speaking, "words": self.words,
                   "lines": [], "cancelled": False, "step_back": step_back}
         self.calls.append(record)
         text, full = "", ""
-        with self.client.stream("POST", OPENROUTER, json=body) as response:
-            if response.status_code != 200:
-                record["error"] = f"HTTP {response.status_code}: {response.read()[:160]!r}"
-                return
-            for line in response.iter_lines():
-                if self.cancel_call.is_set():
-                    record["cancelled"] = True
-                    break
-                if time.monotonic() - heard > FIRST_TOKEN_S:
-                    # OpenRouter's keep-alive lines reset the read timeout while a provider stalls: ask again
-                    raise TimeoutError(f"no new tokens for {FIRST_TOKEN_S} s")
-                if not line.startswith("data: ") or line == "data: [DONE]":
-                    continue
-                for choice in json.loads(line[6:]).get("choices", []):
-                    delta = choice.get("delta") or {}
-                    piece = delta.get("content") or ""
-                    if piece or delta.get("reasoning"):  # a stepping-back call reasons before it answers
-                        heard = time.monotonic()
-                    if piece and "ttft_s" not in record:
-                        record["ttft_s"] = round(time.monotonic() - started, 3)
-                    text, full = text + piece, full + piece
-                    while "\n" in text:
-                        done, text = text.split("\n", 1)
-                        self._apply(done, record, started)
+        for piece in self._stream(body, record):
+            if self.cancel_call.is_set():
+                record["cancelled"] = True
+                break
+            if "ttft_s" not in record:
+                record["ttft_s"] = round(time.monotonic() - started, 3)
+            text, full = text + piece, full + piece
+            while "\n" in text:
+                done, text = text.split("\n", 1)
+                self._apply(done, record, started)
+        record["cancelled"] = self.cancel_call.is_set()
         if not record["cancelled"]:
             self._apply(text, record, started)  # the last line, which has no newline after it
             if record["lines"] and record["lines"][-1].keys() & {"say", "ask"}:
@@ -531,6 +519,73 @@ class Brain(threading.Thread):
             past = {k: v for k, v in context.items() if k != "conversation_before"}
             self.history.append({"context": json.dumps(past), "reply": full.strip()})
         record["total_s"] = round(time.monotonic() - started, 3)
+
+    def _stream(self, body: dict, record: dict):
+        """The reply's text as it streams, hedged: if no host has started answering within HEDGE_S, the same
+        request goes to the next host too, and the first to answer is used (the other is dropped). A reply that
+        brings nothing new for FIRST_TOKEN_S fails, and the run loop asks again. One host's first token took
+        3.4 s, another sent nothing for 4 s, while the other host answered in about 0.5 s (2026-10-22)."""
+        events: queue.Queue = queue.Queue()
+        stop = threading.Event()
+
+        def attempt(k: int, hosts: list[str]) -> None:
+            request = {**body, "provider": {"order": hosts, "allow_fallbacks": False}} if hosts else body
+            try:
+                with self.client.stream("POST", OPENROUTER, json=request) as response:
+                    if response.status_code != 200:
+                        events.put((k, "error", f"HTTP {response.status_code}: {response.read()[:160]!r}"))
+                        return
+                    for line in response.iter_lines():
+                        if stop.is_set():
+                            return
+                        if not line.startswith("data: ") or line == "data: [DONE]":
+                            continue
+                        for choice in json.loads(line[6:]).get("choices", []):
+                            delta = choice.get("delta") or {}
+                            if delta.get("content"):
+                                events.put((k, "text", delta["content"]))
+                            elif delta.get("reasoning"):  # a stepping-back call reasons before it answers
+                                events.put((k, "alive", ""))
+                events.put((k, "end", ""))
+            except Exception as exc:  # noqa: BLE001 - reported to the reader, which decides
+                events.put((k, "error", f"{type(exc).__name__}: {exc}"))
+
+        hosts = list(self.hosts)
+        threading.Thread(target=attempt, args=(0, hosts), daemon=True).start()
+        started = heard = time.monotonic()
+        tries, failed, winner = 1, set(), None
+        try:
+            while True:
+                if winner is None and tries == 1 and len(hosts) > 1 and (failed or time.monotonic() - started > HEDGE_S):
+                    threading.Thread(target=attempt, args=(1, hosts[1:] + hosts[:1]), daemon=True).start()
+                    tries += 1
+                    record["hedged"] = True
+                if time.monotonic() - heard > FIRST_TOKEN_S:
+                    raise TimeoutError(f"no new tokens for {FIRST_TOKEN_S} s")
+                if self.cancel_call.is_set():
+                    return
+                try:
+                    k, kind, value = events.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if winner is not None and k != winner:
+                    continue
+                if kind == "error":
+                    failed.add(k)
+                    if k == winner or len(failed) == tries and (tries > 1 or len(hosts) < 2):
+                        raise RuntimeError(value)
+                    continue
+                heard = time.monotonic()
+                if kind == "end":
+                    if winner is None:
+                        winner = k  # a reply with no text at all is still a reply
+                    return
+                if kind == "text":
+                    if winner is None:
+                        winner, record["host"] = k, (hosts[k:] + hosts[:k] or ["fastest"])[0]
+                    yield value
+        finally:
+            stop.set()
 
     def _apply(self, line: str, record: dict, started: float) -> None:
         line = line.strip().strip("`").strip()
