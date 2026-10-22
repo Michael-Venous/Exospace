@@ -45,9 +45,9 @@ SEE_SIDE = int(os.environ.get("EXO_SEE_SIDE", "1280"))  # the longest side of th
 INPUT_GAP_S = float(os.environ.get("EXO_INPUT_GAP_S", "0.08"))
 UNTIL_S = 4.0  # longest an "until" waits for what the model expects (pages appeared within 2.7 s on the laptop)
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
-FIRST_TOKEN_S = 2.5  # a reply that brings no new text for this long is asked again (first token usually 0.45 s;
-# one stalled 7.8 s before it, another mid-reply)
-READ_S = 3.0  # longest wait for the model's next streamed bytes, its first token included
+FIRST_TOKEN_S = 4.0  # a reply that brings no new text for this long is asked again, on the next host. First tokens
+# over 465 calls: p50 0.49 s, p95 1.3 s, p99 2.3 s; a 2.5 s limit cut 2% of calls short (one stall was 7.8 s).
+READ_S = FIRST_TOKEN_S  # the connection's own read timeout: a host that sends nothing at all
 RUNAWAY = 8  # the same action this many times in a row ends a reply
 LOOPS = 3  # the same reply this many times in one request: it is going in circles, and stops
 DONE_TAIL = 300  # actions of this request each call sees, compactly
@@ -126,7 +126,9 @@ Rules:
 - Pages, apps and dialogs take a moment to appear: end such a reply with until. If you only just asked for one
   (seconds_since_last_action) and the screen doesn't show it yet, reply with nothing: never ask for it again while
   it may still be coming.
-- State only what the screen shows; never guess a result.
+- State only what the screen shows; never guess a result. A screenshot is still: it can't show that something plays
+  or moves, so don't wait for that. A media player shows a pause button while it plays (videos usually start by
+  themselves; check before pressing play), and an ad ends by itself or offers Skip.
 - The user hears say and ask, never done: when they asked to be told something, say it before done.
 - Use keyboard shortcuts where they are sure.
 - Words typed in a browser's address bar search the web, not the site that is open: to search a site, use its
@@ -259,8 +261,8 @@ class Executor(threading.Thread):
         (a page, an app, a dialog), up to UNTIL_S."""
         started, request = time.monotonic(), self.shared.request
         while not self.closed and self.shared.request == request:
-            answers, _, _ = self.jev.evaluate(self._jpeg(), {"shown": {"type": "noul", "instructions":
-                                              f"Does `screen` show this: {expected}?"}}, label="until")
+            answers, _, _ = _again(lambda: self.jev.evaluate(self._jpeg(), {"shown": {
+                "type": "noul", "instructions": f"Does `screen` show this: {expected}?"}}, label="until"))
             waited = round(time.monotonic() - started, 1)
             if probability(answers["shown"].get("noul")) >= GATE:
                 return "done", f"shown after {waited} s"
@@ -276,7 +278,7 @@ class Executor(threading.Thread):
             # what ran, and what each until saw appear: closing an app leaves nothing on screen of the earlier steps
             steps = [json.dumps(r.action) + (f" ({r.detail})" if r.detail else "")
                      for r in self.shared.log[self.shared.turn_start:] if r.result == "done"]
-        score = self.jev.completion(self._jpeg(), goal, steps, evidence=claim)
+        score = _again(lambda: self.jev.completion(self._jpeg(), goal, steps, evidence=claim))
         if score >= COMPLETION_GATE:
             return "verified", f"Jev sees the request done ({score:.2f})"
         return "not_verified", f"Jev does not see the request done on the screen ({score:.2f}): it isn't done yet"
@@ -313,6 +315,14 @@ class Executor(threading.Thread):
         self.trace.append({"label": "ground", "target": target, "point": point, "by": "jev",
                            "elapsed_s": round(time.monotonic() - started, 3)})
         return point
+
+
+def _again(ask):
+    """A Jev check, asked once more if its connection drops (a ReadError once failed a done that was right)."""
+    try:
+        return ask()
+    except Exception:  # noqa: BLE001 - one retry; a second failure is the step's error
+        return ask()
 
 
 def _brief(action: dict) -> str:
