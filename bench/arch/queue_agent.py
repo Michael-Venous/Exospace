@@ -48,6 +48,7 @@ SLEEP_S = 8.0  # no speech and no action for this long: the model stops being ca
 FIRST_TOKEN_S = 2.5  # a reply that brings no new text for this long is asked again (first token usually 0.45 s;
 # one stalled 7.8 s before it, another mid-reply)
 READ_S = 3.0  # longest wait for the model's next streamed bytes, its first token included
+RUNAWAY = 8  # the same action this many times in a row ends a reply
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
 # Each model on one host. Qwen's quality depends on it (study 17: 192/192 pointed on ModelRun, 15/192 on Cerebras);
@@ -137,6 +138,7 @@ class Shared:
     goal: str = ""  # what the user has asked for, for the done check
     turn_start: int = 0  # the log entry the current request starts at
     finished: bool = False  # a confirmed done, say or ask ended the turn: only new speech wakes the model
+    request: int = 0  # counts requests: a wait from an earlier one gives up when a new one starts
 
 
 class Executor(threading.Thread):
@@ -230,8 +232,8 @@ class Executor(threading.Thread):
     def _until(self, expected: str) -> tuple[str, str]:
         """Wait on the computer, not the model: Jev looks at each fresh screen until it shows what the model expects
         (a page, an app, a dialog), up to UNTIL_S."""
-        started = time.monotonic()
-        while not self.closed:
+        started, request = time.monotonic(), self.shared.request
+        while not self.closed and self.shared.request == request:
             answers, _, _ = self.jev.evaluate(self._jpeg(), {"shown": {"type": "noul", "instructions":
                                               f"Does `screen` show this: {expected}?"}}, label="until")
             waited = round(time.monotonic() - started, 1)
@@ -240,7 +242,7 @@ class Executor(threading.Thread):
             if waited >= UNTIL_S:
                 return "not_shown", (f"not shown after {waited} s: look at the screen. If the action had its effect, "
                                      "go on; if nothing changed, it didn't work: try another way rather than wait")
-        return "error", "stopped"
+        return "error", "stopped: a new request started"
 
     def _verify(self, claim: str) -> tuple[str, str]:
         """The request counts as done only if Jev's completion check sees it done on the screen."""
@@ -324,8 +326,10 @@ class Brain(threading.Thread):
 
     def hear(self, words: str, speaking: bool) -> None:
         with self.cond:
-            if not self.words:  # a new request starts here
+            if not self.words:  # a new request starts here: it interrupts whatever the last one left queued
                 self.shared.turn_start = len(self.shared.log)
+                self.shared.queue.clear()
+                self.shared.request += 1
                 self.history = []
             self.words, self.speaking, self.shared.finished = words, speaking, False
             self.shared.goal = words  # this request alone: the done check judges what was just asked
@@ -466,6 +470,12 @@ class Brain(threading.Thread):
                 self._take(action, record, started)
 
     def _take(self, action: dict, record: dict, started: float) -> None:
+        recent = [{k: v for k, v in line.items() if k != "at_s"} for line in record["lines"][-RUNAWAY:]]
+        if len(recent) == RUNAWAY and all(line == action for line in recent):
+            # The same action again and again in one reply is a stuck generation, not a plan (655 CTRL+Z once).
+            record["runaway"] = True
+            self.cancel_call.set()
+            return
         record["lines"].append({"at_s": round(time.monotonic() - started, 3), **action})
         with self.cond:
             if "say" in action or "ask" in action:
