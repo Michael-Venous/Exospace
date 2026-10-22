@@ -55,6 +55,9 @@ user_pref("browser.shell.checkDefaultBrowser", false);
 user_pref("browser.tabs.warnOnClose", false);
 JS
 setsid -f firefox --no-remote --profile /tmp/exo-ff https://www.google.com >/dev/null 2>&1; sleep 4"""
+LOCK = "--file kscreenlockerrc --group Daemon --key Autolock"
+AUTOLOCK_ON = f"kreadconfig6 {LOCK} > /tmp/exo_autolock; kwriteconfig6 {LOCK} true"  # the owner's value is kept
+AUTOLOCK_BACK = f"kwriteconfig6 {LOCK} \"$(cat /tmp/exo_autolock)\""
 WINDOWS_JS = """var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
 for (var i = 0; i < ws.length; i++) { var w = ws[i]; if (w.normalWindow || w.dialog)
   print("EXOWIN " + JSON.stringify({id: String(w.internalId), caption: w.caption, cls: w.resourceClass,
@@ -173,6 +176,7 @@ class Test:
     check: object  # () -> (passed, detail)
     cleanup: str = ""
     turn_s: float = 90.0  # how long a turn may run
+    suite: str = "open"  # "steps": spoken step by step; "open": the model works out the steps
     data: dict = field(default_factory=dict)
 
 
@@ -228,6 +232,55 @@ def chrome_visits() -> list[tuple[float, str, bool]]:
         rows = db.execute("SELECT v.visit_time, u.url, v.transition FROM visits v JOIN urls u ON u.id = v.url "
                           "WHERE v.visit_time > ? ORDER BY v.visit_time", (since,)).fetchall()
     return [(t, url, bool(transition & FORWARD_BACK)) for t, url, transition in rows]
+
+
+def firefox_visits() -> list[tuple[float, str]]:
+    """The test Firefox profile's page visits since the test started: (time, url)."""
+    since = os.path.getmtime("/tmp/exo_test_start") * 1e6
+    copy = Path("/tmp/exo_places")
+    copy.mkdir(exist_ok=True)
+    for name in ("places.sqlite", "places.sqlite-wal"):  # Firefox keeps recent visits in the write-ahead log
+        if (Path("/tmp/exo-ff") / name).exists():
+            shutil.copy(Path("/tmp/exo-ff") / name, copy / name)
+    with sqlite3.connect(copy / "places.sqlite") as db:
+        return db.execute("SELECT v.visit_date, p.url FROM moz_historyvisits v JOIN moz_places p ON p.id = v.place_id "
+                          "WHERE v.visit_date > ? ORDER BY v.visit_date", (since,)).fetchall()
+
+
+def _wiki_paris(test: Test) -> tuple[bool, str]:
+    """The Eiffel Tower article, then Paris's, in that order."""
+    visits = firefox_visits()
+    tower = [t for t, url in visits if "/wiki/Eiffel_Tower" in url]
+    paris = [t for t, url in visits if url.rstrip("/").endswith("/wiki/Paris") and tower and t > tower[0]]
+    return bool(paris), json.dumps({"eiffel tower": bool(tower), "then paris": bool(paris)})
+
+
+def _setting(file: str, group: str, key: str, want: str) -> tuple[bool, str]:
+    value = shell(f"kreadconfig6 --file {file} --group {group} --key {key}").strip()
+    return value == want, f"{file} [{group}] {key} = {value!r}"
+
+
+def _camera(test: Test) -> tuple[bool, str]:
+    shots = shell("find ~/Pictures -maxdepth 1 -newer /tmp/exo_test_start -name '*.jpg'").split()
+    open_ = [w["caption"] for w in windows() if "kamoso" in w["cls"].lower() and not w["minimized"]]
+    return bool(shots) and not open_, json.dumps({"new pictures": shots, "camera windows left": open_})
+
+
+def _projects(test: Test) -> tuple[bool, str]:
+    made = shell("test -d ~/Documents/projects && echo yes").strip() == "yes"
+    shown = any(c.startswith("projects") for _, c in test.data["timeline"])
+    return made and shown, json.dumps({"folder": made, "opened": shown})
+
+
+def _calc(test: Test) -> tuple[bool, str]:
+    said = " ".join(test.data.get("said", []))
+    used = any("kcalc" in c.lower() for _, c in test.data["timeline"])
+    return bool(re.search(r"5,?888", said)) and used, json.dumps({"said": said[:80], "calculator used": used})
+
+
+def _meeting(test: Test) -> tuple[bool, str]:
+    out = shell("cat ~/Desktop/meeting* 2>/dev/null")
+    return "meeting at three" in out.lower(), out[:120]
 
 
 def _groceries() -> tuple[bool, str]:
@@ -301,16 +354,36 @@ TESTS = [
     Test("correction", ["open youtube actually no open wikipedia and look up the eiffel tower"],
          CHROME.format(urls="https://www.google.com"),
          lambda t: _tabs_check(lambda tabs, cap: "eiffel" in cap)()),
-    # the stress test: off the default run until everything above passes (`--tests 12`)
+    # the stress test: off the default run until everything above passes (`--tests 19`)
     Test("step by step", ["open chrome, go to youtube, search for horse videos, click the second video, go back, "
-                          "close chrome"], "true", _steps),
+                          "close chrome"], "true", _steps, turn_s=30, suite="steps"),
+    # (Night light has no on/off switch in this Plasma's settings: replaced by a plain switch that needs Apply.)
+    Test("autolock off", ["open system settings, go to screen locking, turn off lock screen automatically, and apply"],
+         AUTOLOCK_ON, lambda t: _setting("kscreenlockerrc", "Daemon", "Autolock", "false"), turn_s=30, suite="steps",
+         cleanup=AUTOLOCK_BACK),
+    Test("camera picture", ["open the camera app, take a picture, then close it"], "true", _camera, turn_s=30,
+         suite="steps", cleanup="find ~/Pictures -maxdepth 1 -newer /tmp/exo_test_start -name '*.jpg' -delete"),
+    Test("typed note", ["open kwrite, type meeting at three tomorrow, and save it on the desktop as meeting"], "true",
+         _meeting, turn_s=30, suite="steps"),
+    Test("wikipedia paris", ["in firefox, go to wikipedia, search for the eiffel tower, and open the link to paris"],
+         FIREFOX, _wiki_paris, turn_s=30, suite="steps", cleanup="rm -rf /tmp/exo-ff"),
+    Test("projects folder", ["open the file manager, go to documents, make a new folder called projects and open it"],
+         "rm -rf ~/Documents/projects", _projects, turn_s=30, suite="steps", cleanup="rm -rf ~/Documents/projects"),
+    Test("calculator", ["open the calculator, work out 128 times 46, and tell me the answer"], "true", _calc,
+         turn_s=30, suite="steps"),
+    Test("breeze light", ["open system settings, go to colors, and pick breeze light"],
+         "plasma-apply-colorscheme SweetAmbarBlue >/dev/null",
+         lambda t: _setting("kdeglobals", "General", "ColorScheme", "BreezeLight"), turn_s=30, suite="steps",
+         cleanup="plasma-apply-colorscheme SweetAmbarBlue >/dev/null"),
     Test("blender house", ["open up blender and make a house", "actually make it wider", "make it brown"],
          f"mkdir -p ~/.config/blender/5.2/scripts/startup && cat > {BLENDER_STARTUP} <<'PY'\n{BLENDER_ORACLE}\nPY\n"
          "rm -f /tmp/exo_blender.json", _house, turn_s=300, cleanup=f"rm -f {BLENDER_STARTUP} /tmp/exo_blender.json"),
 ]
 # The default run, ~3.5 min: 2 (weather) and 9 (printer pdf) passed every run of the baseline and repeat others'
 # skills; 11 (Blender) waits until everything else passes.
-DEFAULT = [1, 3, 4, 5, 6, 7, 8, 10]
+OPEN = [1, 3, 4, 5, 6, 7, 8, 10]  # the open-ended default run
+STEPS = [n for n in range(1, len(TESTS) + 1) if TESTS[n - 1].suite == "steps"]
+SUITES = {"steps": STEPS, "open": OPEN, "all": STEPS + OPEN}
 
 
 def reset() -> None:
@@ -318,8 +391,8 @@ def reset() -> None:
     desktop as the run found it (empty on the test laptop)."""
     kwin(close_js())
     time.sleep(1.5)
-    shell(f"pkill -f exo-chrome; for app in blender okular kate kwrite systemsettings dolphin konsole gwenview firefox "
-          f"brave chrome; do pkill --newer {os.getpid()} -x $app; done; {CLEAN_FILES}; sleep 1")
+    shell(f"pkill -f exo-chrome; for app in blender okular kate kwrite kcalc kamoso systemsettings dolphin konsole "
+          f"gwenview firefox brave chrome; do pkill --newer {os.getpid()} -x $app; done; {CLEAN_FILES}; sleep 1")
 
 
 def speak(agent: QueueAgent, words: str) -> float:
@@ -400,6 +473,7 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
                 break
             if test.name.startswith("blender"):
                 test.data.setdefault("widths", []).append(footprint([o for o in blender_scene() if o["type"] == "MESH"]))
+        test.data.update(timeline=timeline, said=list(agent.brain.said))
         passed, detail = test.check(test)
         passed = passed and not any(t["stalled"] for t in turns)
     finally:
@@ -427,7 +501,8 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--tests", nargs="*", type=int, help="1-based test numbers (default: DEFAULT)")
+    parser.add_argument("--tests", nargs="*", type=int, help="1-based test numbers (default: the --suite)")
+    parser.add_argument("--suite", default="all", choices=list(SUITES))
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--model", default="deepseek", choices=list(MODELS))
     parser.add_argument("--clicker", default="qwen", choices=["jev", *CLICKERS])
@@ -443,7 +518,7 @@ def main() -> None:
     target = LaptopTarget()
     try:
         for repeat in range(args.repeats):
-            for n in args.tests or DEFAULT:
+            for n in args.tests or SUITES[args.suite]:
                 label = "+".join([args.model, *[x for x in (args.clicker, args.plan) if x != "screen"]])
                 row = run(TESTS[n - 1], n, repeat, model, effort, target, label, args.clicker, args.plan, args.out)
                 rows.append(row)

@@ -45,6 +45,7 @@ SEE_SIDE = int(os.environ.get("EXO_SEE_SIDE", "1280"))  # the longest side of th
 INPUT_GAP_S = float(os.environ.get("EXO_INPUT_GAP_S", "0.08"))
 UNTIL_S = 4.0  # longest an "until" waits for what the model expects (pages appeared within 2.7 s on the laptop)
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
+FIRST_TOKEN_S = 2.5  # a reply that hasn't started after this is asked again (usually 0.45 s; once 7.8 s)
 READ_S = 3.0  # longest wait for the model's next streamed bytes, its first token included
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
@@ -75,7 +76,8 @@ you will see it again.
   {"type": "lofi hip hop"}          type these words into whatever has focus
   {"click": "Reply"}                click a visible control, named by its exact visible text when it has any
                                     ("Reply", "119.93 Hz"); an icon by its look and place ("the gear icon at the
-                                    top right"); also "double_click", "right_click"; add "hold": ["CTRL"] to
+                                    top right"); when the text shows more than once, say which ("the Paris link in
+                                    the first paragraph"); also "double_click", "right_click"; add "hold": ["CTRL"] to
                                     click while holding keys (CTRL or SHIFT to select several files or items)
   {"drag": ["the file report.pdf", "the Documents folder in the sidebar"]}   press on one spot, release on another
   {"scroll": 3, "at": "the list of results"}   mouse-wheel notches, positive down ("at" optional)
@@ -86,7 +88,8 @@ you will see it again.
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
                                     proves it; it is checked on the screen before it counts
 Describe what until and done expect as it looks on the screen ("only the wallpaper, no windows"), not by a name
-("the desktop"): a fast vision check compares it with the screen.
+("the desktop"), and only what you are sure will be there (a title, a heading), not details you guess: a fast
+vision check compares it with the screen.
   {"say": "It's running at 120 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
 A confirmed done, or a reply that ends with say or ask, ends your turn: the user speaks next.
 Rules:
@@ -231,7 +234,8 @@ class Executor(threading.Thread):
             if probability(answers["shown"].get("noul")) >= GATE:
                 return "done", f"shown after {waited} s"
             if waited >= UNTIL_S:
-                return "not_shown", f"not shown after {waited} s"
+                return "not_shown", (f"not shown after {waited} s: the action may still have worked differently; check "
+                                     "the screen before repeating it")
         return "error", "stopped"
 
     def _verify(self, claim: str) -> tuple[str, str]:
@@ -413,6 +417,9 @@ class Brain(threading.Thread):
                 if self.cancel_call.is_set():
                     record["cancelled"] = True
                     break
+                if "ttft_s" not in record and time.monotonic() - started > FIRST_TOKEN_S:
+                    # OpenRouter's keep-alive lines reset the read timeout while a provider stalls: ask again
+                    raise TimeoutError(f"no first token after {FIRST_TOKEN_S} s")
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue
                 for choice in json.loads(line[6:]).get("choices", []):
