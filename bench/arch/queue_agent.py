@@ -133,6 +133,8 @@ Rules:
   themselves; check before pressing play), and an ad ends by itself or offers Skip.
 - The user hears say and ask, never done: when they asked to be told something, say it before done.
 - Use keyboard shortcuts where they are sure.
+- Type only file names and paths you read on the screen or know for sure (~ is the user's home folder): a guessed
+  path or a misread name goes nowhere.
 - Words typed in a browser's address bar search the web, not the site that is open: to search a site, use its
   own search box."""
 
@@ -262,9 +264,12 @@ class Executor(threading.Thread):
         """Wait on the computer, not the model: Jev looks at each fresh screen until it shows what the model expects
         (a page, an app, a dialog), up to UNTIL_S."""
         started, request = time.monotonic(), self.shared.request
+        # the name alone isn't it: "until Kamoso" passed on the launcher's result row, and the app was launched again
+        ask = (f"Does `screen` show this: {expected}? Only the thing itself counts, open on the screen: its name typed "
+               "in a search field, listed in search results or on a button doesn't")
         while not self.closed and self.shared.request == request:
             answers, _, _ = _again(lambda: self.jev.evaluate(self._jpeg(), {"shown": {
-                "type": "noul", "instructions": f"Does `screen` show this: {expected}?"}}, label="until"))
+                "type": "noul", "instructions": ask}}, label="until"))
             waited = round(time.monotonic() - started, 1)
             if probability(answers["shown"].get("noul")) >= GATE:
                 return "done", f"shown after {waited} s"
@@ -357,6 +362,7 @@ class Brain(threading.Thread):
         self.prompt = PROMPT
         self.stepped_back = -1  # the log length at the last stepping-back call: once per stuck spell
         self.replies: dict[str, int] = {}  # this request's replies and how often each came (a loop guard)
+        self.repeated = False  # the last reply was one sent before
         self.hosts = list(PINNED.get(model, ()))  # the providers in the order tried; empty: the fastest serves
         self.history: list[dict] = []  # this request's earlier calls: what each saw and replied
 
@@ -372,7 +378,7 @@ class Brain(threading.Thread):
     def hear(self, words: str, speaking: bool) -> None:
         with self.cond:
             if not self.words:  # a new request starts here: what the last one left queued is held, not run
-                self.replies = {}
+                self.replies, self.repeated = {}, False
                 busy = not self.shared.finished and (self.shared.queue or self.shared.state == "running")
                 last = next((t["user"] for t in reversed(self.conversation) if "user" in t), "")
                 self.shared.held, self.shared.held_goal = (list(self.shared.queue), last) if busy else ([], "")
@@ -467,7 +473,8 @@ class Brain(threading.Thread):
         # Stuck (a reply sent twice, or two failures running): one call reasons and steps back. At a loop it found
         # the image viewer the model kept clicking in (2/2, 2.2-2.7 s), where the usual call repeated its click.
         recent = [r.result for r in self.shared.log[self.shared.turn_start:][-2:]]
-        stuck = "repeating" in context or (len(recent) == 2 and all(r in FAILED for r in recent))
+        # Only right after a repeat: one breeze-light reply sent twice made every later call step back (7 calls).
+        stuck = self.repeated or (len(recent) == 2 and all(r in FAILED for r in recent))
         step_back = stuck and self.stepped_back != len(self.shared.log)
         if step_back:
             self.stepped_back = len(self.shared.log)
@@ -509,6 +516,7 @@ class Brain(threading.Thread):
             # first steps by design (a profile switch was stopped as "in circles" after 2.6 s)
             reply = json.dumps([{k: v for k, v in line.items() if k != "at_s"} for line in record["lines"]])
             self.replies[reply] = self.replies.get(reply, 0) + 1
+            self.repeated = self.replies[reply] > 1
             if self.replies[reply] >= LOOPS:  # the same reply again and again: stop and say so
                 with self.cond:
                     self.shared.queue.clear()

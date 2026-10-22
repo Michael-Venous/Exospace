@@ -65,6 +65,18 @@ AUTOLOCK_ON = (f"kreadconfig6 {LOCK} Autolock > /tmp/exo_autolock; kreadconfig6 
                f"kwriteconfig6 {LOCK} Autolock true; kwriteconfig6 {LOCK} Timeout 5")
 AUTOLOCK_BACK = (f"kwriteconfig6 {LOCK} Autolock \"$(cat /tmp/exo_autolock)\"; "
                  f"kwriteconfig6 {LOCK} Timeout \"$(cat /tmp/exo_locktime)\"")
+# The owner's look: picking "Breeze" on the Global Theme page (a breeze-light run did, 2026-10-22) resets colours,
+# icons, decoration and Klassy's settings. Kept before the test; put back after it only if the global theme changed.
+LOOK = "kdeglobals kwinrc plasmarc kcminputrc ksplashrc klassy/klassyrc kdedefaults/package"
+LOOK_KEEP = f"rm -rf /tmp/exo_look; mkdir -p /tmp/exo_look; (cd ~/.config && cp --parents {LOOK} /tmp/exo_look 2>/dev/null)"
+LOOK_BACK = ("cmp -s ~/.config/kdedefaults/package /tmp/exo_look/kdedefaults/package || { "
+             "plasma-apply-lookandfeel -a \"$(cat /tmp/exo_look/kdedefaults/package)\" >/dev/null 2>&1; "
+             "cp -r /tmp/exo_look/. ~/.config/; G='kreadconfig6 --file /tmp/exo_look/'; "
+             "plasma-apply-colorscheme \"$($G'kdeglobals' --group General --key ColorScheme)\"; "
+             "plasma-apply-desktoptheme \"$($G'plasmarc' --group Theme --key name)\"; "
+             "plasma-apply-cursortheme \"$($G'kcminputrc' --group Mouse --key cursorTheme)\"; "
+             "/usr/lib/plasma-changeicons \"$($G'kdeglobals' --group Icons --key Theme)\"; "
+             "qdbus6 org.kde.KWin /KWin reconfigure; } >/dev/null 2>&1")
 WINDOWS_JS = """var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
 for (var i = 0; i < ws.length; i++) { var w = ws[i]; if (w.normalWindow || w.dialog)
   print("EXOWIN " + JSON.stringify({id: String(w.internalId), caption: w.caption, cls: w.resourceClass,
@@ -393,9 +405,9 @@ TESTS = [
     Test("calculator", ["open the calculator, work out 128 times 46, and tell me the answer"], "true", _calc,
          turn_s=30, suite="steps"),
     Test("breeze light", ["open system settings, go to colors, and pick breeze light"],
-         "plasma-apply-colorscheme SweetAmbarBlue >/dev/null",
+         f"{LOOK_KEEP}; plasma-apply-colorscheme SweetAmbarBlue >/dev/null",
          lambda t: _setting("kdeglobals", "General", "ColorScheme", "BreezeLight"), turn_s=30, suite="steps",
-         cleanup="plasma-apply-colorscheme SweetAmbarBlue >/dev/null"),
+         cleanup=f"{LOOK_BACK}; plasma-apply-colorscheme SweetAmbarBlue >/dev/null"),
     Test("open firefox", ["open firefox"], "true",
          lambda t: (any("Mozilla Firefox" in c for _, c in t.data["timeline"]), t.data["timeline"][-1][1]),
          turn_s=30, suite="probe"),  # a speed probe: speech end to the app in front
