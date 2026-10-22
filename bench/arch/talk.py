@@ -7,11 +7,15 @@ or asks is spoken back by Piper on the laptop (no key, about 0.05 s a sentence).
 a new request: the newest wins. Home still reaches the app in front (the keyboard isn't grabbed); the agent's own
 virtual keyboard is never listened to. Reading the keyboard needs the `input` group. Ctrl+C stops.
 
+Each model reply and action prints with its time, and each request ends with a timing line (first action and end,
+from letting go of Home), also appended to ~/exo-bench/talk-logs/timings.csv.
+
   ~/exo-bench/talk.sh
 """
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import os
@@ -38,6 +42,8 @@ DEEPGRAM = (f"wss://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sa
 VOICE = Path.home() / "exo-bench/voices/en_US-lessac-medium.onnx"  # Piper's voice (rhasspy/piper-voices)
 MODEL = "deepseek/deepseek-v4.1-flash-1017"
 LOGS = Path.home() / "exo-bench/talk-logs"
+TIMINGS = LOGS / "timings.csv"  # one row per request, every session
+FIELDS = ["when", "words", "spoken_s", "first_action_s", "finished_s", "model_calls", "actions"]
 
 
 def keyboards() -> list[str]:
@@ -134,9 +140,36 @@ def main() -> None:
                 spoken += 1
             time.sleep(0.2)
 
+    requests: list[dict] = []  # each press of Home: when it was pressed and let go, in agent seconds
+
+    def summarize(request: dict, finished: float | None) -> None:
+        """One request's timings from letting go of Home: its first action (negative: it started while you still
+        spoke) and its end (the agent said, asked or confirmed done)."""
+        pressed, released = request["pressed"], request["released"]
+        actions = [r for r in agent.shared.log if r.t >= pressed]
+        calls = [c for c in agent.brain.calls if c["t"] >= pressed and not c.get("cancelled")]
+        row = {"when": time.strftime("%H:%M:%S"), "words": request["words"],
+               "spoken_s": round(released - pressed, 2),
+               "first_action_s": round(actions[0].t - released, 2) if actions else "",
+               "finished_s": round(finished - released, 2) if finished else "",
+               "model_calls": len(calls), "actions": len(actions)}
+        print(f"  timing: first action {row['first_action_s']} s, finished {row['finished_s'] or 'not yet'} s after "
+              f"you let go; {row['model_calls']} model calls, {row['actions']} actions", flush=True)
+        new = not TIMINGS.exists()
+        with TIMINGS.open("a", newline="") as f:
+            out = csv.DictWriter(f, FIELDS)
+            if new:
+                out.writeheader()
+            out.writerow(row)
+
     def trace() -> None:  # each model reply and each action as it runs, in seconds since the agent started
         calls = ran = 0
         while True:
+            open_ = [r for r in requests if "words" in r and not r.get("summarized")]
+            for request in open_:
+                if agent.shared.finished or request is not requests[-1]:  # done, or overtaken by a new request
+                    summarize(request, time.monotonic() - agent.started if agent.shared.finished else None)
+                    request["summarized"] = True
             for call in agent.brain.calls[calls:]:
                 if call.get("total_s") is not None or call.get("error") or call.get("cancelled"):
                     print(f"  [{call['t']:.2f}] model {'(cancelled) ' if call.get('cancelled') else ''}"
@@ -165,6 +198,7 @@ def main() -> None:
                         continue
                     if value == 1 and talking is None:
                         agent.brain.end_turn()  # the last request is over; this is the next one
+                        requests.append({"pressed": time.monotonic() - agent.started})
                         talking = Utterance(os.environ["DEEPGRAM_API_KEY"], env, agent.brain.hear)
                         print("listening...", flush=True)
                     elif value == 0 and talking is not None:
@@ -172,7 +206,10 @@ def main() -> None:
                         words, talking = talking.finish(), None
                         print(f"[{released:.2f}] you: {words or '(nothing heard)'}", flush=True)
                         if words:
+                            requests[-1].update(released=released, words=words)
                             agent.brain.hear(words, speaking=False)
+                        else:
+                            requests.pop()
     except KeyboardInterrupt:
         pass
     finally:
