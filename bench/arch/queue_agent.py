@@ -51,6 +51,9 @@ READ_S = 3.0  # longest wait for the model's next streamed bytes, its first toke
 RUNAWAY = 8  # the same action this many times in a row ends a reply
 LOOPS = 3  # the same reply this many times in one request: it is going in circles, and stops
 DONE_TAIL = 300  # actions of this request each call sees, compactly
+REPEATING = ("You sent this same reply twice in this request, and the screen still doesn't show what you meant: "
+             "don't send it again. Look closer (make the window bigger, zoom in) or check another way, or try a "
+             "different approach.")
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
 # Each model on one host. Qwen's quality depends on it (study 17: 192/192 pointed on ModelRun, 15/192 on Cerebras);
@@ -107,6 +110,8 @@ Rules:
 - While you work, reply with actions only: never announce what you are about to do. Talk when you have the answer
   or the result, or to ask.
 - If the log shows an action failed, or the screen shows it changed nothing, don't repeat it: try another way.
+- When steps keep not showing their result, the screen may be too small to show it: make the window bigger or zoom
+  in to check before doing them again.
 - Pages, apps and dialogs take a moment to appear: end such a reply with until. If you only just asked for one
   (seconds_since_last_action) and the screen doesn't show it yet, reply with nothing: never ask for it again while
   it may still be coming.
@@ -421,6 +426,9 @@ class Brain(threading.Thread):
             # model forgot the nose and eyes it had made and made them again and again (2026-10-22).
             context["done_this_request"] = [_brief(r.action) for r in self.shared.log[self.shared.turn_start:]
                                             if r.result == "done"][-DONE_TAIL:]
+            again = [json.loads(r) for r, n in self.replies.items() if n >= 2]
+            if again:  # it is going round: say so, so it changes approach before the guard stops it
+                context["repeating"] = {"replies_sent_twice": again[-2:], "note": REPEATING}
             if self.shared.held:  # the user spoke in the middle of a request: the model decides what becomes of it
                 context["interrupted"] = {"request": self.shared.held_goal, "steps_left": self.shared.held[:20],
                                           "count": len(self.shared.held)}
