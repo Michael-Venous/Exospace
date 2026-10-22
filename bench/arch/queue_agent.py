@@ -126,6 +126,8 @@ Rules:
 - While you work, reply with actions only: never announce what you are about to do. Talk when you have the answer
   or the result, or to ask.
 - If the log shows an action failed, or the screen shows it changed nothing, don't repeat it: try another way.
+  Some actions leave no mark on the screen (taking a photo, copying, saving again): before repeating one, check
+  where its result would be (the folder, the file), or the user ends up with two.
 - When steps keep not showing their result, the screen may be too small to show it: make the window bigger or zoom
   in to check before doing them again.
 - Maximize an app you open, unless its window already fills the screen (maximizing again restores it). Use the
