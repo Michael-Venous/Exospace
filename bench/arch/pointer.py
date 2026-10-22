@@ -44,7 +44,8 @@ class Pointer:
         turns reasoning off (some models refuse that and take "minimal"). `pixels`: the model is asked for x and y
         in the image's pixels, not 0-1000."""
         self.cancel, self.jev, self.pixels = cancel, jev, pixels  # its calls go in Jev's trace, beside Jev's looks
-        # A reply that stalls READ_S fails and is asked once more (a GLM pointing call once hung past 8 s).
+        # A reply that stalls READ_S, or a dropped connection, is asked once more (a GLM pointing call once hung past
+        # 8 s; three clicks in a row once failed on TLS errors while the link was flaky).
         self.client = OpenRouterJSON(model, os.environ["OPENROUTER_API_KEY"], effort, fastest=not only, only=only,
                                      keepalive=False, read_s=READ_S)
 
@@ -60,7 +61,7 @@ class Pointer:
 
         try:
             data, _ = self.cancel.run(ask)
-        except httpx.TimeoutException:
+        except httpx.TransportError:  # a stall or a dropped connection (TLS "bad record mac" on a flaky link): once more
             data, _ = self.cancel.run(ask)
         self.jev.trace.append({"label": "pointer", "target": target, "reply": data,
                                "elapsed_s": round(time.monotonic() - started, 3)})
