@@ -118,9 +118,9 @@ def main() -> None:
                          "then log out and back in.") from None
     env = {**os.environ, **SESSION}
     speaker = Speaker(env)
-    LOGS.mkdir(parents=True, exist_ok=True)
-    agent = QueueAgent(LaptopTarget(), MODEL, "", os.environ["TYPESAFE_API_KEY"],
-                       LOGS / time.strftime("%Y%m%d-%H%M%S"), "qwen")
+    session = LOGS / time.strftime("%Y%m%d-%H%M%S")  # each call's screenshot and Jev's log land here
+    session.mkdir(parents=True, exist_ok=True)
+    agent = QueueAgent(LaptopTarget(), MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
     print("Ready: hold Home and speak; let go when you're done. Ctrl+C stops.", flush=True)
 
     def speak_back() -> None:  # what the agent says or asks, aloud
