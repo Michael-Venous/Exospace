@@ -45,7 +45,8 @@ SEE_SIDE = int(os.environ.get("EXO_SEE_SIDE", "1280"))  # the longest side of th
 INPUT_GAP_S = float(os.environ.get("EXO_INPUT_GAP_S", "0.08"))
 UNTIL_S = 4.0  # longest an "until" waits for what the model expects (pages appeared within 2.7 s on the laptop)
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
-FIRST_TOKEN_S = 2.5  # a reply that hasn't started after this is asked again (usually 0.45 s; once 7.8 s)
+FIRST_TOKEN_S = 2.5  # a reply that brings no new text for this long is asked again (first token usually 0.45 s;
+# one stalled 7.8 s before it, another mid-reply)
 READ_S = 3.0  # longest wait for the model's next streamed bytes, its first token included
 LOG_TAIL = 20  # executor log entries each call sees
 HISTORY = 4  # earlier calls of the request each call sees as chat turns
@@ -307,6 +308,7 @@ class Brain(threading.Thread):
         self.said: list[str] = []
         self.shots: Path | None = None  # a folder to keep each call's screenshot in
         self.prompt = PROMPT
+        self.hosts = list(PINNED.get(model, ()))  # the providers in the order tried; empty: the fastest serves
         self.history: list[dict] = []  # this request's earlier calls: what each saw and replied
 
     @staticmethod
@@ -362,6 +364,8 @@ class Brain(threading.Thread):
                                    "error": f"{type(exc).__name__}: {exc}"[:200]})
                 self.client.close()
                 self.client = self._client()
+                if isinstance(exc, (TimeoutError, httpx.TimeoutException)) and len(self.hosts) > 1:
+                    self.hosts.append(self.hosts.pop(0))  # the host that stalled goes to the back: retry elsewhere
             finally:
                 with self.cond:
                     self.calling = False
@@ -395,8 +399,7 @@ class Brain(threading.Thread):
         for past in self.history[-HISTORY:]:
             history += [{"role": "user", "content": past["context"]},
                         {"role": "assistant", "content": past["reply"] or "(nothing)"}]
-        provider = ({"order": list(PINNED[self.model]), "allow_fallbacks": False} if self.model in PINNED
-                    else {"sort": "latency"})
+        provider = ({"order": self.hosts, "allow_fallbacks": False} if self.hosts else {"sort": "latency"})
         body = {"model": self.model, "stream": True, "temperature": 0, "provider": provider,
                 "reasoning": {"effort": self.effort} if self.effort else {"enabled": False},
                 "messages": [{"role": "system", "content": self.prompt}, *history,
@@ -405,6 +408,7 @@ class Brain(threading.Thread):
                                                                      + base64.b64encode(image).decode()}},
                                  {"type": "text", "text": json.dumps(context)}]}]}
         started = time.monotonic()
+        heard = started  # when the reply last brought new text
         self.phase = ("streaming", round(started - self.started, 2))
         record = {"t": round(started - self.started, 2), "speaking": self.speaking, "words": self.words,
                   "lines": [], "cancelled": False}
@@ -418,13 +422,15 @@ class Brain(threading.Thread):
                 if self.cancel_call.is_set():
                     record["cancelled"] = True
                     break
-                if "ttft_s" not in record and time.monotonic() - started > FIRST_TOKEN_S:
+                if time.monotonic() - heard > FIRST_TOKEN_S:
                     # OpenRouter's keep-alive lines reset the read timeout while a provider stalls: ask again
-                    raise TimeoutError(f"no first token after {FIRST_TOKEN_S} s")
+                    raise TimeoutError(f"no new tokens for {FIRST_TOKEN_S} s")
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue
                 for choice in json.loads(line[6:]).get("choices", []):
                     piece = (choice.get("delta") or {}).get("content") or ""
+                    if piece:
+                        heard = time.monotonic()
                     if piece and "ttft_s" not in record:
                         record["ttft_s"] = round(time.monotonic() - started, 3)
                     text, full = text + piece, full + piece
