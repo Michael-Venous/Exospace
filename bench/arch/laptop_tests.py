@@ -374,7 +374,7 @@ TESTS = [
     Test("correction", ["open youtube actually no open wikipedia and look up the eiffel tower"],
          CHROME.format(urls="https://www.google.com"),
          lambda t: _tabs_check(lambda tabs, cap: "eiffel" in cap)()),
-    # the stress test: off the default run until everything above passes (`--tests 19`)
+    # the stress test: off the default run until everything above passes (`--tests 20`)
     Test("step by step", ["open chrome, go to youtube, search for horse videos, click the second video, go back, "
                           "close chrome"], "true", _steps, turn_s=30, suite="steps"),
     # (Night light has no on/off switch in this Plasma's settings: replaced by a plain switch that needs Apply.)
@@ -395,6 +395,9 @@ TESTS = [
          "plasma-apply-colorscheme SweetAmbarBlue >/dev/null",
          lambda t: _setting("kdeglobals", "General", "ColorScheme", "BreezeLight"), turn_s=30, suite="steps",
          cleanup="plasma-apply-colorscheme SweetAmbarBlue >/dev/null"),
+    Test("open firefox", ["open firefox"], "true",
+         lambda t: (any("Mozilla Firefox" in c for _, c in t.data["timeline"]), t.data["timeline"][-1][1]),
+         turn_s=30, suite="probe"),  # a speed probe: speech end to the app in front
     Test("blender house", ["open up blender and make a house", "actually make it wider", "make it brown"],
          f"mkdir -p ~/.config/blender/5.2/scripts/startup && cat > {BLENDER_STARTUP} <<'PY'\n{BLENDER_ORACLE}\nPY\n"
          "rm -f /tmp/exo_blender.json", _house, turn_s=300, cleanup=f"rm -f {BLENDER_STARTUP} /tmp/exo_blender.json"),

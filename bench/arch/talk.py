@@ -134,7 +134,25 @@ def main() -> None:
                 spoken += 1
             time.sleep(0.2)
 
+    def trace() -> None:  # each model reply and each action as it runs, in seconds since the agent started
+        calls = ran = 0
+        while True:
+            for call in agent.brain.calls[calls:]:
+                if call.get("total_s") is not None or call.get("error") or call.get("cancelled"):
+                    print(f"  [{call['t']:.2f}] model {'(cancelled) ' if call.get('cancelled') else ''}"
+                          f"first token {call.get('ttft_s')} s: "
+                          f"{[{k: v for k, v in a.items() if k != 'at_s'} for a in call['lines']] or call.get('error', '')}",
+                          flush=True)
+                    calls += 1
+                else:
+                    break
+            for record in agent.shared.log[ran:]:
+                print(f"  [{record.t:.2f}] ran {record.action} -> {record.result} {record.detail}", flush=True)
+                ran += 1
+            time.sleep(0.1)
+
     threading.Thread(target=speak_back, daemon=True).start()
+    threading.Thread(target=trace, daemon=True).start()
     talking: Utterance | None = None
     try:
         while True:
@@ -150,8 +168,9 @@ def main() -> None:
                         talking = Utterance(os.environ["DEEPGRAM_API_KEY"], env, agent.brain.hear)
                         print("listening...", flush=True)
                     elif value == 0 and talking is not None:
+                        released = time.monotonic() - agent.started
                         words, talking = talking.finish(), None
-                        print(f"you: {words or '(nothing heard)'}", flush=True)
+                        print(f"[{released:.2f}] you: {words or '(nothing heard)'}", flush=True)
                         if words:
                             agent.brain.hear(words, speaking=False)
     except KeyboardInterrupt:
