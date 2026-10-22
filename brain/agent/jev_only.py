@@ -90,9 +90,13 @@ LABELLED = ("Does the `goal` name the spot the next step clicks by labels along 
 # and a zoom around the first look's cell lost rows 10 away (2026-10-20). A first look already in that cell stays:
 # on Wikipedia's largest-cities table, "click the city in the third row of the table", the crossing put the click at
 # the City header's centre, x 0.245, past the "Tokyo" link main clicked at 0.240; main 3/3, crossing 0/3 (2026-10-20).
+# On Google Sheets "In d four, type high." boxed row 4's label beside the cell 6 of 8 times, and the zoom around it,
+# short of the sheet's left edge, was 0.17-0.26 sure of any; its 0.17 put the click 3 rows off. Told the labels are
+# along the outside edge, not a cell, the box was on the edge 8 of 8, both zooms 0.95-0.98 sure (2026-10-21).
 PLACE_NAME = "Which words of the `goal` name the place the next step acts on, such as a cell's column and row?"
 EDGES = ("column", "row")
-EDGE_LABEL = "The label of the {edge} the `goal` names, on the grid's edge."
+EDGE_LABEL = ("The label of the {edge} the `goal` names, among the {edge} labels along the outside edge of the grid, "
+              "not a cell inside it.")
 EDGE_ZOOM = "the label of the {edge} that \"{name}\" names, along the grid's edge"
 PLACED = "Is the place the `goal` names the one selected in `screen`, such as the selected cell, item or field?"
 PLACE_WAY = "Which way from the place selected in `screen` is the place the `goal` names?"
@@ -150,20 +154,32 @@ FOCUSED = ("Would text typed right now go into the input field, cell or document
            "types it?")
 # The routing questions ask about the next step: with "open discord, close discord, and open a terminal" the
 # whole goal fits no single app.
+# "Open up the WhatsApp app." fitted whatsapp.com in front 0.54-0.60, and Jev clicked the site's links for it
+# (2026-10-21). Told "app" means an installed one, 0.16-0.20; its links 0.96-0.98, "Go to WhatsApp." 0.68-0.74.
 FITS_QUESTION = ("Can the next step of the `goal`, after the `executed_steps`, be carried out in the app or web page "
-                 "in front in `screen`, without switching to or opening another app?")
+                 "in front in `screen`, without switching to or opening another app? A `goal` that says \"app\" means "
+                 "an installed app, not a website.")
+# Chrome's whatsapp.com tabs read present 0.86-0.88 for "Open up the WhatsApp app.", and the route switched to one
+# (2026-10-21). Told "app" means an installed one, 0.49-0.61, under the switch's 0.85; "Open the WhatsApp tab." 0.97.
 APP_PRESENT = ("Is a window, tab or app icon of an app suited to the next step of the `goal` visible in `screen`, "
-               "such as in a taskbar, dock, desktop or open app launcher? For a website, a web browser is suited.")
+               "such as in a taskbar, dock, desktop or open app launcher? For a website, a web browser is suited; "
+               "a `goal` that says \"app\" means an installed app, not a website.")
 APP_TARGET = ("The visible window, tab or app icon in `screen` of the app best suited to the next step of the "
               "`goal`; for a website, a web browser.")
 # A panel's icons sit side by side: "open a terminal" boxed VS Code's icon beside the terminal's (3 steps, v7-t2),
 # and one zoomed look at that box chose the terminal's (12/12 on 2 frames).
 APP_CONTROL = "the window, tab or app icon of the app best suited to the next step of the `goal`; for a website, a web browser"
 # "as an app launcher would list it": without it Jev chose "open a terminal" (3/3), with it "terminal".
+# Cinnamon's menu finds the typed words run together inside a name, keyword or description: "Open up the WhatsApp
+# app." chose "WhatsApp app" (10/10), which found nothing, and its next line pressed Enter in the empty menu
+# (2026-10-21). Told the word "app" after it is no part of the name, "WhatsApp" 10/10 and "Discord" 9/10.
 APP_NAME = ("Which words of the `goal` are the name of the app, or the kind of app, that its next step opens or uses, "
-            "as an app launcher would list it, without the command words or articles around it?")
+            "as an app launcher would list it: the name alone, without the command words or articles before it or "
+            "the word \"app\" after it?")
+# A goal that calls it an app: "Open up the WhatsApp app." over whatsapp.com read a website 0.64-0.72, and Jev
+# clicked the site's Log In for it (2026-10-21). Told so, 0.29-0.34; "Go to WhatsApp." 0.83-0.89, YouTube 0.92-0.97.
 SITE = ("Does the next step of the `goal` go to a website or web service, rather than open or use an app "
-        "installed on the device?")
+        "installed on the device? A `goal` that calls it an app means the installed app.")
 # Asked apart from SITE: "open up chrome, ..., make a new tab" with Chrome closed scored 0.76-0.81 as a website.
 BROWSER_NAMED = "Does the `goal` name a specific web browser by its name?"
 # A website's line fits the browser in front, whatever page it shows: "copy the header" on a Wikipedia article fitted
@@ -539,7 +555,11 @@ class JevOnlyPlanner:
             and any(s.startswith("skill(open_app ") for s in ctx.history[self.since:])
         # Nor the switch to a tab the line closes: on the YouTube tab it brought in front, "Close the YouTube tab."
         # read done (0.17-0.18 left) with close_tab next on it, and so did the GitHub tab after a wait (2026-10-21).
-        finished = (finished or fresh) and not held and inputs[-1:] != [self.switched]
+        # Nor a line that launched an app still not in front: Whatsie, running behind Chrome's whatsapp.com, stayed
+        # behind after its open_app, and the page read the line done (0.74) with the app in front 0.12 (2026-10-21).
+        hidden = "opened_front" in first and probability(first["opened_front"].get("noul")) < GATE \
+            and _just_opened(ctx.history[self.since:])
+        finished = (finished or fresh) and not held and not hidden and inputs[-1:] != [self.switched]
         if finished and len(answered) > 1:
             self._advance(ctx)
             answered, finished = answered[1:], False  # the next line's first step
@@ -550,6 +570,10 @@ class JevOnlyPlanner:
         texts = spans(line, MAX_SPANS)
         named = {str(i) for i in range(len(texts))}
         routing = "fits" in answers
+        if hidden and not routing:
+            # Routed to the page in front, whatsapp.com read as the line's site (0.53): its links aren't the app's.
+            self.routed = False
+            return self._look_again(ctx, MAX_LOADING_WAITS) or _fail("the app opened never came in front")
         if probability(answers["question"].get("noul")) >= GATE \
                 and (finished or probability(answers["complete"].get("noul")) >= GATE):
             # Jev called "what is this page about?" complete and said "Done." with no answer. Only then: "search up
@@ -912,17 +936,17 @@ class JevOnlyPlanner:
                    first: tuple[float, float]) -> tuple[float, float] | None:
         """The cell `line` names by a grid's labels, its column and row each found by a zoom on its label told the
         words that name the place: the `first` look's point where it lies in that cell, else where they cross; None
-        where Jev picks no words or a zoom finds no label."""
+        where Jev picks no words or a zoom isn't sure of its label."""
         choice = answers["place"].get("choice")
         at = [box_center(answers[edge], size, padded) for edge in EDGES]
         if choice not in {str(i) for i in range(len(texts))} or None in at:
             return None
         state = {"goal": line}
         with ThreadPoolExecutor(2) as pool:
-            (column, _, across), (row, _, down) = pool.map(
+            (column, column_sure, across), (row, row_sure, down) = pool.map(
                 lambda edge, center: zoom(self.jev, image, state, EDGE_ZOOM.format(edge=edge, name=texts[int(choice)]),
                                           center, ZOOM_WINDOW, ctx.run_id, ctx.step), EDGES, at)
-        if not (column and row and across and down):
+        if not (column and row and across and down) or min(column_sure, row_sure) < GATE:
             return None
         inside = across[0] <= first[0] <= across[2] and down[1] <= first[1] <= down[3]
         return first if inside else (column[0], row[1])
@@ -951,6 +975,8 @@ class JevOnlyPlanner:
         own steps alone, 2/2), and with `route` the questions that find its app, asked apart with the line's own
         `steps` ("close discord" after the clicks that opened it fitted Discord in front 0.41, 0.88 alone)."""
         options = {str(i): json.dumps(text, ensure_ascii=False) for i, text in enumerate(spans(line, MAX_SPANS))}
+        front = {"opened_front": {"type": "noul", "instructions": OPENED_FRONT.format(app=json.dumps(self.opened))}} \
+            if self.opened and ctx.profile.os in OPEN_APP_KEYS else {}  # firmware has no apps
         # Until Jev sees the app in front can take the line's next step, each step also picks the app to use.
         routing = {"fits": {"type": "noul", "instructions": FITS_QUESTION},
                    "app_present": {"type": "noul", "instructions": APP_PRESENT},
@@ -962,12 +988,12 @@ class JevOnlyPlanner:
                    "browser_named": {"type": "noul", "instructions": BROWSER_NAMED},
                    "browser_front": {"type": "noul", "instructions": BROWSER_FRONT},
                    "launcher": {"type": "noul", "instructions": LAUNCHER_OPEN},
-                   "window": {"type": "noul", "instructions": WINDOW}} \
-            | ({"opened_front": {"type": "noul", "instructions": OPENED_FRONT.format(app=json.dumps(self.opened))}}
-               if self.opened else {}) if route and ctx.profile.os in OPEN_APP_KEYS else {}  # firmware has no apps
+                   "window": {"type": "noul", "instructions": WINDOW}} | front \
+            if route and ctx.profile.os in OPEN_APP_KEYS else {}
         irreversible = {"irreversible": {"type": "noul", "instructions": NEXT_IRREVERSIBLE}} if guard else {}
+        # Also once routed: a launch can leave its app behind the window in front (see `hidden`).
         drawing = {"drawing": {"type": "noul", "instructions": DRAWING},
-                   "fresh": {"type": "noul", "instructions": FRESH}} if opened else {}
+                   "fresh": {"type": "noul", "instructions": FRESH}} | front if opened else {}
         stepping = irreversible | drawing | {
             "complete": {"type": "noul", "instructions": COMPLETION_QUESTION},
             "question": {"type": "noul", "instructions": QUESTION},
