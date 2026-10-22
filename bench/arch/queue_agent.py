@@ -99,8 +99,9 @@ you will see it again.
   {"until": "the Bluetooth settings page"}   wait until the screen shows it, when a page, an app or a dialog
                                     has to load. The actions after it in the same reply run as soon as it shows, so
                                     keep going when you know the next steps (launching an app is one reply: GUI,
-                                    its name, ENTER, until the app, then maximize it; then what you do in it). End the reply at an
-                                    until only when the next step depends on what will show. Typed text and
+                                    its name, ENTER, until the app, then maximize it). End the reply at an
+                                    until only when the next step depends on what will show. Don't type into an
+                                    app you haven't seen yet: it may open on a welcome page or a dialog. Typed text and
                                     closing something are instant: no until.
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
                                     proves it; it is checked on the screen before it counts
