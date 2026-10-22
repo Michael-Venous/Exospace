@@ -105,7 +105,7 @@ you will see it again.
   {"until": "the Bluetooth settings page"}   wait until the screen shows it, when a page, an app or a dialog
                                     has to load. The actions after it in the same reply run as soon as it shows, so
                                     keep going when you know the next steps (launching an app is one reply: GUI,
-                                    its name, ENTER, until the app, then maximize it). End the reply at an
+                                    its name, ENTER, until its window, then maximize it). End the reply at an
                                     until only when the next step depends on what will show. Don't type into an
                                     app you haven't seen yet: it may open on a welcome page or a dialog. Typed text and
                                     closing something are instant: no until.
@@ -283,9 +283,9 @@ class Executor(threading.Thread):
         """Wait on the computer, not the model: Jev looks at each fresh screen until it shows what the model expects
         (a page, an app, a dialog), up to UNTIL_S."""
         started, request = time.monotonic(), self.shared.request
-        # the name alone isn't it: "until Kamoso" passed on the launcher's result row, and the app was launched again
-        ask = (f"Does `screen` show this: {expected}? Only the thing itself counts, open on the screen: its name typed "
-               "in a search field, listed in search results or on a button doesn't")
+        # Plain: telling Jev a name in a search field or on a button doesn't count (after "until Kamoso" passed on the
+        # launcher's row) doubled the untils it missed, 14% to 24-40% over 5 rounds ("Save" dialogs went unseen).
+        ask = f"Does `screen` show this: {expected}?"
         before, moved = None, started  # the last poll's thumbnail, and when the screen last changed
         while not self.closed and self.shared.request == request:
             frame = self.controller.capture.grab()
