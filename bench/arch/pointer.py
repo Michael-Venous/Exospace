@@ -25,10 +25,12 @@ from brain.imaging import shrink
 MODEL = "perceptron/perceptron-mk1.5"
 READ_S = 3.0  # longest wait for a reply's next bytes
 PROMPT = ('Find {target}. Reply with JSON {{"found": true|false, "x": 0-1000, "y": 0-1000}}: the centre of that '
-          "control, x from the left edge and y from the top edge of the image; found false if it isn't visible.")
+          "control, x from the left edge and y from the top edge of the image; found false if it isn't visible. "
+          "It is the thing to click, not the same words typed in a text field or shown in a title.")
 PIXEL_PROMPT = ('Find {target}. Reply with JSON {{"found": true|false, "x": ..., "y": ...}}: the centre of that '
                 "control in pixels of this {w}x{h} image, x from the left edge and y from the top edge; found false "
-                "if it isn't visible.")
+                "if it isn't visible. It is the thing to click, not the same words typed in a text field or shown in a "
+                "title.")
 SCHEMA = {"type": "object", "properties": {"found": {"type": "boolean"}, "x": {"type": "number"},
                                            "y": {"type": "number"}}, "required": ["found", "x", "y"]}
 # Required x and y: with only "found" required, DeepSeek answered {"found": true} and nothing else (study 17).

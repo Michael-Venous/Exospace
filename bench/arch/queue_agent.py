@@ -235,8 +235,8 @@ class Executor(threading.Thread):
             if probability(answers["shown"].get("noul")) >= GATE:
                 return "done", f"shown after {waited} s"
             if waited >= UNTIL_S:
-                return "not_shown", (f"not shown after {waited} s: the action may still have worked differently; check "
-                                     "the screen before repeating it")
+                return "not_shown", (f"not shown after {waited} s: look at the screen. If the action had its effect, "
+                                     "go on; if nothing changed, it didn't work: try another way rather than wait")
         return "error", "stopped"
 
     def _verify(self, claim: str) -> tuple[str, str]:
