@@ -1,6 +1,7 @@
 """Talk to the agent on the laptop: hold Home, speak, let go (bench only, runs ON the laptop).
 
-While Home is held the microphone streams (pw-record) to Deepgram, and the agent hears the words as they come, as
+While Home is held the microphone streams (pw-record) to Deepgram, starting half a second before the key went down
+(the microphone stays open; only that half second stays in memory), and the agent hears the words as they come, as
 `laptop_tests.py` speaks them: it can start before you finish. On release Deepgram finalizes the last words (about
 0.1 s) and the request is complete. The agent acts on the screen through the uinput keyboard and mouse; what it says
 or asks is spoken back by Piper on the laptop (no key, about 0.05 s a sentence). Holding Home again while it works is
@@ -19,12 +20,14 @@ import csv
 import io
 import json
 import os
+import queue
 import select
 import struct
 import subprocess
 import threading
 import time
 import wave
+from collections import deque
 from pathlib import Path
 
 from piper import PiperVoice
@@ -37,6 +40,7 @@ from bench.arch.queue_agent import QueueAgent
 HOME_KEYS, EV_KEY = {102, 71}, 1
 EVENT = struct.Struct("llHHi")  # struct input_event on 64-bit Linux
 RATE = 16000
+PREROLL_S = 0.5  # audio from before Home went down that each request keeps
 DEEPGRAM = (f"wss://api.deepgram.com/v1/listen?model=nova-3&encoding=linear16&sample_rate={RATE}&channels=1"
             "&interim_results=true&smart_format=true&endpointing=false")
 VOICE = Path.home() / "exo-bench/voices/en_US-lessac-medium.onnx"  # Piper's voice (rhasspy/piper-voices)
@@ -57,14 +61,48 @@ def keyboards() -> list[str]:
     return found
 
 
+class Mic:
+    """The microphone, always open, keeping only its last PREROLL_S in memory: the first word, said as Home goes
+    down, is in it ("close firefox" was heard as "firefox": the microphone and Deepgram took ~0.5 s to start).
+    Nothing leaves the laptop until Home is held."""
+
+    def __init__(self, env: dict) -> None:
+        self.proc = subprocess.Popen(["pw-record", "--rate", str(RATE), "--channels", "1", "--format", "s16", "-"],
+                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+        self.recent: deque[bytes] = deque(maxlen=round(PREROLL_S * 10))
+        self.listener: queue.Queue | None = None
+        self.lock = threading.Lock()
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self) -> None:
+        while chunk := self.proc.stdout.read(RATE // 10 * 2):  # 100 ms of 16-bit samples
+            with self.lock:
+                self.recent.append(chunk)
+                if self.listener is not None:
+                    self.listener.put(chunk)
+
+    def listen(self) -> queue.Queue:
+        """From the last PREROLL_S on, until `stop`."""
+        with self.lock:
+            self.listener = queue.Queue()
+            for chunk in self.recent:
+                self.listener.put(chunk)
+            return self.listener
+
+    def stop(self) -> None:
+        with self.lock:
+            if self.listener is not None:
+                self.listener.put(None)
+            self.listener = None
+
+
 class Utterance:
     """One press of Home: the microphone streamed to Deepgram; `heard(words, speaking)` gets the words so far."""
 
-    def __init__(self, key: str, env: dict, heard) -> None:
-        self.heard, self.final, self.interim = heard, [], ""
+    def __init__(self, key: str, mic: Mic, heard) -> None:
+        self.heard, self.final, self.interim, self.mic = heard, [], "", mic
+        self.audio = mic.listen()  # audio buffers here while Deepgram connects
         self.ws = connect(DEEPGRAM, additional_headers={"Authorization": f"Token {key}"})
-        self.mic = subprocess.Popen(["pw-record", "--rate", str(RATE), "--channels", "1", "--format", "s16", "-"],
-                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
         self.done = threading.Event()
         threading.Thread(target=self._send, daemon=True).start()
         self.reader = threading.Thread(target=self._receive, daemon=True)
@@ -74,7 +112,7 @@ class Utterance:
         return " ".join([*self.final, self.interim]).strip()
 
     def _send(self) -> None:
-        while chunk := self.mic.stdout.read(RATE // 10 * 2):  # 100 ms of 16-bit samples
+        while (chunk := self.audio.get()) is not None:
             self.ws.send(chunk)
         self.ws.send(json.dumps({"type": "Finalize"}))
 
@@ -100,7 +138,7 @@ class Utterance:
 
     def finish(self) -> str:
         """Let go of Home: the last words, once Deepgram has finalized them (at most 2 s)."""
-        self.mic.terminate()
+        self.mic.stop()
         self.done.wait(2)
         self.ws.close()
         return self.words()
@@ -124,7 +162,7 @@ def main() -> None:
         raise SystemExit("Can't read the keyboard: add yourself to the input group (sudo usermod -aG input $USER), "
                          "then log out and back in.") from None
     env = {**os.environ, **SESSION}
-    speaker = Speaker(env)
+    speaker, mic = Speaker(env), Mic(env)
     session = LOGS / time.strftime("%Y%m%d-%H%M%S")  # each call's screenshot and Jev's log land here
     session.mkdir(parents=True, exist_ok=True)
     agent = QueueAgent(LaptopTarget(), MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
@@ -199,7 +237,7 @@ def main() -> None:
                     if value == 1 and talking is None:
                         agent.brain.end_turn()  # the last request is over; this is the next one
                         requests.append({"pressed": time.monotonic() - agent.started})
-                        talking = Utterance(os.environ["DEEPGRAM_API_KEY"], env, agent.brain.hear)
+                        talking = Utterance(os.environ["DEEPGRAM_API_KEY"], mic, agent.brain.hear)
                         print("listening...", flush=True)
                     elif value == 0 and talking is not None:
                         released = time.monotonic() - agent.started
