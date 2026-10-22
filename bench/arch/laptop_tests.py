@@ -242,7 +242,10 @@ def firefox_visits() -> list[tuple[float, str]]:
     """The test Firefox profile's page visits since the test started: (time, url)."""
     since = os.path.getmtime("/tmp/exo_test_start") * 1e6
     copy = Path("/tmp/exo_places")
-    copy.mkdir(exist_ok=True)
+    shutil.rmtree(copy, ignore_errors=True)  # a log left from another run would not match this database
+    copy.mkdir()
+    if not (Path("/tmp/exo-ff") / "places.sqlite").exists():
+        return []
     for name in ("places.sqlite", "places.sqlite-wal"):  # Firefox keeps recent visits in the write-ahead log
         if (Path("/tmp/exo-ff") / name).exists():
             shutil.copy(Path("/tmp/exo-ff") / name, copy / name)
