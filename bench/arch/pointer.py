@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import os
 import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
 import cv2
-import httpx
 import numpy as np
 
 from bench.arch.openrouter_study import OpenRouterJSON
@@ -24,6 +24,8 @@ from brain.imaging import shrink
 
 MODEL = "perceptron/perceptron-mk1.5"
 READ_S = 3.0  # longest wait for a reply's next bytes
+HEDGE_S = 1.5  # a pointing reply not back by then gets a second request beside it (usually 0.5 s)
+GIVE_UP_S = 8.0  # no reply from either by then: the click fails
 PROMPT = ('Find {target}. Reply with JSON {{"found": true|false, "x": 0-1000, "y": 0-1000}}: the centre of that '
           "control, x from the left edge and y from the top edge of the image; found false if it isn't visible. "
           "It is the thing to click (a link, button or control), not the same words as plain text, typed in a text "
@@ -44,6 +46,7 @@ class Pointer:
         turns reasoning off (some models refuse that and take "minimal"). `pixels`: the model is asked for x and y
         in the image's pixels, not 0-1000."""
         self.cancel, self.jev, self.pixels = cancel, jev, pixels  # its calls go in Jev's trace, beside Jev's looks
+        self.pool = ThreadPoolExecutor(4, thread_name_prefix="pointer")
         # A reply that stalls READ_S, or a dropped connection, is asked once more (a GLM pointing call once hung past
         # 8 s; three clicks in a row once failed on TLS errors while the link was flaky).
         self.client = OpenRouterJSON(model, os.environ["OPENROUTER_API_KEY"], effort, fastest=not only, only=only,
@@ -59,15 +62,32 @@ class Pointer:
         def ask() -> tuple[dict, dict]:
             return self.client.call(image, prompt, "You locate controls in screenshots.", SCHEMA)
 
-        try:
-            data, _ = self.cancel.run(ask)
-        except httpx.TransportError:  # a stall or a dropped connection (TLS "bad record mac" on a flaky link): once more
-            data, _ = self.cancel.run(ask)
+        data = self._hedged(ask)
         self.jev.trace.append({"label": "pointer", "target": target, "reply": data,
                                "elapsed_s": round(time.monotonic() - started, 3)})
         if not data.get("found") or "x" not in data or "y" not in data:
             return None
         return min(max(float(data["x"]) / scale[0], 0.0), 1.0), min(max(float(data["y"]) / scale[1], 0.0), 1.0)
 
+    def _hedged(self, ask) -> dict:
+        """The reply of `ask`, with a second identical request sent if the first hasn't answered in HEDGE_S: the
+        first good reply wins. A pointing call usually takes 0.5 s, but one stalled 8.7 s behind keep-alive lines
+        (no read timeout fires), and three failed on TLS errors while the link was flaky."""
+        self.cancel.check()
+        tries = [self.pool.submit(ask)]
+        done, _ = wait(tries, timeout=HEDGE_S)
+        if not done or tries[0].exception() is not None:
+            tries.append(self.pool.submit(ask))
+        deadline = time.monotonic() + GIVE_UP_S
+        pending = set(tries)
+        while pending and time.monotonic() < deadline:
+            done, pending = wait(pending, timeout=deadline - time.monotonic(), return_when=FIRST_COMPLETED)
+            for future in done:
+                if future.exception() is None:
+                    self.cancel.check()
+                    return future.result()[0]
+        raise TimeoutError(f"no pointing reply in {GIVE_UP_S} s") if pending else tries[-1].exception()
+
     def close(self) -> None:
+        self.pool.shutdown(wait=False, cancel_futures=True)
         self.client.client.close()

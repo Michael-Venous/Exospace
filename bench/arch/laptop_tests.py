@@ -17,6 +17,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import sqlite3
 import statistics
 import subprocess
@@ -580,6 +581,9 @@ def run_friend(test: Test, index: int, repeat: int, friend: Friend, out: Path) -
 
 
 def main() -> None:
+    # Stopped from outside (SIGTERM), the run still cleans up: an app a stopped run left open was taken for the
+    # owner's at the next start and kept (a camera app sat behind three later tests).
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(1))
     parser = argparse.ArgumentParser()
     parser.add_argument("--tests", nargs="*", type=int, help="1-based test numbers (default: the --suite)")
     parser.add_argument("--suite", default="all", choices=list(SUITES))
