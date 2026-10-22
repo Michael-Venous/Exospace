@@ -255,11 +255,15 @@ def firefox_visits() -> list[tuple[float, str]]:
 
 
 def _wiki_paris(test: Test) -> tuple[bool, str]:
-    """The Eiffel Tower article, then Paris's, in that order."""
+    """The Eiffel Tower article, then Paris's, in that order: by the test profile's history, or by the window titles
+    (a Firefox started another way keeps its history in another profile)."""
     visits = firefox_visits()
     tower = [t for t, url in visits if "/wiki/Eiffel_Tower" in url]
     paris = [t for t, url in visits if url.rstrip("/").endswith("/wiki/Paris") and tower and t > tower[0]]
-    return bool(paris), json.dumps({"eiffel tower": bool(tower), "then paris": bool(paris)})
+    titles = [c for _, c in test.data["timeline"]]
+    seen = [i for i, c in enumerate(titles) if c.startswith("Eiffel Tower - Wikipedia")]
+    after = [i for i, c in enumerate(titles) if c.startswith("Paris - Wikipedia") and seen and i > seen[0]]
+    return bool(paris or after), json.dumps({"history": [bool(tower), bool(paris)], "titles": [bool(seen), bool(after)]})
 
 
 def _setting(file: str, group: str, key: str, want: str) -> tuple[bool, str]:
@@ -402,10 +406,11 @@ SUITES = {"steps": STEPS, "open": OPEN, "all": STEPS + OPEN}
 
 def reset() -> None:
     """Close every app window the run opened, the apps it started and its leftover files: each test starts on the
-    desktop as the run found it (empty on the test laptop)."""
+    desktop as the run found it (empty on the test laptop). The test browsers (their own profiles) always go, even
+    from an earlier run that crashed."""
     kwin(close_js())
     time.sleep(1.5)
-    shell(f"pkill -f exo-chrome; for app in blender okular kate kwrite kcalc kamoso systemsettings dolphin konsole "
+    shell(f"pkill -f exo-chrome; pkill -f 'profile /tmp/exo-f[f]'; for app in blender okular kate kwrite kcalc kamoso systemsettings dolphin konsole "
           f"gwenview firefox brave chrome; do pkill --newer {os.getpid()} -x $app; done; {CLEAN_FILES}; sleep 1")
 
 
