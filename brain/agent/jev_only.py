@@ -22,6 +22,7 @@ import math
 import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 
 import cv2
 import numpy as np
@@ -45,14 +46,23 @@ NEXT_CRITERIA = {
     # once told (6/6); "right click the title" stayed right_click 0.70-0.74 (2026-10-19).
     "right_click": "Open the context menu of a visible item. Text to copy is copied with copy, not from this menu.",
     "type": "Type text that the goal gives word for word into the input field that is focused right now.",
-    "enter": "Press Enter to submit or confirm the text that was just typed.",
+    "enter": "Press Enter to submit or confirm the text that was just typed, or to start a new line in a document.",
     "address": "Go to a website or web page that the goal names by its name or address, by typing it into the "
                "web browser's address bar, when no visible link or shortcut leads there.",
     "new_tab": "Open a new tab in the web browser in front.",
     "close_tab": "Close the tab in front, in a web browser or a tabbed app.",
     "close_app": "Close or quit the app in front.",
     "erase": "Erase text that an earlier step typed.",
-    "copy": "Copy one visible heading, line or paragraph of text that the goal names.",
+    # "Delete brown, replace with red." after "the quick brown fox": Jev clicked into "brown" (6/6) and then had no
+    # text to type (2026-10-21).
+    "select": "Select a visible word in a document or input field that the goal deletes or replaces, when it isn't "
+              "the last word typed, so the next step erases or types over it.",
+    # On Genghis Khan's article with his birthplace's link in view, "click his birthplace and copy the first
+    # paragraph" chose copy 0.33 to click 0.32 once and copied his own article; told this, click 0.40-0.50 to copy
+    # 0.19-0.26 (6/6), with copy kept on the birthplace's article, Einstein's (0.51-0.56) and in Docs (18/18,
+    # 2026-10-21). Told to finish "every click" first, Einstein's copy fell to a tie with click (3/6).
+    "copy": "Copy one visible heading, line or paragraph of text that the goal names. When the goal asks to click a "
+            "link to another page before it copies, click that link first.",
     "paste": "Paste what was copied into the input field, cell or document where the goal puts it.",
     "scroll_down": "Scroll down to reveal something the goal needs that is below the visible area.",
     "scroll_up": "Scroll up to reveal something the goal needs that is above the visible area.",
@@ -123,8 +133,9 @@ INPUT = ("Is the one control that the next step of the `goal` acts on an input t
 # Asked after the line typed: Brave still loading YouTube showed its new tab page, and "horses" was typed into
 # nothing, Enter on it searched nothing, and YouTube's home page with horse videos passed the line (left 0.17, v13-t1).
 # On 14 frames (4 tries each) text where it was typed scored 0.57-1.00, text not typed 0.00-0.06, a "Draft horses"
-# chip on that home page included.
-TYPED = ("Does `screen` show the text {text} where it was typed, such as in an input field, a cell, a document or a "
+# chip on that home page included. In any case: Docs capitalised "eggs" once Enter followed it, the line read it
+# 0.08-0.18, and "eggs" was typed again (2026-10-21); asked so, 0.39-0.60.
+TYPED = ("Does `screen` show the text {text}, in any letter case, where it was typed, such as in an input field, a cell, a document or a "
          "search query, rather than only in content the page already showed?")
 MISSING = 0.2  # below this the text typed isn't there: it is typed again, so only a clear miss counts
 # A line already true when it is reached takes no step: "scroll down to the wiki pedia link" with the link in view
@@ -132,6 +143,9 @@ MISSING = 0.2  # below this the text typed isn't there: it is typed again, so on
 # already done scored 0.86-0.98 there, all but a click credited to the line before; lines not yet done 0.46 at most.
 ALREADY = 0.7
 # Jev chose "type" on Google Docs' home page, before any document was open (0.34 here; 0.85 in a blank document).
+# With Wikipedia in front and YouTube behind it, "Close the YouTube tab." 0.94; "Close this tab." 0.07-0.17,
+# "Close the tab." 0.16-0.18, and the tab in front named 0.02-0.06 (2026-10-21).
+OTHER_TAB = "Does the `goal` name a tab other than the tab in front in `screen`, which its next step acts on?"
 FOCUSED = ("Would text typed right now go into the input field, cell or document where the next step of the `goal` "
            "types it?")
 # The routing questions ask about the next step: with "open discord, close discord, and open a terminal" the
@@ -201,8 +215,21 @@ STEP_CONTROL = "the spot that the next step of the `goal`, after the `executed_s
 # home and results pages 0.01-0.11. Its zooms saw Calc's entry 0.22-0.33 as the step's spot, 0.89-0.94 as its opener.
 OPENS = ("Is what the next step of the `goal` works in (a document, sheet, page or window) not open yet in `screen`, "
          "while a control that creates or opens it is visible?")
+TAB_CONTROL = "the tab the `goal` names, other than the tab in front"
 OPENER_CONTROL = f"{STEP_CONTROL}: when what it works in isn't open yet, the control that creates or opens it"
-COPY_CONTROL = "the text that the first line of the `goal` copies (a later line names it by what it pastes)"
+# A word to select, in a crop of a few words: for "Delete cats" in Docs' "I like cats and dogs" the step's spot in a
+# 0.30 crop boxed "like" (0.46-0.59 sure, 8/8), and the double click took it (2026-10-21); named the word, in a 0.10
+# crop, both zooms boxed "cats" at its middle 0.97-0.98 sure (6/6), and "world" of "hello world" 6/6.
+SELECT_CONTROL = "the word that the next step of the `goal` selects, to delete or replace it"
+SELECT_WINDOW = 0.10
+# Its last line: past the end of a paragraph's first line, which ran to the column's edge, the triple click followed
+# the "mountain range" link there, 3 runs in 3 (2026-10-21). Zooms on the last line took its row 14 times in 14.
+COPY_CONTROL = "the last line of the text that the first line of the `goal` copies (a later line names it by what it pastes)"
+# Real ends read 0.76-0.95; "Dr. Smith" 0.14-0.20, "5 p.m. tomorrow" 0.35-0.44, "King Jr. on" 0.52-0.58 (2026-10-21).
+SENTENCE_END = ("In the `goal`, does one request end with {before} and the next request start with {after}? Answer no "
+                "when the {mark} is part of an abbreviation (such as a title, an initial, a time or a name suffix) "
+                "inside one request.")
+SENTENCE_GATE = 0.65
 # A box this big holds the spot it was drawn on without a closer look, and a zoom loses where it sits among
 # its neighbours: on "click the third video" zooms chose the second or fourth of YouTube's Shorts row. Only when
 # Jev is sure of it: "copy the header" boxed four rows of Wikipedia's citations 0.54 sure, and the select at its
@@ -249,6 +276,27 @@ LINE_LEFT_CLICKED = ("The `goal` lists requests one per line, and those before i
 # took a heading (2026-10-19). Footnotes that did cite the birth zoomed 0.62-0.68, Wikipedia links 0.90-0.97. The screen
 # a doubtful click led to judges it: [b]'s note read 0.45-0.62 left on its own.
 CLICK_SURE = 0.6
+# The screen doesn't show the clipboard: "...click his birthplace and copy the first paragraph." read done (0.46-0.57)
+# while Jev still scrolled for the birthplace, with the line before's Ctrl+C in view, and nothing was copied. Lines
+# asking it 0.67-0.96, others 0.02-0.24 ("type copy and paste into the document" 0.14-0.24, 2026-10-21).
+CLIPBOARD_ASKED = ("Does the request on the last line of the `goal` ask to copy text to the clipboard, or to paste it "
+                   "from there? A request to type text containing such words doesn't.")
+# "...paste after the last line" appended to the last line's text ("gregThe Khentii Mountains..."). Lines naming one
+# the paste goes after or below read 0.35-0.81 ("Paste after the last line in the google doc" 0.35-0.38), pastes into
+# a field, a cell, a chat or a line's end 0.02-0.13 (2026-10-21).
+OWN_LINE = ("Does the request on the first line of the `goal` name a line or paragraph that the pasted text goes after or "
+            "below, as a line of its own rather than at the end of that line's text?")
+OWN_LINE_GATE = 0.25
+# A paste at the end goes there by keys: right after a copy, Docs' comment bubble beside the selection drew Jev's box
+# for "paste after the last line" (0.31-0.43 across both lines) and took its click, and the paste went after the first
+# line (2 runs in 2, 2026-10-21). Pastes at the end read 0.48-0.87; after the first or second line, before it, or
+# into a cell 0.04-0.25.
+AT_END = ("Does the first line of the `goal` put the text it pastes after the last line of the document or field, at "
+          "the very end of its text?")
+AT_END_GATE = 0.3
+# Lines ending with their copy 0.06-0.33 ("...click his birthplace and copy the first paragraph." 0.27-0.33), lines
+# going on to paste or send it 0.88-0.96 (2026-10-21).
+AFTER_COPY = "Does the request on the last line of the `goal` ask for anything more after it copies text to the clipboard?"
 # A click held open for a surer one of its line's (below) is one zoomed under this: [b] once zoomed 0.61, its note read
 # 0.40-0.50 left, the line ended there with the [20] that cites the birth boxed 0.58, and a note's text was copied
 # (2026-10-19). Wikipedia links zoom 0.90-0.97.
@@ -266,6 +314,12 @@ COPY_PRESENT = ("Is the text that the first line of the `goal` copies visible in
                 "names that text by what it pastes.")
 COPIED = ("The visible text in `screen` that the first line of the `goal` copies, boxed tightly around that text "
           "alone. A later line of the `goal` names that text by what it pastes.")
+# A paste after a copy is placed as the copy is: Jev's look at "paste after the last line" boxed the document's last
+# line, and its zooms on the spot to click read it 0.28-0.35, so the line failed (2026-10-21).
+PASTED = ("The visible place in `screen` where the first line of the `goal` pastes, boxed tightly: the input field or "
+          "cell it pastes into, or the text it pastes after.")
+PASTE_CONTROL = "the place where the first line of the `goal` pastes, or the text it pastes after"
+SPOTS = {"copy": (COPIED, COPY_CONTROL), "paste": (PASTED, PASTE_CONTROL)}  # each clipboard step's box and zoom
 # A copy's triple click goes this far past the end of the text, still in its line: the box's middle was on the
 # citation's link about half the time, and a click there follows it (a run pasted "Citations", 2026-10-19). Past
 # the end it selected the citation 15/15, the article's title 10/10.
@@ -274,6 +328,7 @@ COPY_PAST = 0.005  # of the screen's width
 # toolbar, and its middle row (0.09) selected nothing 6 times in 6; a zoom this wide on it placed the row 15/16, and
 # 41/48 over that, its twin frame and an article's title (2026-10-19).
 COPY_WINDOW = 0.25
+SCROLLS = {"scroll_down": "scroll(5)", "scroll_up": "scroll(-5)"}  # each scroll step's input, as history records it
 CLIPBOARD = {"copy": "C", "paste": "V"}  # the key each clipboard step presses with Ctrl (Cmd on macOS)
 # The agent joins words said mid-run on as "User correction: ..." lines (loop.py, app.py). Jev read "add hello to b1"
 # so marked as a fix to "open up libre office" and waited on its Start Center (3/3); unmarked it clicked Calc (2/2).
@@ -301,6 +356,7 @@ class JevOnlyPlanner:
         self.line = 0  # the goal's first line not yet done: the one Jev sees
         self.since = 0  # where that line's steps start in the run's history
         self.prev = 0  # where the line before it started: Jev sees its steps too ("delete hello" after typing it)
+        self.split = ("", "")  # the last goal split into sentences, and its split
         self.routed = False  # Jev has seen the app in front can take the line's next step
         self.kind: str | None = None  # the kind of app the line names, routed to the browser as a website
         self.seen = False  # Jev planned the line's next step at an earlier step: it wasn't done then
@@ -313,6 +369,8 @@ class JevOnlyPlanner:
         self.opened: str | None = None  # the app the request last opened, also in an earlier run it continues
         self.clicked: tuple[bytes, tuple[float, float], str] | None = None  # the last plan's click: screen, point, step
         self.doubted: str | None = None  # the last plan's click, as its step reads, when Jev wasn't sure of its target
+        self.switched: str | None = None  # the last click on a tab the line names, to act on next
+        self.copying: tuple[str, int] | None = None  # the run and line Jev read asking for the clipboard
         # Jev's last typing, as its step reads: Flash's went where its own focus check saw a field. Flash clicked
         # the address bar and typed "docs.new\n"; on the document it opened that text was nowhere (0.09), and it
         # was typed again into the document (2026-10-19).
@@ -349,11 +407,15 @@ class JevOnlyPlanner:
             self.refused += [step for step in self.planned[1] if step.startswith("skill(open_app ")]
 
     def next_actions(self, image: bytes, ctx: StepContext) -> Plan:
+        ctx = replace(ctx, goal=self._sentences(image, ctx))
         plan = self._plan(image, ctx)
         # A kind of app read as a website has its app to open: "open up a spreadsheet" with Google Docs in front read
         # a site (0.92), and on Chrome's new tab Jev had no words of the request to type, or no control (2026-10-20).
         launch = Action("skill", name="open_app", args={"name": self.kind})
-        if plan.reasoning == FAILED and self.kind and launch.brief() not in ctx.history[self.since:] + self.refused:
+        # Not once the line switched to a tab: the browser reached it. Back on the doc's tab "Paste after the last line in
+        # the google doc" doubted its click, and "google doc" typed into the launcher took the paste (2026-10-21).
+        if plan.reasoning == FAILED and self.kind and launch.brief() not in ctx.history[self.since:] + self.refused \
+                and self.switched not in ctx.history[self.since:]:
             plan = Plan("Open the app the line names", [launch], [], blind=True)
         self.screen, self.planned = image, (len(ctx.history), [action.brief() for action in plan.actions])
         return plan
@@ -364,7 +426,7 @@ class JevOnlyPlanner:
             self.run_id, self.line, self.since = ctx.run_id, self.finished.count("\n") + 1 if continued else 0, 0
             self.prev, self.routed, self.clicked, self.seen, self.typed, self.unmoved = 0, False, None, False, None, None
             self.kind = None
-            self.doubted = self.screen = self.placing = None
+            self.doubted = self.screen = self.placing = self.switched = None
             self.refused = []
             if not ctx.goal.startswith(self.goal + "\n"):
                 self.opened = None  # a new request: what an earlier one opened isn't its app
@@ -440,6 +502,16 @@ class JevOnlyPlanner:
                 return placing[1]
         missing = bool(typed) and probability(replies[len(looks)][0]["typed"].get("noul")) < MISSING
         left = max(1 - probability(answers["left"].get("noul")) for answers, _, _ in replies[:len(looks)])
+        # Once read, for the rest of its line: on Genghis Khan's article "...click his birthplace and copy the first
+        # paragraph." read 0.71, then 0.46 with 0.44 left, and the old clipboard was pasted (2026-10-21).
+        clipboard = probability(replies[0][0]["clipboard"].get("noul")) >= GATE or self.copying == (ctx.run_id, self.line)
+        if clipboard:
+            self.copying = ctx.run_id, self.line
+        # Nor does the copy that ends its line: on the birthplace's article, its first paragraph selected and
+        # copied, "...click his birthplace and copy the first paragraph." read 0.60-0.82 left (2026-10-21).
+        own = [s for s in ctx.history[self.since:] if s not in (LOOK_AGAIN.brief(), WAIT.brief())]
+        ended = bool(own) and bool(_COPY.fullmatch(own[-1])) \
+            and probability(replies[0][0]["after_copy"].get("noul")) < GATE
         # An input that changed nothing finished nothing: a Brave Search result clicked 1.3 s after the results drew
         # stayed put, the unchanged page read 0.35 left, and the snippet under it was clicked as the next line's
         # "date of birth reference" (2026-10-19; 2 of 3 clicks that early did nothing, every one at 4 s went).
@@ -452,7 +524,8 @@ class JevOnlyPlanner:
         still = retrying and not unchanged and _same(self.unmoved[1], image)
         if not unchanged and not retrying:
             self.unmoved = None
-        finished = not missing and not unchanged and not still and _finished(answered[0][0], ctx.history[self.since:], left, self.seen)
+        finished = not missing and not unchanged and not still \
+            and (ended or _finished(answered[0][0], ctx.history[self.since:], left, self.seen, clipboard))
         # A click Jev doubted doesn't end its line while Jev has another for it that it is sure of: after the lead's
         # [b] the screen read done (0.38-0.55) with the note that cites the birth showing, its [20] boxed and zoomed
         # 0.70 (2026-10-19). Without such a click the line is done.
@@ -464,7 +537,9 @@ class JevOnlyPlanner:
         held = finished and first["next"].get("choice") in CLICKS and (ctx.history[-1:] == [doubted] or listed)
         fresh = opened and first["next"].get("choice") == "new_tab" and probability(first["fresh"].get("noul")) >= GATE \
             and any(s.startswith("skill(open_app ") for s in ctx.history[self.since:])
-        finished = (finished or fresh) and not held
+        # Nor the switch to a tab the line closes: on the YouTube tab it brought in front, "Close the YouTube tab."
+        # read done (0.17-0.18 left) with close_tab next on it, and so did the GitHub tab after a wait (2026-10-21).
+        finished = (finished or fresh) and not held and inputs[-1:] != [self.switched]
         if finished and len(answered) > 1:
             self._advance(ctx)
             answered, finished = answered[1:], False  # the next line's first step
@@ -519,7 +594,9 @@ class JevOnlyPlanner:
         loading = pending or probability(answers["loading"].get("noul")) >= GATE
         wait = self._look_again(ctx, MAX_LOADING_WAITS if loading else MAX_WAITS, anytime=True) if loading or drawing \
             else None
-        if (opened or pending) and wait:
+        # Nor what a click is still opening: Docs' new blank document read loading 0.93 as it came, and "type shopping
+        # list" went to the address bar (2026-10-21).
+        if (opened or pending or loading and inputs[-1:] and inputs[-1].startswith("click(")) and wait:
             return wait
         if routing:
             # A website that names no browser is no app to search the launcher for: "youtube" found nothing there.
@@ -582,26 +659,58 @@ class JevOnlyPlanner:
         if step == "address" and probability(answers["lookup"].get("noul")) >= GATE \
                 and probability(answers["submit"].get("noul")) < GATE:
             return _fail("the request describes a page to look for, and names no website", planner=True)
+        # "Close the YouTube tab." with Wikipedia in front closed Wikipedia (3/3, 2026-10-21): the tab named, which
+        # Jev boxes, is clicked first. Any step's: "Paste after the last line in the google doc" pasted into Wikipedia
+        # (0.97 named another tab). Once: with the doc in front it still read 0.71-0.84 (2026-10-21).
+        other_tab = probability(answers["other_tab"].get("noul"))
+        switch = step not in ("address", "new_tab") and inputs[-1:] != [self.switched] and other_tab >= GATE
+        if switch:
+            step = "click"
         if step == "address" and (text is None or _is_the_request(text, line)):
             # "go to email" on Chrome's new tab: Jev chose the address bar with nothing to type (6/6), and boxed
             # the page's Gmail link as the step's control.
             step = "click"
-        if step == "type" and not (ctx.history and ctx.history[-1].startswith("click(")):
+        clicked_last = bool(ctx.history) and ctx.history[-1].startswith(("click(", "double_click("))
+        # A new tab puts the caret in its address bar: "Search up genghis khan" right after one boxed from the
+        # address bar to the page's search box, and the click between them typed into nothing (2026-10-21).
+        tabbed = bool(inputs) and bool(re.fullmatch(rf"hotkey\((CTRL|GUI)\+{TAB_KEYS['new_tab']}\)", inputs[-1])) \
+            and probability(answers["focused"].get("noul")) >= GATE
+        if step == "type" and not (clicked_last or tabbed or ctx.history and _KEPT.fullmatch(ctx.history[-1])):
             # Focus doesn't show in a screenshot: a "type" not right after a click went nowhere, so the field
-            # is clicked first (nrebolloso, origin/live-speech b219465).
+            # is clicked first (nrebolloso, origin/live-speech b219465). Keys that edited text leave the caret where
+            # they did: "replace with gang" after "world" was erased clicked mid-word in "hello" (2026-10-21).
             step = "fill"
         elif step == "type" and probability(answers["focused"].get("noul")) < GATE:
-            step = "click"  # what was clicked opened no place to type: open the document or field first
+            # What was clicked opened no place to type: open the document or field first.
+            step = "click" if clicked_last else "fill"
         if step == "click" and text is not None and not _is_the_request(text, line) \
                 and probability(answers["input"].get("noul")) >= self.jev.min_presence:
             step = "fill"
+        # Likewise a click into text between a line's copy and its paste: after "Copy the first line" Jev clicked the
+        # end of the last line (0.61-0.67 to paste's 0.21-0.25), its zooms doubted the line's end (0.20-0.32), and
+        # the line failed (2026-10-21). The paste clicks its own place. A copy on an earlier line too: back on the doc
+        # from Wikipedia, Jev clicked mid-line in "Hello gang" and the paste split it (2026-10-21).
+        unpasted = next((bool(_COPY.fullmatch(s)) for s in reversed(inputs) if _COPY.fullmatch(s) or _PASTE.fullmatch(s)),
+                        False)
+        if step == "click" and not switch and clipboard and unpasted \
+                and probability(answers["input"].get("noul")) >= self.jev.min_presence:
+            step = "paste"
+        # A scroll back over a scroll back: on Khentii Mountains with its first paragraph in view Jev chose scroll down,
+        # up, down... to "Stuck" (b3, 2026-10-21). The view it returns to is the one the line's clipboard step acts on.
+        scrolls = [s for s in steps if not s.startswith("skill(")][-2:]
+        if step in SCROLLS and clipboard and len(scrolls) == 2 and all(s.startswith("scroll(") for s in scrolls) \
+                and scrolls[0] != scrolls[1] and scrolls[0] == SCROLLS[step]:
+            step = "paste" if unpasted else "copy"
         if step == "paste" and ctx.history and ctx.history[-1].startswith("click(") \
                 and probability(answers["focused"].get("noul")) < GATE and (look := self._look_again(ctx)):
             # What the click opened may still be opening: a Docs template clicked in its gallery took the paste
             # before its document showed (focused 0.25), and the line read done (2026-10-19).
             return look
-        # As with typing: a paste right after a click, or into the place Jev sees focused, needs no click first.
-        focus = step == "paste" and (refocus or not (ctx.history and ctx.history[-1].startswith("click("))
+        # As with typing: a paste right after a click, or into the place Jev sees focused, needs no click first. Not
+        # right after a copy: its selection is still there, and the paste replaced the line it copied (2026-10-21).
+        # Nor right after a switch to the tab: its caret is where the last edit left it.
+        copied = bool(inputs) and (bool(_COPY.fullmatch(inputs[-1])) or inputs[-1] == self.switched)
+        focus = step == "paste" and (refocus or copied or not (ctx.history and ctx.history[-1].startswith("click("))
                                      and probability(answers["focused"].get("noul")) < GATE)
         if focus and not refocus and (box_center(answers["target"], size, padded) is None
                                       or probability(answers["present"].get("noul")) < GATE):
@@ -613,27 +722,33 @@ class JevOnlyPlanner:
                 return look
             focus = False
         certain = settled = True  # of the click's target: only a doubtful zoom says otherwise
+        own_line = at_end = False  # a paste's, on a line of its own, and at the very end
         labelled = step in ("click", "fill") and probability(answers["labelled"].get("noul")) >= GATE
-        if step in ("click", "double_click", "right_click", "fill", "copy") or focus:
+        if step in ("click", "double_click", "right_click", "fill", "copy", "select") or focus:
             point = box_center(answers["target"], size, padded)
             opens = probability(answers["opens"].get("noul"))
-            sure = max(probability(answers["present"].get("noul")), opens if opens >= GATE else 0.0)
-            control = OPENER_CONTROL if opens >= GATE else STEP_CONTROL
+            # A switch's box is the tab named: the paste's place behind it read present 0.31-0.38 (2026-10-21).
+            sure = max(probability(answers["present"].get("noul")), opens if opens >= GATE else 0.0,
+                       other_tab if switch else 0.0)
+            control = SELECT_CONTROL if step == "select" else OPENER_CONTROL if opens >= GATE else STEP_CONTROL
             if held and (point is None or sure < GATE):
                 return self._next_line(image, ctx, lines, "Jev verified the completed goal")
             # Not a copy's: on the citation a footnote jump marked, "copy the header" was 0.22-0.35 sure of it, waited,
             # and Flash took the hatnote at the article's top (0.53 there, 2026-10-19). Its own look places it.
-            if step != "copy" and (point is None or sure < GATE):
+            if step not in CLIPBOARD and (point is None or sure < GATE):
                 return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
             width, height = box_size(answers["target"], size, padded)
-            if step == "copy":
-                point = self._copy_spot(image, ctx, lines, seen)
-                if point is None:
+            if step in CLIPBOARD:
+                spot = self._text_spot(image, ctx, lines, seen, step)
+                if spot is None:
                     return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
+                point, own_line, at_end = spot[:2], spot[2], spot[3]
             elif min(width, height) >= BIG_TARGET and sure >= self.jev.min_presence \
                     and probability(answers["target"].get("confidence")) < BIG_SURE:
                 return wait or self._look_again(ctx) or _fail("its target isn't clearly visible", planner=True)
-            elif (min(width, height) < BIG_TARGET or sure < self.jev.min_presence) and not labelled:
+            # Not a tab's: zooms for "Close the YouTube tab." boxed close buttons, once the Wikipedia tab's beside
+            # it, and closed Wikipedia; Jev's box was on the YouTube tab (2026-10-21).
+            elif (min(width, height) < BIG_TARGET or sure < self.jev.min_presence) and not labelled and not switch:
                 # Two more looks at an enlarged crop: the first box can land a row off (a missed search box), but
                 # one zoom also strays to a neighbouring row about 1 in 6 times (Chrome's new tab: search box vs
                 # shortcuts). Keeping the zoom nearer the first box is a majority of the three looks. No tighter
@@ -641,7 +756,8 @@ class JevOnlyPlanner:
                 # typing that went nowhere left out: told the text was typed, both zooms doubted the search box (0.41-0.48)
                 state = {"goal": line, "executed_steps": seen[:self.since - self.prev] if missing else seen}
                 # the crop's side is a fraction of the screen's longer side, and its height 0.66 of its width
-                window = max(ZOOM_WINDOW, ZOOM_MARGIN * max(width * size[0], height * size[1] / 0.66) / max(size))
+                window = max(SELECT_WINDOW if step == "select" else ZOOM_WINDOW,
+                             ZOOM_MARGIN * max(width * size[0], height * size[1] / 0.66) / max(size))
                 with ThreadPoolExecutor(2) as pool:
                     zooms = list(pool.map(lambda _: zoom(self.jev, image, state, control, point, window,
                                                           ctx.run_id, ctx.step), range(2)))
@@ -681,10 +797,28 @@ class JevOnlyPlanner:
                 point = min((_narrowed(p, b, first) for p, b in looks), key=lambda p: math.dist(p, point))
             elif labelled:
                 point = self._by_labels(image, ctx, line, answers, size, padded, texts, point) or point
+            elif switch and (edges := _edges(answers["target"], size, padded)):
+                # Its title, left of its close button: the switch is held as not done, so a closed tab's neighbour
+                # would be closed next. On a zoom's row: the step's box for "Paste after the last line in the google
+                # doc" was the doc tab's columns a row low, and the click reloaded Wikipedia twice; zooms on the tab
+                # took its row 7 times in 7, and Wikipedia's tab beside it 3 times (2026-10-21).
+                row, _, _ = zoom(self.jev, image, {"goal": line}, TAB_CONTROL, point, ZOOM_WINDOW, ctx.run_id, ctx.step)
+                point = edges[0] + (edges[2] - edges[0]) / 4, row[1] if row else point[1]
             if step == "copy":
                 actions.append(Action("skill", name="select", args={"x": round(point[0], 3), "y": round(point[1], 3)}))
+            elif step == "paste":
+                # The click lands on the text, inside a field's box too; End puts the caret after it.
+                mac = ctx.profile.os in ("macos", "ios")
+                if at_end:
+                    actions.append(Action("hotkey", keys=("GUI", "DOWN") if mac else ("CTRL", "END")))
+                else:
+                    end = ("GUI", "RIGHT") if mac else ("END",)
+                    actions += [Action("click", x=point[0], y=point[1]), Action("hotkey", keys=end)]
+                if own_line:
+                    actions.append(Action("hotkey", keys=("ENTER",)))
             else:
-                actions.append(Action(step if step in CLICKS else "click", x=point[0], y=point[1]))
+                gesture = "double_click" if step == "select" else step if step in CLICKS else "click"
+                actions.append(Action(gesture, x=point[0], y=point[1]))
         if step in ("copy", "paste"):
             actions.append(Action("hotkey", keys=(mod, CLIPBOARD[step])))
         in_place = False
@@ -695,7 +829,10 @@ class JevOnlyPlanner:
             if _is_the_request(text, line):
                 # "write a short note about my day" was typed as the note (Diego, agent/jev-only-fixes).
                 return _fail("the request asks for text to be written, not typed word for word", planner=True)
-            if step == "erase":
+            selected = bool(inputs) and inputs[-1].startswith("double_click(")  # a word selected, typed over as is
+            if step == "erase" and selected:
+                actions.append(Action("hotkey", keys=("BACKSPACE",)))
+            elif step == "erase":
                 # shortcut: one word-erase per word assumes the caret ends the typed text and Ctrl+Backspace
                 # takes a word with its punctuation; select the text instead if punctuated text is left behind.
                 word = ("ALT" if ctx.profile.os in ("macos", "ios") else "CTRL", "BACKSPACE")
@@ -703,7 +840,7 @@ class JevOnlyPlanner:
             else:
                 if step == "address":
                     actions.append(Action("hotkey", keys=(mod, "L")))  # focuses the address bar, its text selected
-                elif probability(answers["replace"].get("noul")) >= GATE:
+                elif probability(answers["replace"].get("noul")) >= GATE and not selected:
                     # Select-all only in a filled single-line box: in a document it would replace everything.
                     actions.append(Action("hotkey", keys=(mod, "A")))
                 actions.append(Action("type_text", text=text))
@@ -727,7 +864,7 @@ class JevOnlyPlanner:
             actions.append(Action("hotkey", keys=("GUI", "Q") if ctx.profile.os == "macos" else ("ALT", "F4")))
         if step == "enter":
             actions.append(Action("hotkey", keys=("ENTER",)))
-        if step in ("scroll_down", "scroll_up"):
+        if step in SCROLLS:
             # A line begun on Enter sees the page Enter left: "click the third video" after a YouTube search scrolled
             # YouTube's home page under its suggestions twice while the results loaded (2.7 s, 2026-10-20).
             if not steps and ctx.history and _ENTER.fullmatch(ctx.history[-1]) and (look := self._look_again(ctx)):
@@ -756,8 +893,11 @@ class JevOnlyPlanner:
             return self._look_again(ctx) or _fail("it would repeat the step it just took")
         if guard and probability(answers["irreversible"].get("noul")) >= GATE:
             return Plan("Irreversible step needs approval", [], [], held=f'the next step of "{line}"')
-        if step in CLICKS and certain:
+        # Nor a tab switch's: marked, the click on the YouTube tab read closing it (0.36-0.42 left), and the tab stayed.
+        if step in CLICKS and certain and not switch:
             self.clicked = image, point, actions[0].brief()
+        if switch:
+            self.switched = actions[0].brief()
         if step in CLICKS and not settled:
             self.doubted = actions[0].brief()
         if labelled:
@@ -851,6 +991,7 @@ class JevOnlyPlanner:
             "dotcom": {"type": "noul", "instructions": DOTCOM},
             "lookup": {"type": "noul", "instructions": LOOKUP},
             "focused": {"type": "noul", "instructions": FOCUSED},
+            "other_tab": {"type": "noul", "instructions": OTHER_TAB},
             "loading": {"type": "noul", "instructions": LOADING},
             "pending": {"type": "noul", "instructions": PENDING},
             "opens": {"type": "noul", "instructions": OPENS},
@@ -864,7 +1005,9 @@ class JevOnlyPlanner:
     def _line_done(self, image: bytes, ctx: StepContext, lines: list[str], question: str = LINE_LEFT) -> Ask:
         """Whether the line Jev sees is left to do ("left"), asked with the line before it in view."""
         shown = "\n".join(filter(None, lines[max(self.line - 1, 0):self.line + 1]))
-        return image, "line-done", [({"left": {"type": "noul", "instructions": question}},
+        return image, "line-done", [({"left": {"type": "noul", "instructions": question},
+                                      "clipboard": {"type": "noul", "instructions": CLIPBOARD_ASKED},
+                                      "after_copy": {"type": "noul", "instructions": AFTER_COPY}},
                                      {"goal": shown, "executed_steps": ctx.history[self.prev:]})]
 
     def _rest(self, image: bytes, raw: list[str], i: int) -> Ask:
@@ -893,27 +1036,56 @@ class JevOnlyPlanner:
                                    "far": {"type": "choice", "instructions": PLACE_FAR, "criteria": PLACE_FARS}},
                                   {"goal": line})]
 
-    def _copy_spot(self, image: bytes, ctx: StepContext, lines: list[str], context: list[str]) -> tuple[float, float] | None:
-        """Where a triple click selects the text the line copies: just past the end of Jev's box around it, on the
-        box's middle row, so it lands on no link in that text. Of two boxes the one reaching further: one look's box
-        ended inside the citation, on its link or before it, 3 times in 15."""
+    def _text_spot(self, image: bytes, ctx: StepContext, lines: list[str], context: list[str],
+                   step: str) -> tuple[float, float, bool, bool] | None:
+        """Where the line's copy or paste clicks, whether a paste goes on a line of its own, and whether at the end. A copy clicks on the
+        row of the text's last line a zoom finds, a paste on the box's last: the text it goes after ends there. A copy's
+        triple click selects the text it copies from just past the end of that line, so it lands on no link in it; a paste clicks
+        the middle of the place it pastes into or after. Of two boxes the one reaching further: one look's
+        box ended inside the citation, on its link or before it, 3 times in 15. Asked of each of the line's clause
+        tails, the one Jev is surest of: whole, "Search up genghis khan, go to wikipedia, click his birthplace and copy
+        the first paragraph." on the birthplace's article read present 0.36-0.40 and boxed the paragraph naming
+        Genghis Khan; from "copy the first paragraph." 0.92-0.95, the article's first (2026-10-21)."""
+        box, control = SPOTS[step]
         questions = {"copy_present": {"type": "noul", "instructions": COPY_PRESENT},
-                     "copied": {"type": "box", "instructions": COPIED}}
-        state = {"goal": "\n".join(lines[self.line:]), "executed_steps": context}
-        with ThreadPoolExecutor(2) as pool:
-            replies = list(pool.map(lambda _: self.jev.evaluate(image, questions, run_id=ctx.run_id, step=ctx.step,
-                                                                state=state, label="copy"), range(2)))
+                     "copied": {"type": "box", "instructions": box}}
+        if step == "paste":
+            questions |= {"own_line": {"type": "noul", "instructions": OWN_LINE},
+                          "at_end": {"type": "noul", "instructions": AT_END}}
+        rest = "\n".join(lines[self.line + 1:])
+        states = [{"goal": "\n".join(filter(None, (tail, rest))), "executed_steps": context}
+                  for tail in _clause_tails(lines[self.line])]
+        with ThreadPoolExecutor(2 * len(states)) as pool:
+            asked = list(pool.map(lambda state: self.jev.evaluate(image, questions, run_id=ctx.run_id, step=ctx.step,
+                                                                  state=state, label="copy"), states * 2))
+        best = max(range(len(states)), key=lambda i: sum(probability(answers["copy_present"].get("noul"))
+                                                          for answers, _, _ in asked[i::len(states)]))
+        replies, state = asked[best::len(states)], states[best]
         ends = [(center[0] + box_size(answers["copied"], size, padded)[0] / 2, center, answers["copied"], size, padded)
                 for answers, size, padded in replies if (center := box_center(answers["copied"], size, padded))]
         if not ends:
             return None
-        # shortcut: a paragraph wrapping to its column's edge puts this point past the column; aim inside its first
-        # line if copies of long paragraphs need it.
         x, center, box, size, padded = max(ends, key=lambda end: end[0])
-        point, _, _ = zoom(self.jev, image, state, COPY_CONTROL, center, COPY_WINDOW, ctx.run_id, ctx.step)
-        # Only its row: a zoom off the box went to the address bar above it (1 in 16).
-        y = point[1] if point and box_contains(box, size, padded, point) else center[1]
-        return min(1.0, x + COPY_PAST), y
+        if step == "paste":
+            # "Copy the first line, paste after the last line." boxed both lines, and a click on its middle row,
+            # or a zoom's, pasted after the first (2026-10-21). At the box's left edge: past "eggs", and on its middle
+            # too, the click hit Docs' comment bubble beside the copied line's selection, and the paste went after that
+            # line (2026-10-21).
+            left, top, _, bottom = _edges(box, size, padded)
+            own, end = (sum(probability(answers[k].get("noul")) for answers, _, _ in replies) / len(replies)
+                        for k in ("own_line", "at_end"))
+            return left + COPY_PAST, bottom - (bottom - top) / 4, own >= OWN_LINE_GATE, end >= AT_END_GATE
+        bottom = _edges(box, size, padded)[3]
+        point, _, last = zoom(self.jev, image, state, control, (center[0], bottom), COPY_WINDOW, ctx.run_id, ctx.step)
+        # Only in the box: a zoom off it went to the address bar above it (1 in 16). Past the last line's end, short of
+        # the box's: one zoom in 3 on Einstein's lead ran its last line into the infobox beside it. In its upper
+        # quarter: zooms on "Hello gang" (0.367-0.382) boxed to 0.39-0.40, the gap above the next line, and their
+        # middle, 0.388, selected that line (2026-10-21).
+        if point and last and box_contains(box, size, padded, point):
+            x, y = min(x, last[2]), last[1] + (last[3] - last[1]) / 4
+        else:
+            y = center[1]
+        return min(1.0, x + COPY_PAST), y, False, False
 
     def _evaluate_all(self, ctx: StepContext, asks: list[Ask]) -> list[tuple[dict, tuple[int, int], tuple[int, int]]]:
         """Each ask's answers, its question sets asked in parallel, those on the same image in the same state in one
@@ -937,8 +1109,24 @@ class JevOnlyPlanner:
         return [({k: v for i, questions in part for k, v in replies[i][0].items() if k in questions},
                  *replies[part[0][0]][1:]) for part in parts]
 
+    def _sentences(self, image: bytes, ctx: StepContext) -> str:
+        """The goal with each request in it on a line of its own, as speech's pauses put them: typed whole, "...type
+        hello world. Delete world, replace with gang. ... Search up genghis khan, ..." read the search's Enter as
+        asked (submit 0.65-0.84) after each text typed into the document, its later sentences' words were past the
+        text choices' budget, and its paste back in the document's tab was never routed there (2026-10-21). Jev
+        reads which marks end a request, once per goal: an abbreviation's period ("Dr. Smith") ends none. A mark
+        it doesn't answer for splits."""
+        if self.split[0] != ctx.goal:
+            questions = _mark_questions(ctx.goal)
+            answers = self.jev.evaluate(image, questions, run_id=ctx.run_id, step=ctx.step, state={"goal": ctx.goal},
+                                        label="sentences")[0] if questions else {}
+            ends = iter([probability(answers[k].get("noul")) >= SENTENCE_GATE if k in answers else True for k in questions])
+            self.split = ctx.goal, _SENTENCE_END.sub(lambda m: "\n" if next(ends) else m.group(), ctx.goal)
+        return self.split[1]
+
     def line_done(self, image: bytes, ctx: StepContext) -> Plan:
         """Another planner finished the line Jev is on: Jev's step for the next one, or the request is done."""
+        ctx = replace(ctx, goal=self._sentences(image, ctx))
         return self._next_line(image, ctx, ctx.goal.splitlines(), "Flash verified the line done")
 
     def _next_line(self, image: bytes, ctx: StepContext, lines: list[str], why: str) -> Plan:
@@ -1009,6 +1197,22 @@ class JevOnlyPlanner:
         return _fail("no app suited to the request is visible")
 
 
+def _mark_questions(goal: str) -> dict[str, dict]:
+    """For each mark that may end a sentence in the goal, whether a request ends there, asked with its words around."""
+    questions = {}
+    for i, mark in enumerate(_SENTENCE_END.finditer(goal)):
+        before, after = goal[:mark.start()].split()[-6:], goal[mark.end():].split()[:3]
+        questions[f"end{i}"] = {"type": "noul", "instructions": SENTENCE_END.format(
+            mark=before[-1][-1], before=json.dumps(" ".join(before), ensure_ascii=False),
+            after=json.dumps(" ".join(after), ensure_ascii=False))}
+    return questions
+
+
+def _clause_tails(line: str) -> list[str]:
+    """The line, then what follows each of its commas and "and"s: where a later request may start."""
+    return [line] + [line[m.end():] for m in _CLAUSE.finditer(line)]
+
+
 def _same(before: bytes, after: bytes) -> bool:
     """Whether two screens look alike; one that won't decode is not."""
     a, b = (cv2.imdecode(np.frombuffer(jpeg, np.uint8), cv2.IMREAD_COLOR) for jpeg in (before, after))
@@ -1036,8 +1240,13 @@ def _last_typed(steps: list[str]) -> str | None:
 def _seen(history: list[str], before: str, start: int, since: int | None = None) -> list[str]:
     """The steps Jev sees with a line: from `start` to `since` those of the line `before` it, each marked with it.
     Unmarked, the click on Brave's YouTube tile that opened YouTube read as one on its search box: "search for
-    horses" was typed, or YouTube's Horses chip clicked, without a click on the box (4/4, v14-t1)."""
+    horses" was typed, or YouTube's Horses chip clicked, without a click on the box (4/4, v14-t1). Only until the
+    line takes an input of its own: on the Genghis Khan article, the Ctrl+C before it made "...click his birthplace
+    and copy the first paragraph." scroll past its birthplace (0/4 clicks, 3/4 without) and past the paragraph once
+    there (1/4 copies, 6/6 without, 2026-10-21)."""
     since = len(history) if since is None else since
+    if any(s not in (LOOK_AGAIN.brief(), WAIT.brief()) for s in history[since:]):
+        start = since
     return [f"{s} for {json.dumps(before, ensure_ascii=False)}" for s in history[start:since]] + history[since:]
 
 
@@ -1058,7 +1267,7 @@ def _last_opened(steps: list[str]) -> str | None:
     return ast.literal_eval(opened[-1][len("skill(open_app "):-1])["name"] if opened else None
 
 
-def _finished(answers: dict, steps: list[str], done: float, seen: bool, gate: float = GATE) -> bool:
+def _finished(answers: dict, steps: list[str], done: float, seen: bool, clipboard: bool, gate: float = GATE) -> bool:
     """Jev verified the line done. Its own next step is Enter right after typing: the text isn't submitted,
     whatever the line-done score (0.94 for "add hello to b1" with hello typed into B1, not entered)."""
     unsent = bool(steps) and steps[-1].startswith("type_text") and answers["next"].get("choice") == "enter"
@@ -1068,12 +1277,12 @@ def _finished(answers: dict, steps: list[str], done: float, seen: bool, gate: fl
     # shortcut: a line the screen finishes on its own ("wait for the video to end") can't be done; let the
     # line-done check see why the screen changed if such lines matter.
     idle = seen and all(s in (LOOK_AGAIN.brief(), WAIT.brief()) for s in steps)
-    # The screen doesn't show the clipboard: a copy or paste Jev still has next, on a line that pressed neither, is
-    # untaken. "copy the header" read done (0.52) after Flash scrolled to the title, and a paste line after a
+    # The screen doesn't show the clipboard: a copy or paste the line asks for, or Jev still has next, on a line that
+    # pressed neither, is untaken. "copy the header" read done (0.52) after Flash scrolled to the title, and a paste line after a
     # template's Insert click: neither copied nor pasted. Either key counts: once copied, Jev's next for "copy the
     # header" was paste (2026-10-19).
     # shortcut: a copy made through a menu still reads untaken while Jev picks copy; count menu copies if it matters.
-    untaken = answers["next"].get("choice") in CLIPBOARD \
+    untaken = (clipboard or answers["next"].get("choice") in CLIPBOARD) \
         and not any(re.fullmatch(rf"hotkey\(.*\+[{''.join(CLIPBOARD.values())}]\)", s, re.I) for s in steps)
     # A line that took no step of its own is held to ALREADY: "open up chrome" with Brave in front read done 0.58
     # and the request went on in the user's Brave (2026-10-19).
@@ -1112,8 +1321,11 @@ def _is_the_request(text: str, line: str) -> bool:
     return len(request) >= 3 and len(_words(text)) >= len(request)
 
 
+_SENTENCE_END = re.compile(r"(?<=[.!?])[ \t]+(?=\S)")
+_CLAUSE = re.compile(r",\s*|\s+and\s+")
 _POINT = re.compile(r"^(click|double_click|right_click)\((\d+),(\d+)\)$")
 _ENTER = re.compile(r"hotkey\((\w+\+)?ENTER\)")
+_KEPT = re.compile(r"type_text\(.*\)|hotkey\((\w+\+)?(BACKSPACE|ENTER)\)")  # keys that leave the caret where they edited
 _PASTE = re.compile(r"hotkey\((CTRL|GUI)\+V\)", re.IGNORECASE)
 _COPY = re.compile(r"hotkey\((CTRL|GUI)\+C\)", re.IGNORECASE)
 SAME_SPOT = 20  # history coordinates are 0-1000: a click this close to the last one is the same click

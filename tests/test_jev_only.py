@@ -11,7 +11,7 @@ import numpy as np
 
 from brain.agent.executor import Plan, StepContext
 from brain.agent.jev_first import JevFirstPlanner
-from brain.agent.jev_only import FAILED, LOOK_AGAIN, MAX_WAITS, JevOnlyPlanner
+from brain.agent.jev_only import FAILED, LOOK_AGAIN, MAX_WAITS, WAIT, JevOnlyPlanner
 from brain.agent.triage import spans
 from brain.cancel import CancelToken
 from brain.config import Config
@@ -31,16 +31,16 @@ class JevOnlyTests(unittest.TestCase):
              question=.05, composed=.05, site=.05, submit=.05, left=.9, window=.9, loading=.05, focused=.95,
              target=BOX, run="r", drawing=.05, text_odds=None, browser_front=.05, opened_front=.95, input=.05, dotcom=.05, commit=.05, app=(.1, .5, .55, .75), typed=.95,
              lookup=.05, pending=.05, opens=.05, fresh=.05, copied=BIG, zoomed=.9, boxes=(None, None), image=b"img", device="mouse", joined="two",
-             labelled=.05, on=.95, way="same", far="1", place="none"):
+             labelled=.05, other_tab=.05, on=.95, way="same", far="1", place="none", clipboard=.05, after_copy=.9, own_line=.05, at_end=.05):
         step = {"complete": {"noul": complete}, "question": {"noul": question}, "composed": {"noul": composed}, "next": {"choice": next}, "present": {"noul": present},
                 "target": target, "text": {"choice": text, "probabilities": text_odds or {}}, "replace": {"noul": replace}, "fits": {"noul": fits},
                 "app_present": {"noul": app_present}, "app_name": {"choice": app_name}, "launcher": {"noul": launcher},
                 "app": {"box": dict(zip(("left", "right", "top", "bottom"), app))}, "site": {"noul": site},
                 "submit": {"noul": submit}, "browser_named": {"noul": .05}, "browser_front": {"noul": browser_front}, "opened_front": {"noul": opened_front}, "left": {"noul": left},
-                "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused},
+                "window": {"noul": window}, "loading": {"noul": loading}, "focused": {"noul": focused}, "other_tab": {"noul": other_tab},
                 "drawing": {"noul": drawing}, "input": {"noul": input},
                 "dotcom": {"noul": dotcom}, "commit": {"noul": commit}, "typed": {"noul": typed},
-                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "joined": {"choice": joined},
+                "lookup": {"noul": lookup}, "pending": {"noul": pending}, "opens": {"noul": opens}, "fresh": {"noul": fresh}, "copy_present": {"noul": .5}, "copied": copied, "clipboard": {"noul": clipboard}, "after_copy": {"noul": after_copy}, "own_line": {"noul": own_line}, "at_end": {"noul": at_end}, "joined": {"choice": joined},
                 "labelled": {"noul": labelled}, "on": {"noul": on}, "way": {"choice": way}, "far": {"choice": far},
                 "place": {"choice": place}, "column": BOX, "row": BOX}
         self.planner.jev.evaluate.return_value = (step, (400, 300), (400, 300))
@@ -331,6 +331,36 @@ class JevOnlyTests(unittest.TestCase):
         actions = self.plan(goal, next="type", text=str(spans(goal, 250).index("cats")), history=["hotkey(GUI)"])
         self.assertEqual([a.type for a in actions], ["click", "type_text"])
 
+    def test_typing_right_after_a_new_tab_types_into_its_focused_address_bar(self):
+        goal = "open a new tab and search for cats"
+        text = str(spans(goal, 250).index("cats"))
+        actions = self.plan(goal, next="type", text=text, focused=.9, history=["hotkey(CTRL+T)", WAIT.brief()])
+        self.assertEqual([a.type for a in actions], ["type_text"])
+        actions = self.plan(goal, next="type", text=text, focused=.1, history=["hotkey(CTRL+T)", WAIT.brief()])
+        self.assertEqual([a.type for a in actions], ["click", "type_text"])
+
+    def test_a_scroll_back_over_a_scroll_back_takes_the_lines_clipboard_step(self):
+        hover = "skill(hover {'x': 0.5, 'y': 0.5})"
+        rocked = ["click(695,491)", hover, "scroll(5)", hover, "scroll(-5)"]
+        goal = "click his birthplace and copy the first paragraph"
+        copied = self.plan(goal, next="scroll_down", clipboard=.9, history=rocked)
+        self.assertEqual(copied[-1].brief(), "hotkey(CTRL+C)")
+        pasted = self.plan("paste it after the last line", next="scroll_down", clipboard=.9,
+                           history=["hotkey(CTRL+C)", *rocked], run="p")
+        self.assertEqual(pasted[-1].brief(), "hotkey(CTRL+V)")
+        self.assertEqual(self.plan(goal, next="scroll_up", clipboard=.9, history=rocked, run="u")[-1].brief(), "scroll(-5)")
+        self.assertEqual(self.plan(goal, next="scroll_down", history=rocked, run="n")[-1].brief(), "scroll(5)")
+
+    def test_a_word_selected_is_typed_over_or_erased_alone(self):
+        goal = "Delete brown, replace with red."
+        selected = self.plan(goal, next="select", history=["type_text('the quick brown fox')"])
+        self.assertEqual([a.type for a in selected], ["double_click"])
+        after = [a.brief() for a in selected]
+        typed = self.plan(goal, next="type", text=str(spans(goal, 250).index("red")), replace=.9, history=after, run="t")
+        self.assertEqual([a.brief() for a in typed], ["type_text('red')"])
+        erased = self.plan(goal, next="erase", history=["type_text('the quick brown fox')", *after], run="e")
+        self.assertEqual([a.brief() for a in erased], ["hotkey(BACKSPACE)"])
+
     def test_filled_box_is_selected_before_typing(self):
         actions = self.plan("search for cats", next="type", text=str(spans("search for cats").index("cats")), replace=.9,
                             history=["click(300,300)"])
@@ -354,7 +384,7 @@ class JevOnlyTests(unittest.TestCase):
                          wait)
         # a paste that changed nothing clicks its place first, at once
         pasted = self.plan("paste it in", next="paste", note=unchanged, history=["hotkey(CTRL+V)"], left=.1, run="e")
-        self.assertEqual([a.brief() for a in pasted], ["click(300,300)", "hotkey(CTRL+V)"])
+        self.assertEqual([a.brief() for a in pasted], ["click(205,350)", "hotkey(END)", "hotkey(CTRL+V)"])
         self.assertEqual(self.step("paste it in", next="paste", note=unchanged, history=["hotkey(CTRL+V)", *[
             a.brief() for a in pasted]], run="e").type, "fail")
         # a copy that changed nothing selected nothing: it copies again at once, though Jev reads it done
@@ -416,20 +446,85 @@ class JevOnlyTests(unittest.TestCase):
         asked = [c.kwargs["state"]["goal"] for c in self.planner.jev.evaluate.call_args_list if c.kwargs["label"] == "copy"]
         self.assertEqual(asked, ["copy the header\npaste it in"] * 2)  # with the later line that names it
         boxes = iter([BIG, wide])
-        rowed = self.plan("copy the header\npaste it in", next="copy", looks=((.5, .31), ON), run="z")
-        self.assertEqual(rowed[0].brief(), "skill(select {'x': 0.605, 'y': 0.31})")  # the closer look's row, in the box
+        rowed = self.plan("copy the header\npaste it in", next="copy", looks=((.4, .31), ON), run="z",
+                          boxes=((.3, .3, .5, .32), None))
+        # past the end of the last line a closer look boxed, on its row, in the box
+        self.assertEqual(rowed[0].brief(), "skill(select {'x': 0.505, 'y': 0.305})")
         self.planner.jev.evaluate.side_effect = None
         pasted = self.plan("paste it in", next="paste", run="s")
         self.assertEqual([a.brief() for a in pasted], ["hotkey(CTRL+V)"])
         unfocused = self.plan("paste it in", next="paste", focused=.2, target=BIG, run="t")
-        self.assertEqual([a.brief() for a in unfocused], ["click(300,300)", "hotkey(CTRL+V)"])
+        # in the middle of the place it pastes into, the caret then put after its text
+        self.assertEqual([a.brief() for a in unfocused], ["click(205,350)", "hotkey(END)", "hotkey(CTRL+V)"])
+        selected = ["skill(select {'x': 0.605, 'y': 0.3})", "hotkey(CTRL+C)"]  # focused, but on the selection
+        after = self.plan("paste it after the last line", next="paste", history=selected, run="x")
+        self.assertEqual([a.brief() for a in after], ["click(205,350)", "hotkey(END)", "hotkey(CTRL+V)"])
+        # on the last row of a box over two lines, and on a line of its own after the line it names
+        two = {"box": {"left": .2, "right": .4, "top": .26, "bottom": .34}}
+        below = self.plan("paste it after the last line", next="paste", copied=two, own_line=.4, history=selected,
+                          run="o")
+        self.assertEqual([a.brief() for a in below], ["click(205,320)", "hotkey(END)", "hotkey(ENTER)", "hotkey(CTRL+V)"])
+        # at the very end of the document: by keys, clear of what lies over the text
+        end = self.plan("paste it after the last line", next="paste", own_line=.4, at_end=.6, history=selected, run="e")
+        self.assertEqual([a.brief() for a in end], ["hotkey(CTRL+END)", "hotkey(ENTER)", "hotkey(CTRL+V)"])
+        # a click into text Jev picks between the line's copy and its paste is the paste
+        clicked = self.plan("copy the first line, paste after the last line", next="click", input=.98, clipboard=.9,
+                            history=selected, run="c")
+        self.assertEqual([a.brief() for a in clicked], ["click(205,350)", "hotkey(END)", "hotkey(CTRL+V)"])
+        # a copy on an earlier line, after one pasted, too; not once it is pasted
+        earlier = ["hotkey(CTRL+V)", *selected, "click(80,20)"]
+        clicked = self.plan("paste after the last line", next="click", input=.98, clipboard=.9, history=earlier, run="e")
+        self.assertEqual(clicked[-1].brief(), "hotkey(CTRL+V)")
+        pasted = self.plan("click the title", next="click", input=.98, clipboard=.9, history=earlier[1:] + ["hotkey(CTRL+V)"],
+                           run="p")
+        self.assertEqual([a.type for a in pasted], ["click"])
+        # in another tab the line names: its tab first, then the paste there
+        doc = "paste it after the last line in the doc"
+        switch = self.step(doc, next="paste", other_tab=.97, history=selected, run="y").brief()
+        self.assertEqual(switch, "click(290,300)")
+        back = self.plan(doc, next="paste", other_tab=.8, history=[*selected, switch], run="y")
+        self.assertEqual([a.brief() for a in back], ["click(205,350)", "hotkey(END)", "hotkey(CTRL+V)"])  # placed anew
+        # sure of the tab it names, though not of the place behind it; on the row a zoom on the tab finds
+        self.assertEqual(self.step(doc, next="paste", other_tab=.9, present=.31, history=selected, run="z",
+                                   looks=((.3, .02),)).brief(), "click(290,20)")
         # The clipboard doesn't show: the line isn't done until its copy or paste is taken
         self.assertEqual(self.step("copy the header", next="copy", left=.1, history=["click(53,179)"], run="v").type,
                          "skill")
         self.assertEqual(self.step("copy the header", next="paste", left=.1, history=["hotkey(Control_L+c)"],
                                    run="w").type, "done")
+        # nor while one the line asks for is still to come, whatever Jev picks next
+        search = "click his birthplace and copy the first paragraph"
+        self.assertEqual(self.step(search, next="scroll_down", left=.1, clipboard=.9, history=["click(53,179)"],
+                                   run="b").type, "skill")
+        # its asking read once holds the line for the rest of it
+        self.assertEqual(self.step(search, next="click", left=.1, clipboard=.4, history=["click(53,179)", "scroll(5)"],
+                                   run="b").type, "click")
+        self.assertEqual(self.step(search, next="click", left=.1, clipboard=.4, history=["click(53,179)", "scroll(5)"],
+                                   run="g").type, "done")
+        # a copy that ends its line ends it, though the screen can't show it done
+        copy = ["skill(select {'x': 0.555, 'y': 0.53})", "hotkey(CTRL+C)", "skill(wait {'s': 1.0})"]
+        self.assertEqual(self.step(search, next="stuck", left=.8, clipboard=.9, after_copy=.3, history=copy,
+                                   run="e").type, "done")
+        self.assertNotEqual(self.step(search, next="stuck", left=.8, clipboard=.9, history=copy, run="f").type, "done")
         opening = self.step("paste it in", next="paste", focused=.2, history=["click(500,300)"], run="u")
         self.assertEqual(opening.brief(), "skill(wait {'s': 1.0})")  # the click's document may still be opening
+
+    def test_a_copy_is_placed_from_the_clause_tail_jev_is_surest_of(self):
+        wide = {"box": {"left": .2, "right": .6, "top": .28, "bottom": .32}}
+
+        def evaluate(image, questions, state=None, **_):
+            answers, size, padded = self.planner.jev.evaluate.return_value
+            if "copied" not in questions:
+                return answers, size, padded
+            tail = state["goal"].startswith("copy the first paragraph")
+            return answers | {"copy_present": {"noul": .9 if tail else .3}, "copied": wide if tail else BIG}, size, padded
+
+        self.planner.jev.evaluate.side_effect = evaluate
+        copied = self.plan("go to wikipedia, click his birthplace and copy the first paragraph.\npaste it in",
+                           next="copy", looks=(ON, ON))
+        self.assertEqual(copied[0].brief(), "skill(select {'x': 0.605, 'y': 0.3})")  # the tail's box, not the line's
+        asked = {c.kwargs["state"]["goal"] for c in self.planner.jev.evaluate.call_args_list if c.kwargs["label"] == "copy"}
+        self.assertIn("copy the first paragraph.\npaste it in", asked)
 
     def test_an_app_named_with_only_the_desktop_showing_is_opened_by_name(self):
         terminal = str(spans("open a terminal").index("terminal"))
@@ -472,6 +567,10 @@ class JevOnlyTests(unittest.TestCase):
         self.step(goal, run="s", **routed, next="new_tab")
         unseen = self.step(goal, run="s", next="stuck", question=.9, complete=.9, history=["hotkey(CTRL+T)"])
         self.assertEqual(unseen.brief(), "skill(open_app {'name': 'spreadsheet'})")  # whatever dead end
+        self.step(goal, run="w", **routed, next="new_tab")
+        self.planner.switched = "hotkey(CTRL+T)"  # as if a switch to a tab: the browser reached what the line names
+        switched = self.step(goal, run="w", next="stuck", question=.9, complete=.9, history=["hotkey(CTRL+T)"])
+        self.assertEqual(switched.type, "fail")
         self.assertEqual(self.step(goal, **routed, next="new_tab").brief(), "hotkey(CTRL+T)")
         typed = dict(composed=.6, next="type", history=["hotkey(CTRL+T)"])
         self.assertEqual(self.step(goal, **typed).brief(), "skill(open_app {'name': 'spreadsheet'})")
@@ -526,12 +625,17 @@ class JevOnlyTests(unittest.TestCase):
     def test_jev_sees_which_line_took_the_steps_before_this_one(self):
         self.planner.line, self.planner.since, self.planner.run_id, self.planner.seen = 1, 2, "r", True
         goal, history = "open up youtube\nsearch for horses\nclick the third video", ["skill(wait {'s': 1.0})", "click(471,196)"]
-        self.step(goal, next="fill", text="1", input=.99, history=history + ["click(400,100)"])
+        self.step(goal, next="fill", text="1", input=.99, history=history)
         seen = {c.kwargs["state"]["goal"]: c.kwargs["state"]["executed_steps"]
                 for c in self.planner.jev.evaluate.call_args_list if "next" in c.args[1]}
         self.assertEqual(seen["search for horses"], ["skill(wait {'s': 1.0}) for \"open up youtube\"",
-                                                     "click(471,196) for \"open up youtube\"", "click(400,100)"])
-        self.assertEqual(seen["click the third video"], ["click(400,100) for \"search for horses\""])
+                                                     "click(471,196) for \"open up youtube\""])
+        asked = len(self.planner.jev.evaluate.call_args_list)
+        self.step(goal, next="fill", text="1", input=.99, history=history + ["hotkey(ENTER)"])
+        seen = {c.kwargs["state"]["goal"]: c.kwargs["state"]["executed_steps"]
+                for c in self.planner.jev.evaluate.call_args_list[asked:] if "next" in c.args[1]}
+        self.assertEqual(seen["search for horses"], ["hotkey(ENTER)"])  # once it has its own, those alone
+        self.assertEqual(seen["click the third video"], ["hotkey(ENTER) for \"search for horses\""])
 
     def test_a_line_reached_already_done_is_done(self):
         self.assertEqual(self.step("open up discord", left=.1, next="stuck").type, "done")
@@ -729,9 +833,39 @@ class JevOnlyTests(unittest.TestCase):
         erased = self.plan("delete hello", next="erase", history=["type_text('hello')"])
         self.assertEqual([a.brief() for a in erased], ["hotkey(CTRL+BACKSPACE)"])  # the text last typed
 
+    def test_text_replacing_erased_words_is_typed_at_the_caret(self):
+        goal = "replace with gang"
+        gang = str(spans(goal).index("gang"))
+        typed = self.plan(goal, next="type", text=gang, history=["hotkey(CTRL+BACKSPACE)"])
+        self.assertEqual([a.brief() for a in typed], ["type_text('gang')"])
+        clicked = self.plan(goal, next="type", text=gang, focused=.1, history=["hotkey(CTRL+BACKSPACE)"])
+        self.assertEqual([a.type for a in clicked], ["click", "type_text"])  # no caret to type at: the field first
+
+    def test_each_sentence_of_a_typed_request_is_a_line(self):
+        goal = "type hello world. Delete world, replace with gang. Search up genghis khan"
+        self.assertEqual(self.step(goal, left=.1, history=["type_text('hello world')"]).type, "click")  # line 1 done
+        self.assertEqual(self.planner.current_line, "Delete world, replace with gang.")
+        self.assertEqual(self.planner._lines(self.planner.goal)[2], "Search up genghis khan")
+
+    def test_a_mark_jev_reads_as_an_abbreviation_ends_no_line(self):
+        goal = "type Dr. Smith is here. Go to a new line"
+        evaluate = self.planner.jev.evaluate
+        evaluate.return_value = ({"end0": {"noul": .1}, "end1": {"noul": .9}}, (400, 300), (400, 300))
+        ctx = StepContext(goal, DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1), Mock(), [], 2, 10)
+        self.assertEqual(self.planner._sentences(b"img", ctx), "type Dr. Smith is here.\nGo to a new line")
+        self.assertIn('"type Dr." and the next request start with "Smith is here."', evaluate.call_args.args[1]["end0"]["instructions"])
+        self.planner._sentences(b"img", ctx)
+        self.assertEqual(evaluate.call_count, 1)  # asked once per goal
+
     def test_tabs_and_apps_close_by_keyboard(self):
         self.assertEqual(self.step("make a new tab", next="new_tab").brief(), "hotkey(CTRL+T)")
         self.assertEqual(self.step("close out the tab", next="close_tab", os="macos").brief(), "hotkey(GUI+W)")
+        goal = "close the youtube tab"
+        switch = self.step(goal, next="close_tab", other_tab=.94).brief()
+        self.assertEqual(switch, "click(290,300)")  # behind the tab in front: its tab first, left of its close button
+        self.assertEqual(self.step(goal, left=.17, next="close_tab", history=[switch, "skill(wait {'s': 1.0})"]).brief(),
+                         "hotkey(CTRL+W)")
+        self.assertEqual(self.step(goal, left=.17, history=[switch, "hotkey(CTRL+W)"]).type, "done")
         self.assertEqual(self.step("close discord", next="close_app").brief(), "hotkey(ALT+F4)")
         self.assertEqual(self.step("close discord", next="close_app", os="macos").brief(), "hotkey(GUI+Q)")
 
@@ -756,8 +890,11 @@ class JevOnlyTests(unittest.TestCase):
                          "hotkey(CTRL+W)")  # a key needs nothing drawn
         # after other steps the question isn't asked, and a page still loading is no reason to wait
         evaluate.reset_mock()
-        self.assertEqual(self.step("search for horses", drawing=.9, loading=.9, history=["click(1,1)"]).type, "click")
+        self.assertEqual(self.step("search for horses", drawing=.9, loading=.9, history=["hotkey(ENTER)"]).type, "click")
         self.assertFalse(asked())
+        # but for what a click is still opening
+        self.assertEqual(self.step("search for horses", loading=.9, history=["click(1,1)"]).brief(),
+                         "skill(wait {'s': 1.0})")
 
     def test_a_browser_the_line_opened_on_its_new_tab_page_needs_no_new_tab(self):
         opened = ["skill(open_app {'name': 'chrome'})"]
@@ -784,7 +921,7 @@ class JevOnlyGuardTests(unittest.TestCase):
                    "launcher": {"noul": .1}, "app": BOX, "composed": {"noul": .05}, "irreversible": {"noul": .95},
                    "site": {"noul": .05}, "submit": {"noul": .05}, "browser_named": {"noul": .05},
                    "left": {"noul": .9}, "window": {"noul": .9}, "loading": {"noul": .05}, "focused": {"noul": .95},
-                   "typed": {"noul": .95}, "pending": {"noul": .05}}
+                   "typed": {"noul": .95}, "pending": {"noul": .05}, "other_tab": {"noul": .05}, "clipboard": {"noul": .05}, "after_copy": {"noul": .9}}
         planner.jev.evaluate.return_value = (answers, (400, 300), (400, 300))
         ctx = StepContext("reply saying six and send it", DeviceProfile("linux", Rect(0, 0, 400, 300), "mouse", 1),
                           Mock(), ["type_text('six')"], 2, 10, run_id="r")
