@@ -429,8 +429,10 @@ def reset() -> None:
     shell("kscreen-doctor --dpms on >/dev/null 2>&1")  # an idle laptop turns its display off: every test starts lit
     kwin(close_js())
     time.sleep(1.5)
+    # Killed, not asked: KWrite answers SIGTERM with "save changes?" and stayed open, its unsaved note typed into
+    # by the next run (the note saved twice) and over the next tests. Only apps this run started (--newer).
     shell(f"pkill -f exo-chrome; pkill -f 'profile /tmp/exo-f[f]'; for app in blender okular kate kwrite kcalc kamoso systemsettings dolphin konsole "
-          f"gwenview firefox brave chrome; do pkill --newer {os.getpid()} -x $app; done; {CLEAN_FILES}; sleep 1")
+          f"gwenview firefox brave chrome; do pkill -KILL --newer {os.getpid()} -x $app; done; {CLEAN_FILES}; sleep 1")
 
 
 def speak(agent: QueueAgent, words: str) -> float:
