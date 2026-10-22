@@ -2,7 +2,7 @@
 
 It creates a virtual keyboard and an absolute mouse through /dev/uinput, the same two devices the Pico
 presents (PLAN.md §5.1: absolute 0-32767), and takes screenshots with spectacle. One JSON command per stdin
-line, PLAN.md §5.1 ops plus `grab`; each reply is a JSON line, a grab's PNG follows as that many raw bytes.
+line, PLAN.md §5.1 ops plus `grab`, and `click` takes `hold` (keys pressed through the click; bench only); each reply is a JSON line, a grab's PNG follows as that many raw bytes.
 """
 
 import fcntl
@@ -104,10 +104,15 @@ def handle(cmd: dict) -> None:
     elif op in ("click", "tap"):
         move(cmd["x"], cmd["y"])
         button = BTN[cmd.get("button", "left")]
+        held = [NAMED[k] for k in cmd.get("hold", [])]  # keys held through the click (CTRL+click selects one more)
+        for code in held:
+            emit(KEYBOARD, (EV_KEY, code, 1))
         for _ in range(cmd.get("count", 1)):
             emit(POINTER, (EV_KEY, button, 1))
             emit(POINTER, (EV_KEY, button, 0))
             time.sleep(0.03)
+        for code in reversed(held):
+            emit(KEYBOARD, (EV_KEY, code, 0))
     elif op == "scroll":
         for _ in range(abs(cmd["dy"])):
             emit(POINTER, (EV_REL, REL_WHEEL, -1 if cmd["dy"] > 0 else 1))

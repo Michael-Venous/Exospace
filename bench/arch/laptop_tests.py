@@ -16,6 +16,8 @@ import json
 import os
 import random
 import re
+import shutil
+import sqlite3
 import statistics
 import threading
 import time
@@ -27,6 +29,8 @@ import cv2
 from bench.arch.laptop import LaptopTarget, shell
 from bench.arch.queue_agent import CLICKERS, QueueAgent
 
+CHROME_EPOCH = 11644473600  # seconds from 1601 (Chrome's history clock) to 1970
+FORWARD_BACK = 0x01000000  # a history visit's transition qualifier for back/forward navigation
 OUT = Path("work/arch/laptop")  # --out to keep another machine's runs apart
 SPEECH_S = 0.35  # a word, about 170 words a minute
 QUIET_S = 2.0  # the agent counts as finished with a turn after this long with nothing running or queued
@@ -54,7 +58,7 @@ setsid -f firefox --no-remote --profile /tmp/exo-ff https://www.google.com >/dev
 WINDOWS_JS = """var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
 for (var i = 0; i < ws.length; i++) { var w = ws[i]; if (w.normalWindow || w.dialog)
   print("EXOWIN " + JSON.stringify({id: String(w.internalId), caption: w.caption, cls: w.resourceClass,
-                                   active: w.active})); }"""
+                                   active: w.active, minimized: w.minimized})); }"""
 KEEP: set[str] = set()  # windows open before the run (someone's own session): never closed
 
 
@@ -198,17 +202,32 @@ def _taxes() -> tuple[bool, str]:
 
 
 def _steps(test: Test) -> tuple[bool, str]:
-    """Each spoken step happened, in order, by the active window over the run: Chrome opened, the horse search, a
-    video, back to the search, and Chrome closed (which video is not checked)."""
-    seen = [caption for _, caption in test.data["timeline"]]
-    search = [i for i, c in enumerate(seen) if re.search(r"horse.* - YouTube - Google Chrome", c, re.I)]
-    # a YouTube page after the search that isn't the search (a video page is titled "YouTube" until it loads)
-    video = [i for i, c in enumerate(seen) if c.endswith("YouTube - Google Chrome") and "horse video" not in c.lower()
-             and search and i > search[0]]
-    back = [i for i in search if video and i > video[0]]
-    closed = not any(w["cls"].lower().startswith("google-chrome") for w in windows())
-    steps = {"search": bool(search), "video": bool(video), "back": bool(back), "closed": closed}
-    return all(steps.values()), json.dumps(steps)
+    """Each spoken step happened, in order, by Chrome's own history of this run (exact, where the window list is
+    sampled about once a second): the horse search, then a video, then back to the search (a back/forward visit),
+    and no Chrome window left (which video is not checked)."""
+    deadline = time.monotonic() + 15  # Chrome writes its history in batches, seconds after the visit
+    while True:
+        visits = chrome_visits()
+        search = [t for t, url, _ in visits if "search_query=horse" in url]
+        video = [t for t, url, _ in visits if "/watch?" in url and search and t > search[0]]
+        back = [t for t, url, back in visits if back and "search_query=horse" in url and video and t > video[0]]
+        if back or time.monotonic() > deadline:
+            break
+        time.sleep(1)
+    left = [w["caption"] for w in windows() if w["cls"].lower().startswith("google-chrome") and not w["minimized"]]
+    steps = {"search": bool(search), "video": bool(video), "back": bool(back), "closed": not left}
+    return all(steps.values()), json.dumps({**steps, "chrome windows left": left})
+
+
+def chrome_visits() -> list[tuple[float, str, bool]]:
+    """The default Chrome profile's page visits since the test started: (time, url, by back/forward)."""
+    since = (os.path.getmtime("/tmp/exo_test_start") + CHROME_EPOCH) * 1e6
+    copy = Path("/tmp/exo_history.db")
+    shutil.copy(Path.home() / ".config/google-chrome/Default/History", copy)  # Chrome keeps it locked
+    with sqlite3.connect(copy) as db:
+        rows = db.execute("SELECT v.visit_time, u.url, v.transition FROM visits v JOIN urls u ON u.id = v.url "
+                          "WHERE v.visit_time > ? ORDER BY v.visit_time", (since,)).fetchall()
+    return [(t, url, bool(transition & FORWARD_BACK)) for t, url, transition in rows]
 
 
 def _groceries() -> tuple[bool, str]:
@@ -381,7 +400,6 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
                 break
             if test.name.startswith("blender"):
                 test.data.setdefault("widths", []).append(footprint([o for o in blender_scene() if o["type"] == "MESH"]))
-        test.data["timeline"] = timeline
         passed, detail = test.check(test)
         passed = passed and not any(t["stalled"] for t in turns)
     finally:

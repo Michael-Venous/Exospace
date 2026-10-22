@@ -26,11 +26,12 @@ import cv2
 import httpx
 
 from bench.arch.pointer import Pointer
-from brain.agent.jev import JevVision
+from brain.agent.jev import JevVision, probability
 from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.triage import GATE, refine
 from brain.cancel import CancelToken
 from brain.controller import Controller
+from brain.hid import HID_MAX
 from brain.imaging import shrink
 from brain.types import Action, DeviceProfile
 
@@ -42,6 +43,7 @@ SEE_SIDE = int(os.environ.get("EXO_SEE_SIDE", "1280"))  # the longest side of th
 # CTRL+L then typing 0.06 s later lost the first letters ("youtube.com" became "tube.com") while Chrome focused its
 # address bar: no input follows another sooner than this (input pacing, not a wait for the screen).
 INPUT_GAP_S = float(os.environ.get("EXO_INPUT_GAP_S", "0.08"))
+UNTIL_S = 4.0  # longest an "until" waits for what the model expects (pages appeared within 2.7 s on the laptop)
 SLEEP_S = 8.0  # no speech and no action for this long: the model stops being called
 READ_S = 3.0  # longest wait for the model's next streamed bytes, its first token included
 LOG_TAIL = 20  # executor log entries each call sees
@@ -62,19 +64,29 @@ its keyboard and mouse. The user's words arrive while they speak.
 
 Each time you are called you get the screen as it is now and the log of the actions you took and their
 results. First check on the screen whether your last actions did what you meant. Then reply with the next
-actions, ONE JSON object per line, nothing else: as many as you can take without seeing the screen in between
-(CTRL+L, typing an address and ENTER are one reply), stopping at the first whose result you need to see. If the
-screen is still loading or changing, reply with nothing and you will see it again.
+actions, ONE JSON object per line, nothing else. Every call costs the user a second, so chain all the actions
+you can take without seeing the screen again: launching an app is one reply (GUI, its name, ENTER); so is going
+to an address or searching (CTRL+L or a click on a visible search box, the words, ENTER); so are shortcuts in a
+row. End the reply at the first action whose result you must see first: a click on something not on the screen
+yet, or a choice that depends on what loads. If the screen is still loading or changing, reply with nothing and
+you will see it again.
   {"key": ["CTRL","L"]}             a key or combination (CTRL SHIFT ALT GUI ENTER ESC TAB BACKSPACE DELETE UP
                                     DOWN LEFT RIGHT HOME END PAGEUP PAGEDOWN F1-F12, letters, digits)
   {"type": "lofi hip hop"}          type these words into whatever has focus
   {"click": "Reply"}                click a visible control, named by its exact visible text when it has any
                                     ("Reply", "119.93 Hz"); an icon by its look and place ("the gear icon at the
-                                    top right"); also "double_click", "right_click"
+                                    top right"); also "double_click", "right_click"; add "hold": ["CTRL"] to
+                                    click while holding keys (CTRL or SHIFT to select several files or items)
   {"drag": ["the file report.pdf", "the Documents folder in the sidebar"]}   press on one spot, release on another
   {"scroll": 3, "at": "the list of results"}   mouse-wheel notches, positive down ("at" optional)
+  {"until": "a video player with the title above its comments"}   end a reply with this when a page, an app or a
+                                    dialog has to load: you are called again as soon as the screen shows it. Menus,
+                                    the launcher, dropdowns, typed text and closing something are instant: no until
+                                    (launching an app stays one reply: GUI, its name, ENTER, until the app)
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
                                     proves it; it is checked on the screen before it counts
+Describe what until and done expect as it looks on the screen ("only the wallpaper, no windows"), not by a name
+("the desktop"): a fast vision check compares it with the screen.
   {"say": "It's running at 120 Hz."} / {"ask": "Which wallpaper would you like?"}   talk to the user
 A confirmed done, or a reply that ends with say or ask, ends your turn: the user speaks next.
 Rules:
@@ -82,24 +94,24 @@ Rules:
 - While you work, reply with actions only: never announce what you are about to do. Talk when you have the answer
   or the result, or to ask.
 - If the log shows an action failed, or the screen shows it changed nothing, don't repeat it: try another way.
+- Pages, apps and dialogs take a moment to appear: end such a reply with until. If you only just asked for one
+  (seconds_since_last_action) and the screen doesn't show it yet, reply with nothing: never ask for it again while
+  it may still be coming.
 - State only what the screen shows; never guess a result.
-- Use keyboard shortcuts where they are sure. No key can be held during a click or drag."""
+- Use keyboard shortcuts where they are sure.
+- Words typed in a browser's address bar search the web, not the site that is open: to search a site, use its
+  own search box."""
 
 
 # Planning ahead (`plan="ahead"`): steps on screens not drawn yet are queued too, and a click waits for its target
 # to appear, so each step waits on the computer, not on the model.
 APPEAR_S = 5.0  # how long a click waits for its target to appear before it fails
-PROMPT_AHEAD = PROMPT.replace(
-    """Then reply with the next
-actions, ONE JSON object per line, nothing else: as many as you can take without seeing the screen in between
-(CTRL+L, typing an address and ENTER are one reply), stopping at the first whose result you need to see. If the
-screen is still loading or changing, reply with nothing and you will see it again.""",
-    """Then reply with the next
-actions, ONE JSON object per line, nothing else. Plan ahead: queue every step you can already foresee, also on
-screens that will only appear after earlier steps run; a click waits for its target to appear. Stop at the first
-step that depends on something you can't foresee (which result to pick, what a page says): you are called again
-when the queue runs out or a step fails. If the screen is still loading or changing, reply with nothing and you
-will see it again.""")
+AHEAD = """End the reply at the first action whose result you must see first: a click on something not on the screen
+yet, or a choice that depends on what loads."""
+assert AHEAD in PROMPT
+PROMPT_AHEAD = PROMPT.replace(AHEAD, """Plan ahead: also queue the steps on screens that will only appear after earlier ones
+run; a click waits for its target to appear. End the reply at the first step that depends on something you can't
+foresee (which result to pick, what a page says): you are called again when the queue runs out or a step fails.""")
 
 
 @dataclass
@@ -158,7 +170,7 @@ class Executor(threading.Thread):
             if kind == "key":
                 keys = value if isinstance(value, list) else [value]
                 if {str(k).upper() for k in keys} <= MODIFIERS:
-                    return "error", "a modifier pressed alone does nothing: no key can be held down"
+                    return "error", "a modifier pressed alone does nothing: to hold it, click with \"hold\""
                 self._input(lambda: self.controller.hotkey(keys))
             elif kind == "type":
                 self._input(lambda: self.controller.type_text(str(value)))
@@ -166,7 +178,16 @@ class Executor(threading.Thread):
                 point = self._find(str(value))
                 if point is None:
                     return "not_found", f"{value!r} wasn't found on the screen"
-                self._input(lambda: self.controller.execute(Action(kind, x=point[0], y=point[1]), self.profile))
+                hold = [str(k).upper() for k in action.get("hold") or []]
+                if hold:  # the bench HID's click takes the keys to hold (not yet in PLAN.md §5.1's UART contract)
+                    if not set(hold) <= MODIFIERS:
+                        return "error", f"only CTRL, SHIFT or ALT can be held, not {hold}"
+                    x, y = round(point[0] * HID_MAX), round(point[1] * HID_MAX)
+                    self._input(lambda: self.controller.hid.send(
+                        {"op": "click", "x": x, "y": y, "button": "right" if kind == "right_click" else "left",
+                         "count": 2 if kind == "double_click" else 1, "hold": hold}))
+                else:
+                    self._input(lambda: self.controller.execute(Action(kind, x=point[0], y=point[1]), self.profile))
             elif kind == "drag":
                 a, b = self._find(str(value[0])), self._find(str(value[1]))
                 if a is None or b is None:
@@ -181,6 +202,8 @@ class Executor(threading.Thread):
                 self._input(lambda: self.controller.execute(Action("scroll", dy=int(value)), self.profile))
             elif kind == "done":
                 return self._verify(str(value))
+            elif kind == "until":
+                return self._until(str(value))
             else:
                 return "error", f"unknown action {kind!r}"
             return "done", ""
@@ -197,11 +220,27 @@ class Executor(threading.Thread):
         self.inputs.append(time.monotonic())
         send()
 
+    def _until(self, expected: str) -> tuple[str, str]:
+        """Wait on the computer, not the model: Jev looks at each fresh screen until it shows what the model expects
+        (a page, an app, a dialog), up to UNTIL_S."""
+        started = time.monotonic()
+        while not self.closed:
+            answers, _, _ = self.jev.evaluate(self._jpeg(), {"shown": {"type": "noul", "instructions":
+                                              f"Does `screen` show this: {expected}?"}}, label="until")
+            waited = round(time.monotonic() - started, 1)
+            if probability(answers["shown"].get("noul")) >= GATE:
+                return "done", f"shown after {waited} s"
+            if waited >= UNTIL_S:
+                return "not_shown", f"not shown after {waited} s"
+        return "error", "stopped"
+
     def _verify(self, claim: str) -> tuple[str, str]:
         """The request counts as done only if Jev's completion check sees it done on the screen."""
         with self.cond:
             goal = self.shared.goal
-            steps = [json.dumps(r.action) for r in self.shared.log[self.shared.turn_start:] if r.result == "done"]
+            # what ran, and what each until saw appear: closing an app leaves nothing on screen of the earlier steps
+            steps = [json.dumps(r.action) + (f" ({r.detail})" if r.detail else "")
+                     for r in self.shared.log[self.shared.turn_start:] if r.result == "done"]
         score = self.jev.completion(self._jpeg(), goal, steps, evidence=claim)
         if score >= COMPLETION_GATE:
             return "verified", f"Jev sees the request done ({score:.2f})"
@@ -343,6 +382,8 @@ class Brain(threading.Thread):
                 "conversation_before": self.conversation[-12:],
                 "log": [{"t": r.t, "action": r.action, "result": r.result, "detail": r.detail}
                         for r in self.shared.log[-LOG_TAIL:]]}
+            if self.shared.log:  # the screen is this old relative to the last action: loading takes a moment
+                context["seconds_since_last_action"] = round(time.monotonic() - self.started - self.shared.log[-1].t, 1)
         # The request so far as a chat: each earlier call's situation and the model's own reply (text only), so it
         # remembers what it meant to do and already checked; the screenshot rides on this call alone.
         history = []
