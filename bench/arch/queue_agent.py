@@ -92,7 +92,7 @@ you will see it again.
   {"until": "the Bluetooth settings page"}   wait until the screen shows it, when a page, an app or a dialog
                                     has to load. The actions after it in the same reply run as soon as it shows, so
                                     keep going when you know the next steps (launching an app is one reply: GUI,
-                                    its name, ENTER, until the app; then what you do in it). End the reply at an
+                                    its name, ENTER, until the app, then maximize it; then what you do in it). End the reply at an
                                     until only when the next step depends on what will show. Typed text and
                                     closing something are instant: no until.
   {"done": "YouTube's home page is open in Firefox"}   the request is done: say what the screen shows that
@@ -113,8 +113,10 @@ Rules:
 - If the log shows an action failed, or the screen shows it changed nothing, don't repeat it: try another way.
 - When steps keep not showing their result, the screen may be too small to show it: make the window bigger or zoom
   in to check before doing them again.
+- Maximize an app you open, unless its window already fills the screen (maximizing again restores it). Use the
+  device's shortcut for it, not a title-bar button: title-bar buttons differ between desktops.
 - A click that changed nothing probably missed: maximize the window, or click the target by other text it shows,
-  before asking the user. In a small window, maximize it before working in small text (a list, a menu).
+  before asking the user.
 - Pages, apps and dialogs take a moment to appear: end such a reply with until. If you only just asked for one
   (seconds_since_last_action) and the screen doesn't show it yet, reply with nothing: never ask for it again while
   it may still be coming.
