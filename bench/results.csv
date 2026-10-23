@@ -2262,3 +2262,17 @@ bae62942,direct,linux,interactive,total:1,,,,,,0,3.003
 20261023-reliability-compositions,queue-candidate-reliability-compositions,laptop-kde-uinput-spectacle,tab-followup/round-0,summary,9.2,,,,,0,32.2
 20261023-reliability-compositions,queue-candidate-reliability-compositions-first-input,laptop-kde-uinput-spectacle,tab-followup/round-0/turn-1/first-input-after-speech,probe,,,,,,,1.47
 20261023-reliability-compositions,queue-candidate-reliability-compositions-first-input,laptop-kde-uinput-spectacle,tab-followup/round-0/turn-2/first-input-after-speech,probe,,,,,,,0.8
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-5-terminal-not-success-score,observation,,,,,,,5.54
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-11-terminal-not-success-score,observation,,,,,,,8.7
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-12-terminal-not-success-score,observation,,,,,,,14.71
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-19-terminal-not-success-score,observation,,,,,,,7.52
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-21-terminal-not-success-score,observation,,,,,,,37.42
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-22-terminal-not-success-score,observation,,,,,,,35.98
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-24-terminal-not-success-score,observation,,,,,,,7.26
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-30-terminal-not-success-score,observation,,,,,,,3.45
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-31-terminal-not-success-score,observation,,,,,,,3.45
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-35-terminal-not-success-score,observation,,,,,,,8.13
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-36-terminal-not-success-score,observation,,,,,,,8.89
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-37-terminal-not-success-score,observation,,,,,,,66.56
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-38-terminal-not-success-score,observation,,,,,,,7.36
+20261023-manual-stress,queue-candidate-manual-terminal,laptop-kde-uinput-spectacle,turn-41-terminal-not-success-score,observation,,,,,,,12.22

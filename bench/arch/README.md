@@ -650,6 +650,10 @@ input, physical HID or capture-card latency yet.
 
 ### Laptop reliability continuation (2026-10-23, delivered for manual testing)
 
+**Manual stress follow-up: failed practical validation.** The real voice session below
+exposed repeated corrections, false completion and long loops. This candidate is not
+established as a material upgrade over the previous version.
+
 The candidate passed **32/32 final regression runs**, plus **6/6 output-guard checks**,
 but only **2/4 fresh post-freeze compositions**. One fresh task left an extra
 `Walk Notes.txt.txt` file and was falsely verified. Another misread a browser port
@@ -787,3 +791,70 @@ Use `bench.arch.laptop_compositions --candidate --out work/arch/new-compositions
 for the four fresh compositions, or `--variants baseline candidate` on the main
 suite for an interleaved comparison. Do not run a benchmark while using voice mode;
 both control the laptop's keyboard/mouse.
+
+**Manual voice stress review (2026-10-23)**
+
+Read-only review of `~/exo-bench/talk-logs/20261023-024555` and
+`candidate-20261023-024553.txt`; snapshots and SHA256 evidence remain ignored in
+`work/arch/user-stress-20261023/`. Source actor hashes match the measured candidate.
+No live input or runtime change was performed during review. Structured, sanitized
+findings: [voice stress review](results/laptop_voice_stress_20261023.json).
+
+The observed session spans 817.6 s from first released utterance to the final
+executor record, with 41 nonempty utterances, 335 executor records and 372 planner
+generation records (167 cancelled). The planner's non-cancelled first-token median
+was 0.59 s. **129 completed visual calls alone took 205.4 s**: 102 waits at a
+1.43 s median and 27 completion checks at 1.92 s. These sums exclude screenshots
+and failed calls and can overlap speech/planning; they are not a wall-time breakdown.
+
+Concrete failures, timestamps relative to agent start:
+
+- Account selection repeatedly took wrong-account/sign-in detours; the user said
+  the correct inbox had already been reached and had to steer it back (62–149 s).
+- The agent reported and visually verified Settings closed at 345.82 s after a
+  close check had failed at 311.40 s and Blender was maximized. The user subsequently
+  reported Settings still open at 441.20 s. A covered window is not a closed window.
+- Four scene-clearing build commands were typed amid Blender console focus/context
+  errors (323–338 s); later `NUMPAD1` was unsupported. Build and view-centering
+  terminal times after correction were **37.42 s** and **35.98 s**. There is no
+  independent manual scene oracle, so these are terminal times, not scored passes.
+- Spoken “main and the character dash” repeatedly became `main dash` or `main-dash`.
+  Honest reports about missing autocomplete were rejected by the success gate,
+  causing more attempts instead of returning useful failure information (478–577 s).
+- The 25% brightness attempt ended in a loop-stop after **66.56 s**; the last visual
+  readings were 29% then 9%. This control failure precedes the service errors.
+- From 763.12 s onward, **19 HTTP 402 executor errors** mentioned a requested
+  131,072-token allowance. Pointer requests omit `max_tokens`; the checker is capped
+  at 240. This does not establish that the account balance was zero. Permanent
+  rejections were retried by pointing hedges and by the planner as if another click
+  might help. Do not attribute the earlier control failures to this late service issue.
+
+Source review also found that partial transcript revisions cancel a model stream
+but retain already queued actions for that utterance. Request fencing starts with
+the first words of a new request and does not fence each revised plan. The loop-stop
+clears pending actions but does not invalidate an already-running attempt; one
+failed grounding finished after its stop announcement. This run does not prove a
+successful HID mutation after stop, but the input-boundary barrier is missing.
+
+Manual `first_action` telemetry uses completed executor records, including checks
+and stale work, instead of HID dispatch timestamps. Timing windows lack upper
+bounds/request IDs. Fourteen terminal timing rows include three loop failures;
+many other commands were interrupted. Neither those rows nor fourteen verified
+records form a valid task success rate. Fourteen terminal observations are recorded
+in `bench/results.csv` with the success field blank.
+
+The scripted suite resets apps between cases, waits for quiet before its few
+follow-ups and simulates clean transcripts. It missed correction-heavy work,
+ambiguous spoken symbols/account identities, covered windows, analog sliders,
+truthful failure reporting and permanent API errors. The 32/32 regression result
+remains accurate for that suite; it is inadequate evidence of a real-use upgrade.
+A matched baseline stress run has not been performed, so no comparative percentage
+is claimed.
+
+Next implementation priorities: distinguish truthful reports/questions from goal
+completion; invalidate every queued/in-flight plan on correction/stop; bound retries
+by observed progress and classify permanent errors; use evidence appropriate to the
+claim; cap every model request; repair request-level timing. Then compare both
+versions on the same disposable multi-turn stress episodes, measuring total latency,
+user interventions, repeated effects and actual outcomes. More prompt rules or
+additional generic visual checks alone do not address these failures.

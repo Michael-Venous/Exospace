@@ -1,0 +1,184 @@
+{
+  "date": "2026-10-23",
+  "review_type": "Read-only post-run log/source review. No live inputs or code changes.",
+  "source_session": "/home/mike/exo-bench/talk-logs/20261023-024555",
+  "source_console": "/home/mike/exo-bench/talk-logs/candidate-20261023-024553.txt",
+  "snapshot": "work/arch/user-stress-20261023 (ignored; contains private transcripts/actions, not committed)",
+  "source_sha256": {
+    "calls.json": "7ed0ce7b2275400b2812d20413a304508a7b20c7b5a890ff92ac9949853047f1",
+    "log.json": "8355f2893f5c5965e08b52a8046e2fbe67d73cddffab2c001d5ca0e5613f2cf7",
+    "trace.json": "301e3607fd25cb98409707ef47a78cbe568e0a79a964b9e147b7da8a66945611",
+    "console.txt": "ee762d308e0ca89c473c28383d60fd28fe04fc0d908b0ccb774f368d00452f17"
+  },
+  "actor_sha256": {
+    "bench/arch/queue_agent.py": "46e78750bafc4c0db4ca9bb1e87174b9c434b9e7ee1bb0b16968ae62f3112f73",
+    "bench/arch/reliable_queue.py": "f03e985ac81d140806b161024f0262dd36513486b7a75fd7af1786fbe481cb35",
+    "bench/arch/pointer.py": "968755015a3ddd9c8e281f09b50346c603cfa4a05512cb79c664a20d916636be"
+  },
+  "assessment": "Not demonstrated as a material upgrade for real voice use. Scripted regression pass rate does not generalize to correction-heavy, cluttered multi-application sessions. No matched baseline stress run was performed; no causal success-rate comparison is claimed.",
+  "observations": {
+    "nonempty_utterances": 41,
+    "empty_utterances": 2,
+    "observed_span_s": 817.6,
+    "executor_records": 335,
+    "executor_result_counts": {
+      "done": 239,
+      "error": 30,
+      "verified": 14,
+      "superseded": 17,
+      "not_found": 6,
+      "not_shown": 22,
+      "not_verified": 7
+    },
+    "planner_generation_records": 372,
+    "cancelled_planner_records": 167,
+    "planner_non_cancelled_ttft_p50_s": 0.59,
+    "checks": {
+      "until-check": {
+        "completed_calls": 102,
+        "duration_sum_s": 153.21,
+        "duration_p50_s": 1.4343869069998618,
+        "duration_max_s": 2.7811347599999863,
+        "status_counts": {
+          "complete": 45,
+          "incomplete": 56,
+          "unknown": 1
+        }
+      },
+      "completion-check": {
+        "completed_calls": 27,
+        "duration_sum_s": 52.225,
+        "duration_p50_s": 1.9154315499981749,
+        "duration_max_s": 2.4340572910004994,
+        "status_counts": {
+          "complete": 19,
+          "incomplete": 8
+        }
+      }
+    },
+    "http402_executor_errors": 19,
+    "first_http402_t": 763.12,
+    "loop_stop_announcements": 3,
+    "timing_rows": 41,
+    "timing_rows_with_terminal_time": 14
+  },
+  "findings": [
+    {
+      "issue": "Account and correction semantics",
+      "evidence_t": [
+        62.15,
+        75.83,
+        84.5,
+        93.5,
+        105.52,
+        133.99,
+        139.93
+      ],
+      "observed": "Repeated wrong account/sign-in detours; user corrected identity and said the desired inbox had already been reached. Exact user identifiers are deliberately omitted."
+    },
+    {
+      "issue": "Partial transcript revisions do not retract already queued plans",
+      "source": "bench/arch/queue_agent.py Brain.hear/Brain._take",
+      "observed": "hear increments request and clears queue only when a new request first receives words. Later partial transcript revisions cancel the model stream but retain previously queued actions for the same utterance. Reports wait for final speech, but mutations can commit to an interpretation the user is still revising. This source-level gap was not exercised by the reset-per-case suite."
+    },
+    {
+      "issue": "Unsupported global completion claim",
+      "evidence_t": [
+        308.48,
+        311.4,
+        345.82,
+        441.2
+      ],
+      "observed": "Closing Settings check returned not_shown; agent maximized Blender and later reported Settings closed, visually verified. User subsequently reported Settings still open. Treat as a user-confirmed contradiction, not an independently replayed window oracle."
+    },
+    {
+      "issue": "Success gate blocks accurate failure reports",
+      "evidence_t": [
+        512.25,
+        526.25,
+        535.26,
+        539.15,
+        569.95,
+        572.72
+      ],
+      "observed": "Reports about missing autocomplete/failed navigation rejected because task remained incomplete, driving more attempts. The checker sometimes invents navigation requirements for a typing-only request."
+    },
+    {
+      "issue": "Spoken symbol interpretation and duplicate effects",
+      "evidence_t": [
+        478.26,
+        506.26,
+        519.93,
+        563.11,
+        576.89
+      ],
+      "observed": "Phrase main and the character dash repeatedly became main dash or main-dash instead of main-. Partial utterance updates also led to repeated launcher typing. Interaction reached the intended local application only after additional user guidance."
+    },
+    {
+      "issue": "Wrong editor context and repeated creation",
+      "evidence_t": [
+        323.08,
+        327.97,
+        332.73,
+        335.2,
+        337.91,
+        379.43
+      ],
+      "observed": "Scene-clearing build commands typed four times amid console focus/context problems, tried an unestablished /tmp/house.py file, and emitted unsupported NUMPAD1. No independent scene-outcome oracle in this manual run."
+    },
+    {
+      "issue": "Analog slider failure before service errors",
+      "evidence_t": [
+        702.48,
+        717.93,
+        722.39,
+        755.74,
+        760.57
+      ],
+      "observed": "25% brightness requested; last checker observations show 29% then 9%. Wrong result and repeated adjustments predate HTTP 402. Terminal timing 66.56s marks loop-stop, not success."
+    },
+    {
+      "issue": "Permanent service refusal retried as interaction failure",
+      "evidence_t": [
+        763.12,
+        785.07,
+        798.54,
+        803.49,
+        812.64,
+        823.91
+      ],
+      "observed": "19 executor errors HTTP 402; response names a 131072-token allowance request. Pointer client leaves max_tokens unset; checker is capped at240. Does not prove current balance is zero. Pointer hedges/retries permanent rejection, planner then repeats clicks."
+    },
+    {
+      "issue": "Stop report is not a full executor barrier",
+      "evidence_t": [
+        769.04,
+        769.9
+      ],
+      "observed": "Loop-stop was announced around769.04; an already-running grounding attempt logged failure at769.9. Source clears pending queue but does not invalidate an in-flight request at the input boundary. This run does not prove a successful HID mutation occurred after stop."
+    },
+    {
+      "issue": "Manual telemetry cannot establish task success or exact input latency",
+      "observed": "talk.py first_action uses completed executor records, including checks and stale work, rather than HID dispatch timestamps. Timing windows lack upper bounds/request IDs. Fourteen terminal timing rows include three loop failures, and many turns were interrupted. No valid overall success rate or manual first-input median is inferred."
+    }
+  ],
+  "selected_terminal_times_s": {
+    "build_house_after_correction": 37.42,
+    "center_house": 35.98,
+    "brightness_25_loop_failure": 66.56
+  },
+  "next_work_in_order": [
+    "Separate truthful user reports/questions from claims of goal completion; return status incomplete/blocked without forcing another mutation.",
+    "Carry request/plan generation through every action, bound repeats by observed progress, and invalidate in-flight mutation authority on correction or stop.",
+    "Use evidence appropriate to each claim; a covered window is not a closed window. Support unreadable/unsupported evidence without inventing success.",
+    "Bound token budgets on every API path, classify permanent errors, and stop/reveal service refusal instead of clicking again.",
+    "Fix measurement: per-request IDs; actual HID start times; capture, model, grounding, checking, speech end and terminal reason spans.",
+    "Replay the multi-turn stress episodes in disposable contexts with clutter, unfinished work and corrections; compare baseline/candidate under the same conditions and score success, latency, interventions and duplicate effects. No more claim of improvement from first-input medians."
+  ],
+  "limitations": [
+    "User corrections and checker observations corroborate outcomes but are not independent filesystem/window/scene oracles.",
+    "Completed check duration sums exclude screenshots, failed calls and retries and may overlap other work; not a full wall-time decomposition.",
+    "Service errors affected the end of the run; preceding semantic/control failures stand independently.",
+    "No new live test, message, purchase or account change was performed during this review."
+  ]
+}

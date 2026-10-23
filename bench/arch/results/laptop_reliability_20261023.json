@@ -6067,5 +6067,9 @@
     "false_verified": 1,
     "failed_but_finished": 2,
     "errors": 21
+  },
+  "manual_validation_followup": {
+    "report": "laptop_voice_stress_20261023.json",
+    "assessment": "User stress run failed practical validation: no demonstrated material upgrade over previous version. Narrow regression pass rates do not establish success for correction-heavy live voice use. No matched baseline stress run was performed."
   }
 }
