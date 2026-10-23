@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 from dataclasses import asdict, dataclass, field
+from collections.abc import Callable
 from pathlib import Path
 
 import cv2
@@ -80,7 +81,8 @@ LOOK_BACK = ("cmp -s ~/.config/kdedefaults/package /tmp/exo_look/kdedefaults/pac
 WINDOWS_JS = """var ws = workspace.windowList ? workspace.windowList() : workspace.clientList();
 for (var i = 0; i < ws.length; i++) { var w = ws[i]; if (w.normalWindow || w.dialog)
   print("EXOWIN " + JSON.stringify({id: String(w.internalId), caption: w.caption, cls: w.resourceClass,
-                                   active: w.active, minimized: w.minimized})); }"""
+                                   active: w.active, minimized: w.minimized})); }
+print("EXOWIN " + JSON.stringify({scan_complete: true}));"""
 KEEP: set[str] = set()  # windows open before the run (someone's own session): never closed
 
 
@@ -126,18 +128,23 @@ BLENDER_STARTUP = "~/.config/blender/5.2/scripts/startup/exo_oracle.py"
 def kwin(js: str) -> str:
     """Run a KWin script; its prints come back through the journal, tagged EXOWIN<n> for this run only."""
     tag = f"EXOWIN{random.randrange(10**9)} "
-    return shell(f"""cat > /tmp/exo_kwin.js <<'JS'
+    script = f"/tmp/exo_kwin_{tag.strip()}.js"  # the watcher and an oracle must not overwrite each other
+    return shell(f"""cat > {script} <<'JS'
 {js.replace("EXOWIN ", tag)}
 JS
-name=exo_$RANDOM; id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript /tmp/exo_kwin.js $name)
+name=exo_{tag.strip()}; id=$(qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.loadScript {script} $name)
 qdbus6 org.kde.KWin /Scripting/Script$id org.kde.kwin.Script.run >/dev/null; sleep 0.6
 journalctl --user -b --since -10s -o cat | grep '{tag.strip()} '
-qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript $name >/dev/null""").replace(tag, "EXOWIN ")
+qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript $name >/dev/null
+rm -f {script}""").replace(tag, "EXOWIN ")
 
 
 def windows() -> list[dict]:
-    seen = [json.loads(line.split("EXOWIN ", 1)[1]) for line in kwin(WINDOWS_JS).splitlines() if "EXOWIN " in line]
-    return list({(w["caption"], w["cls"]): w for w in seen}.values())
+    for _ in range(2):
+        seen = [json.loads(line.split("EXOWIN ", 1)[1]) for line in kwin(WINDOWS_JS).splitlines() if "EXOWIN " in line]
+        if any(w.get('scan_complete') for w in seen):
+            return list({w['id']: w for w in seen if not w.get('scan_complete')}.values())
+    raise RuntimeError('KWin window scan did not complete; empty output is not evidence of closed apps')
 
 
 def active_caption() -> str:
@@ -193,7 +200,7 @@ class Test:
     turns: list[str]
     setup: str  # bash, before the agent starts
     check: object  # () -> (passed, detail)
-    cleanup: str = ""
+    cleanup: str | Callable[[], None] = ""
     turn_s: float = 90.0  # how long a turn may run
     suite: str = "open"  # "steps": spoken step by step; "open": the model works out the steps
     data: dict = field(default_factory=dict)
@@ -294,9 +301,12 @@ def _autolock_off() -> tuple[bool, str]:
 
 
 def _camera(test: Test) -> tuple[bool, str]:
-    shots = shell("find ~/Pictures -maxdepth 1 -newer /tmp/exo_test_start -name '*.jpg'").split()
-    open_ = [w["caption"] for w in windows() if "kamoso" in w["cls"].lower() and not w["minimized"]]
-    return bool(shots) and not open_, json.dumps({"new pictures": shots, "camera windows left": open_})
+    since = Path('/tmp/exo_test_start').stat().st_mtime
+    shots = sorted(p for p in (Path.home()/'Pictures').glob('*.jpg') if p.stat().st_mtime > since)
+    valid = all(p.stat().st_size > 1024 and p.read_bytes()[:2] == b'\xff\xd8' for p in shots)
+    open_ = [w["caption"] for w in windows() if "kamoso" in w["cls"].lower()]
+    return len(shots) == 1 and valid and not open_, json.dumps(
+        {"new pictures": [str(p) for p in shots], "valid_jpeg": valid, "camera windows left": open_})
 
 
 def _projects(test: Test) -> tuple[bool, str]:
@@ -312,13 +322,20 @@ def _calc(test: Test) -> tuple[bool, str]:
 
 
 def _meeting(test: Test) -> tuple[bool, str]:
-    out = shell("cat ~/Desktop/meeting* 2>/dev/null")
-    return "meeting at three" in out.lower(), out[:120]
+    return _saved_note("meeting", "meeting at three tomorrow")
 
 
 def _groceries() -> tuple[bool, str]:
-    out = shell("ls ~/Desktop; cat ~/Desktop/groceries* 2>/dev/null")
-    return "groceries" in out and "milk" in out.lower() and "egg" in out.lower(), out.replace("\n", " | ")
+    return _saved_note("groceries", "buy milk and eggs")
+
+
+def _saved_note(stem: str, text: str) -> tuple[bool, str]:
+    """A known test note, once, under its requested name; substring matches hid duplicate paragraphs."""
+    files = [p for p in (Path.home() / "Desktop").glob(stem + "*") if p.is_file()]
+    contents = {p.name: p.read_text(errors="replace") for p in files}
+    ok = (len(files) == 1 and files[0].name in (stem, stem + ".txt")
+          and contents[files[0].name].split() == text.split())
+    return ok, json.dumps(contents)
 
 
 def _firefox_homepage(test: Test) -> tuple[bool, str]:
@@ -429,10 +446,30 @@ def reset() -> None:
     shell("kscreen-doctor --dpms on >/dev/null 2>&1")  # an idle laptop turns its display off: every test starts lit
     kwin(close_js())
     time.sleep(1.5)
-    # Killed, not asked: KWrite answers SIGTERM with "save changes?" and stayed open, its unsaved note typed into
-    # by the next run (the note saved twice) and over the next tests. Only apps this run started (--newer).
-    shell(f"pkill -f exo-chrome; pkill -f 'profile /tmp/exo-f[f]'; for app in blender okular kate kwrite kcalc kamoso systemsettings dolphin konsole "
-          f"gwenview firefox brave chrome; do pkill -KILL --newer {os.getpid()} -x $app; done; {CLEAN_FILES}; sleep 1")
+    # KWrite can answer close/SIGTERM with a save prompt. procps has no `pkill --newer PID`;
+    # compare kernel process start times instead, keeping every process older than this harness.
+    kill_started_apps()
+    shell(f"pkill -f exo-chrome; pkill -f 'profile /tmp/exo-f[f]'; {CLEAN_FILES}; sleep 1")
+
+
+def process_start(pid: int) -> int:
+    """Kernel start tick; splitting after the last ')' handles spaces/parentheses in comm."""
+    return int((Path('/proc') / str(pid) / 'stat').read_text().rsplit(') ', 1)[1].split()[19])
+
+
+def kill_started_apps() -> None:
+    started = process_start(os.getpid())
+    apps = {'blender', 'okular', 'kate', 'kwrite', 'kcalc', 'kamoso', 'systemsettings',
+            'dolphin', 'konsole', 'gwenview', 'firefox', 'brave', 'chrome'}
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            if (entry.stat().st_uid == os.getuid() and (entry/'comm').read_text().strip() in apps
+                    and process_start(int(entry.name)) > started):
+                os.kill(int(entry.name), signal.SIGKILL)
+        except (FileNotFoundError, ProcessLookupError, PermissionError):
+            pass  # a process can exit between enumeration and the signal
 
 
 def speak(agent: QueueAgent, words: str) -> float:
@@ -481,7 +518,7 @@ def wait_quiet(agent: QueueAgent, limit_s: float) -> tuple[float, str]:
 
 
 def run(test: Test, index: int, repeat: int, model: str, effort: str, target: LaptopTarget, label: str,
-        clicker: str, plan: str, out: Path) -> dict:
+        clicker: str, plan: str, out: Path, configure: Callable[[QueueAgent], None] | None = None) -> dict:
     folder = out / f"{label}-{index}-{repeat}"
     folder.mkdir(parents=True, exist_ok=True)
     reset()
@@ -489,6 +526,8 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
     shell(f"touch /tmp/exo_test_start; {test.setup}", timeout=60)
     grabs_before = len(target.grabs)
     agent = QueueAgent(target, model, effort, os.environ["TYPESAFE_API_KEY"], folder, clicker, plan)
+    if configure is not None:
+        configure(agent)
     timeline: list[tuple[float, str]] = []  # the active window over the run, for debugging (oracle side only)
     watching = threading.Event()
 
@@ -508,20 +547,24 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
             took, stalled = wait_quiet(agent, test.turn_s)
             firsts = agent.executor.inputs[inputs_before:]
             turns.append({"turn": words, "after_speech_s": round(took, 1), "stalled": stalled,
-                          "first_input_vs_speech_end_s": round(firsts[0] - heard, 2) if firsts else None})
+                          "first_input_vs_speech_end_s": round(firsts[0] - heard, 2) if firsts else None,
+                          "finished": agent.shared.finished,
+                          "verified": any(r.result == "verified" for r in agent.shared.log[agent.shared.turn_start:])})
             if stalled:
                 break
             if test.name.startswith("blender"):
                 test.data.setdefault("widths", []).append(footprint([o for o in blender_scene() if o["type"] == "MESH"]))
-        test.data.update(timeline=timeline, said=list(agent.brain.said))
+        test.data.update(timeline=timeline, said=list(agent.brain.said),
+                         log=[asdict(r) for r in agent.shared.log], finished=agent.shared.finished)
         passed, detail = test.check(test)
+        outcome_passed = passed
         passed = passed and not any(t["stalled"] for t in turns)
     finally:
         watching.set()
         cv2.imwrite(str(folder / "after.jpg"), target.grab())
         agent.close()
         if test.cleanup:
-            shell(test.cleanup)
+            test.cleanup() if callable(test.cleanup) else shell(test.cleanup)
     calls = agent.brain.calls
     row = {"test": test.name, "index": index, "repeat": repeat, "model": label, "passed": passed, "detail": detail,
            "turns": turns, "said": agent.brain.said, "calls": len(calls),
@@ -532,6 +575,10 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
            "screenshot_s": round(sum(target.grabs[grabs_before:]), 1),
            "not_found": sum(r.result == "not_found" for r in agent.shared.log),
            "errors": [asdict(r) for r in agent.shared.log if r.result == "error"]}
+    row["finished"] = agent.shared.finished
+    row["outcome_passed"] = outcome_passed
+    row["verified"] = turns[-1]["verified"]
+    row["uncertain"] = any(r.result == "uncertain" for r in agent.shared.log[agent.shared.turn_start:])
     (folder / "calls.json").write_text(json.dumps(calls, indent=1))
     (folder / "log.json").write_text(json.dumps([asdict(r) for r in agent.shared.log], indent=1))
     (folder / "trace.json").write_text(json.dumps(agent.trace, indent=1, default=str))
@@ -589,7 +636,7 @@ def run_friend(test: Test, index: int, repeat: int, friend: Friend, out: Path) -
     finally:
         watching.set()
         if test.cleanup:
-            shell(test.cleanup)
+            test.cleanup() if callable(test.cleanup) else shell(test.cleanup)
     return {"test": test.name, "index": index, "repeat": repeat, "model": "friend", "passed": passed,
             "detail": detail, "turns": turns, "said": said}
 

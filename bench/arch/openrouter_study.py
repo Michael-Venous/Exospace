@@ -59,19 +59,23 @@ class OpenRouterJSON:
     off opens a connection per call (a reused one failed with "bad record mac" in study 16)."""
 
     def __init__(self, model: str, key: str, effort: str = "low", fastest: bool = False, only: str = "",
-                 schema: bool = True, keepalive: bool = True, read_s: float = 90) -> None:
+                 schema: bool = True, keepalive: bool = True, read_s: float = 90,
+                 total_s: float | None = None, max_tokens: int | None = None) -> None:
         self.model, self.schema = model, schema
+        self.total_s, self.max_tokens = total_s, max_tokens
         self.reasoning = {"effort": effort} if effort else {"enabled": False}
         self.provider = ({"order": [only], "allow_fallbacks": False} if only
                          else {"sort": "latency"} if fastest else None)
         limits = httpx.Limits(max_connections=100, max_keepalive_connections=20 if keepalive else 0)  # httpx defaults
-        self.client = httpx.Client(timeout=httpx.Timeout(90, read=read_s), headers={"Authorization": f"Bearer {key}"},
+        self.client = httpx.Client(timeout=httpx.Timeout(total_s or 90, read=min(read_s, total_s or read_s)),
+                                   headers={"Authorization": f"Bearer {key}"},
                                    limits=limits)
 
-    def call(self, image: bytes | None, prompt: str, system: str, schema: dict) -> tuple[dict, dict]:
+    def call(self, image: bytes | list[bytes] | None, prompt: str, system: str, schema: dict) -> tuple[dict, dict]:
         """`image` None: a text-only call."""
+        images = image if isinstance(image, list) else [image] if image else []
         picture = [{"type": "image_url", "image_url": {
-            "url": "data:image/jpeg;base64," + base64.b64encode(image).decode()}}] if image else []
+            "url": "data:image/jpeg;base64," + base64.b64encode(frame).decode()}} for frame in images]
         body = {
             "model": self.model, "stream": True, "temperature": 0,
             "reasoning": self.reasoning,
@@ -83,6 +87,8 @@ class OpenRouterJSON:
         }
         if self.provider:
             body["provider"] = self.provider
+        if self.max_tokens is not None:
+            body["max_tokens"] = self.max_tokens
         if self.schema:
             body["response_format"] = {"type": "json_schema",
                                        "json_schema": {"name": "reply", "schema": schema, "strict": False}}
@@ -95,6 +101,8 @@ class OpenRouterJSON:
             if response.status_code != 200:
                 raise RuntimeError(f"HTTP {response.status_code}: {response.read()[:200]!r}")
             for line in response.iter_lines():
+                if self.total_s is not None and time.monotonic() - started >= self.total_s:
+                    raise TimeoutError(f"stream exceeded {self.total_s:g} s total deadline")
                 if not line.startswith("data: ") or line == "data: [DONE]":
                     continue
                 chunk = json.loads(line[6:])

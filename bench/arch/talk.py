@@ -5,8 +5,9 @@ While Home is held the microphone streams (pw-record) to Deepgram, starting half
 `laptop_tests.py` speaks them: it can start before you finish. On release Deepgram finalizes the last words (about
 0.1 s) and the request is complete. The agent acts on the screen through the uinput keyboard and mouse; what it says
 or asks is spoken back by Piper on the laptop (no key, about 0.05 s a sentence). Holding Home again while it works is
-a new request: the newest wins. Home still reaches the app in front (the keyboard isn't grabbed); the agent's own
-virtual keyboard is never listened to. Reading the keyboard needs the `input` group. Ctrl+C stops.
+a new request: the newest wins. The agent's own virtual keyboard is never listened to.
+Home is withheld from the foreground app; other keys pass through.
+Reading the keyboard needs the `input` group. Ctrl+C stops.
 
 Each model reply and action prints with its time, and each request ends with a timing line (first action and end,
 from letting go of Home), also appended to ~/exo-bench/talk-logs/timings.csv.
@@ -215,6 +216,10 @@ class Speaker:
 
 
 def main() -> None:
+    missing = [name for name in ("OPENROUTER_API_KEY", "TYPESAFE_API_KEY", "DEEPGRAM_API_KEY")
+               if not os.environ.get(name)]
+    if missing:
+        raise SystemExit(f"Missing environment keys: {', '.join(missing)}")
     try:
         keys = PassThrough(keyboards())
     except PermissionError:
@@ -225,6 +230,10 @@ def main() -> None:
     session = LOGS / time.strftime("%Y%m%d-%H%M%S")  # each call's screenshot and Jev's log land here
     session.mkdir(parents=True, exist_ok=True)
     agent = QueueAgent(LaptopTarget(), MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
+    if os.environ.get("EXO_RELIABLE") == "1":
+        from bench.arch.reliable_queue import configure
+        configure(agent)
+        print("Experimental reliability candidate enabled (visual checks can still be wrong).", flush=True)
     print("Ready: hold Home and speak; let go when you're done. Ctrl+C stops.", flush=True)
 
     def speak_back() -> None:  # what the agent says or asks, aloud

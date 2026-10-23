@@ -60,6 +60,8 @@ RUNAWAY = 8  # the same action this many times in a row ends a reply
 LOOPS = 3  # the same reply this many times in one request: it is going in circles, and stops
 DONE_TAIL = 300  # actions of this request each call sees, compactly
 FAILED = {"not_shown", "not_found", "error", "not_verified"}
+PRIMARY_ACTIONS = {"key", "type", "click", "double_click", "right_click", "drag", "scroll",
+                   "done", "until", "say", "ask"}
 STEP_BACK_EFFORT = "low"  # medium took 3.9 s, or ran out of tokens reasoning (11.6 s)
 STEP_BACK = ("\n\nYou are stuck. Step back before you act: say in one sentence what is actually on the screen and why "
              "your last steps didn't work, then reply with actions for a different approach, or ask the user one "
@@ -186,6 +188,7 @@ class Shared:
     request: int = 0  # counts requests: a wait from an earlier one gives up when a new one starts
     held: list = field(default_factory=list)  # the steps an interrupted request still had queued
     held_goal: str = ""  # that request's words
+    activity_at: float = 0.0  # last completed executor step, including a wait or failed check
 
 
 class Executor(threading.Thread):
@@ -198,6 +201,10 @@ class Executor(threading.Thread):
         self.inputs: list[float] = []  # time of every input sent, for first-input latency
         self.pointer: Pointer | None = None  # a pointing model that clicks in Jev's place, when one is given
         self.appear_s = 0.0  # how long a click waits for its target to appear (0: it must be there already)
+        self.checks = jev
+        self.strict_reports = False  # benchmark candidate: reports follow actions and the same completion gate
+        self.report = lambda text: None
+        self.active_request: int | None = None
 
     def run(self) -> None:
         while not self.closed:
@@ -207,14 +214,22 @@ class Executor(threading.Thread):
                 if self.closed:
                     return
                 action = self.shared.queue.popleft()
+                request = self.active_request = self.shared.request
                 self.shared.state = "running"
             result, detail = self._do(action)
             with self.cond:
+                current = request == self.shared.request
+                if self.strict_reports and not current:
+                    result, detail = "superseded", "a newer request owns the queue"
+                if current:
+                    self.shared.activity_at = time.monotonic()
                 self.shared.log.append(Record(round(time.monotonic() - self.started, 2), action, result, detail))
-                if result == "verified":
+                if result in ("verified", "asked", "uncertain"):
                     self.shared.finished = True
                     self.shared.held, self.shared.held_goal = [], ""  # the request is done: nothing to resume
-                if result not in ("done", "verified"):
+                    if self.strict_reports:
+                        self.shared.queue.clear()
+                if result not in ("done", "verified") and (current or not self.strict_reports):
                     self.shared.queue.clear()  # the rest of the reply assumed this worked
                 if not self.shared.queue:
                     self.shared.state = "idle"
@@ -222,7 +237,11 @@ class Executor(threading.Thread):
 
     def _do(self, action: dict) -> tuple[str, str]:
         try:
-            kind = next(iter(action))
+            request = self.shared.request
+            kinds = [key for key in action if key in PRIMARY_ACTIONS]
+            if self.strict_reports and len(kinds) != 1:
+                return "error", "one primary action is required per object; use separate JSON lines"
+            kind = kinds[0] if self.strict_reports else next(iter(action))
             value = action[kind]
             if kind == "key":
                 keys = value if isinstance(value, list) else [value]
@@ -230,6 +249,13 @@ class Executor(threading.Thread):
                     return "error", "a modifier pressed alone does nothing: to hold it, click with \"hold\""
                 self._input(lambda: self.controller.hotkey(keys))
             elif kind == "type":
+                if action.get("into"):
+                    point = self._find(str(action["into"]))
+                    if point is None:
+                        return "not_found", "the destination text field was not found; no text was typed"
+                    self._input(lambda: self.controller.execute(Action("click", x=point[0], y=point[1]), self.profile))
+                    if action.get("replace"):
+                        self._input(lambda: self.controller.hotkey(["CTRL", "A"]))
                 self._input(lambda: self.controller.type_text(str(value)))
             elif kind in ("click", "double_click", "right_click"):
                 point = self._find(str(value))
@@ -262,6 +288,16 @@ class Executor(threading.Thread):
                 return self._verify(str(value))
             elif kind == "until":
                 return self._until(str(value))
+            elif kind in ("say", "ask") and self.strict_reports:
+                if kind == "say":
+                    result, detail = self._verify(str(value))
+                    if result != "verified":
+                        return result, detail
+                with self.cond:
+                    if request != self.shared.request or self.closed:
+                        return "superseded", "a newer request replaced this report"
+                    self.report(str(value))
+                return ("verified", "reported after earlier actions completed") if kind == "say" else ("asked", "asked user")
             else:
                 return "error", f"unknown action {kind!r}"
             return "done", ""
@@ -282,8 +318,12 @@ class Executor(threading.Thread):
     def _input(self, send) -> None:
         if self.inputs:  # input at a person's pace: a shortcut's focus change lands before the next key
             time.sleep(max(0.0, self.inputs[-1] + INPUT_GAP_S - time.monotonic()))
-        self.inputs.append(time.monotonic())
-        send()
+        with self.cond:
+            if self.closed or (self.strict_reports and self.active_request is not None and
+                               self.active_request != self.shared.request):
+                raise RuntimeError("stopped or superseded: no input sent")
+            self.inputs.append(time.monotonic())
+            send()
 
     def _until(self, expected: str) -> tuple[str, str]:
         """Wait on the computer, not the model: Jev looks at each fresh screen until it shows what the model expects
@@ -300,7 +340,7 @@ class Executor(threading.Thread):
                 moved = time.monotonic()
             before = thumb
             jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
-            answers, _, _ = _again(lambda: self.jev.evaluate(jpeg, {"shown": {
+            answers, _, _ = self._vision_call(lambda: self.checks.evaluate(jpeg, {"shown": {
                 "type": "noul", "instructions": ask}}, label="until"))
             waited = round(time.monotonic() - started, 1)
             if probability(answers["shown"].get("noul")) >= GATE:
@@ -317,15 +357,28 @@ class Executor(threading.Thread):
         """The request counts as done only if Jev's completion check sees it done on the screen."""
         with self.cond:
             goal = self.shared.goal
+            request = self.shared.request
             # what ran, and what each until saw appear: closing an app leaves nothing on screen of the earlier steps
             steps = [json.dumps(r.action) + (f" ({r.detail})" if r.detail else "")
                      for r in self.shared.log[self.shared.turn_start:] if r.result == "done"]
-        score = _again(lambda: self.jev.completion(self._jpeg(), goal, steps, evidence=claim))
+        score = self._vision_call(lambda: self.checks.completion(self._jpeg(), goal, steps, evidence=claim))
         if score >= COMPLETION_GATE:
-            return "verified", f"Jev sees the request done ({score:.2f})"
-        return "not_verified", (f"Jev does not see the request done on the screen ({score:.2f}): find what isn't "
+            return "verified", f"Completion check supports the request ({score:.2f})"
+        reason = getattr(self.checks, "last_reason", "")
+        if self.strict_reports and getattr(self.checks, "last_status", "") == "unknown":
+            with self.cond:
+                if self.closed or request != self.shared.request:
+                    return "superseded", "a newer request replaced this uncertainty report"
+                self.report(f"I can't fully verify the result from the screen. {reason}")
+            return "uncertain", reason  # missing proof is not evidence that an effect should be repeated
+        return "not_verified", (f"Completion not supported on the screen ({score:.2f}). {reason} Find what isn't "
                                 "done yet. A still screen can't prove some things (that a video plays, a sound): if "
                                 "the screen shows all it can, tell the user what you see with say instead of done")
+
+    def _vision_call(self, ask):
+        # The alternate checker owns its response budget and transport retry. Retrying a total
+        # deadline here would double that budget and exceed the stall detector's limit.
+        return _again(ask) if self.checks is self.jev else ask()
 
     def _find(self, target: str) -> tuple[float, float] | None:
         """The target's place, looking again on fresh screens until it appears or `appear_s` runs out."""
@@ -371,7 +424,8 @@ def _again(ask):
 
 def _brief(action: dict) -> str:
     """An action in a few characters: "key CTRL+L", "type 'Add Cone'", "click Save"."""
-    kind, value = next(iter(action.items()))
+    kind = next((key for key in action if key in PRIMARY_ACTIONS), next(iter(action)))
+    value = action[kind]
     return f"{kind} {'+'.join(value) if isinstance(value, list) else repr(value) if kind == 'type' else value}"
 
 
@@ -402,6 +456,7 @@ class Brain(threading.Thread):
         self.repeated = False  # the last reply was one sent before
         self.hosts = list(PINNED.get(model, ()))  # the providers in the order tried; empty: the fastest serves
         self.history: list[dict] = []  # this request's earlier calls: what each saw and replied
+        self.observe = None  # optional bench checker: chronological pixels, never oracle state
 
     @staticmethod
     def _client() -> httpx.Client:
@@ -474,12 +529,17 @@ class Brain(threading.Thread):
             return True
         if self.shared.finished or self.shared.queue or self.shared.state == "running":
             return False
-        return time.monotonic() < self.active_until
+        until = self.active_until
+        if self.executor.strict_reports:
+            until = max(until, self.shared.activity_at + SLEEP_S)
+        return time.monotonic() < until
 
     def _call(self) -> None:
         self.phase = ("grabbing", round(time.monotonic() - self.started, 2))
         frame = self.target.grab()
         image = shrink(cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes(), SEE_SIDE)
+        if self.observe is not None:
+            self.observe(image, self.shared.request)
         if self.shots is not None:  # what each call saw, for debugging
             (self.shots / f"call-{len(self.calls)}.jpg").write_bytes(image)
         with self.cond:
@@ -544,7 +604,8 @@ class Brain(threading.Thread):
         record["cancelled"] = self.cancel_call.is_set()
         if not record["cancelled"]:
             self._apply(text, record, started)  # the last line, which has no newline after it
-            if record["lines"] and record["lines"][-1].keys() & {"say", "ask"}:
+            if (not self.executor.strict_reports and record["lines"] and
+                    record["lines"][-1].keys() & {"say", "ask"}):
                 with self.cond:  # a reply that ends by talking hands the turn back ("I'll open it" before acting doesn't)
                     self.shared.finished = True
         if not record["lines"]:
@@ -656,6 +717,8 @@ class Brain(threading.Thread):
             return
         record["lines"].append({"at_s": round(time.monotonic() - started, 3), **action})
         with self.cond:
+            if self.executor.strict_reports and self.speaking and action.keys() & {"done", "say", "ask"}:
+                return  # the remaining words can change the request; report only after speech ends
             if "resume" in action:  # carry on with the interrupted request's steps, after the new ones
                 if self.shared.held:
                     self.shared.queue.extend(self.shared.held)
@@ -663,7 +726,7 @@ class Brain(threading.Thread):
                     self.shared.held, self.shared.held_goal = [], ""
                 self.cond.notify_all()
                 return
-            if "say" in action or "ask" in action:
+            if ("say" in action or "ask" in action) and not self.executor.strict_reports:
                 self.said.append(str(action.get("say") or action.get("ask")))
                 self.conversation.append({"you": self.said[-1]})
             else:

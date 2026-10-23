@@ -647,3 +647,143 @@ drifted between runs (Jev 0.19 s vs 0.38 s median per call), so timing is only c
 an interleaved run. BIOS,
 phone and Blender were tested for triage and first steps only, not end-to-end. No voice
 input, physical HID or capture-card latency yet.
+
+### Laptop reliability continuation (2026-10-23, delivered for manual testing)
+
+The candidate passed **32/32 final regression runs**, plus **6/6 output-guard checks**,
+but only **2/4 fresh post-freeze compositions**. One fresh task left an extra
+`Walk Notes.txt.txt` file and was falsely verified. Another misread a browser port
+(`41261` as `41267`), opened two failed tabs, then asked for help. The visual checker
+is still fallible; these results do not establish general reliability.
+
+Work is isolated at `/home/mrbcftw/Documents/code/exospace-codex-continuation`, branch
+`manager/25b5b278-91b6-4d6f-a9cd-07dd7c4b6261`. The original `Exospace` checkout on
+`bench/model-matrix` remains clean at `e86549b`, including all prior matrix artifacts.
+The laptop's original `/home/mike/exo-bench/Exospace` is a synced source tree, not a
+Git checkout, and was preserved. All new work is in `bench/` and tests; production
+`brain/` and hardware contracts are unchanged. No GPU was used.
+
+**Manual voice test on the laptop**
+
+```sh
+~/exo-bench/test-candidate.sh
+```
+
+Hold **Home**, speak, then release. Hold Home again for a follow-up; **Ctrl+C** in
+the launching terminal stops it and releases the keyboard. Home is withheld from
+the foreground app; other keys pass through. The script explicitly enables
+`EXO_RELIABLE=1` in `talk.py`, using the same frozen candidate as the final tests.
+It points to `~/exo-bench/continuation-compositions-25b5/bench/arch/talk_candidate.sh`;
+the existing `~/exo-bench/talk.sh` still launches the original baseline.
+Console output, screenshots and action logs go to `~/exo-bench/talk-logs/`;
+`latest.txt` points to the current console log. Input permissions, dependencies,
+voice assets, audio tools and required key presence were checked without starting
+microphone capture or grabbing the keyboard. Actual voice use is for this manual test.
+
+Useful manual checks: save one short note and inspect its exact filename/content;
+rename a file whose name contains spaces; copy a note while preserving the original;
+request a new browser tab as a follow-up; save then close an editor; take one photo
+then close the camera. Inspect actual results even when it says success. The duplicate
+filename and new-tab follow-up are useful known failure repros. Use disposable files.
+
+**What changed**
+
+- Optional atomic named-field focus, select-all and typing, plus an explicit rule
+  to select the entire value before replacing it.
+- Terminal speech follows queued actions and the same completion gate. Missing
+  evidence produces an explicit uncertain result rather than repeating a save/create.
+- Request ownership rejects late input/reports from an older request; terminal
+  reports are deferred while the utterance is growing. This is not a proof of all
+  interruption/streaming interleavings.
+- Exactly one primary action per JSON object; ambiguous objects are rejected.
+  Completed waits/errors extend the planning window so recovery does not expire early.
+- Alternate Qwen checks with chronological first/recent/final images, literal text
+  observation before judgment, bounded stream/read time and limited transport retry.
+  Baseline Jev checks returned HTTP 402 during the paired run.
+
+The actor/checker was frozen before the final 32 runs. Later changes add output
+metadata auditing, four new compositions and the opt-in voice launcher, without
+retuning the candidate after the fresh failures.
+
+**Measurement and independent outcomes**
+
+The main suite has **16 cases: eight open-ended and eight explicit-step commands**:
+save notes, read/append, copy preserving an original, rename with a similar decoy,
+multiselect move with an untouched decoy, semantic browsing, exact ordered Back
+navigation, close a named background tab, delayed navigation, calculator answers,
+one photo then close, save then close, newest PDF with a newer non-PDF decoy, and
+real Firefox/Wikipedia navigation. Six file tasks change names/content in round two.
+The four expansion cases informed development and are no longer blind held-out tests.
+The four post-freeze compositions remain separate evidence.
+
+All native runs use laptop uinput HID and spectacle pixels on KDE Wayland at
+2880×1800. Instructions arrive as **simulated transcripts at 0.35 s/word**; timing
+excludes microphone/STT. Agent observations are screenshots only. Shell, file,
+KWin and browser-debug information are used solely by setup and independent oracles.
+Exact inventories reject extra files/directories, duplicated text, wrong names and
+changed originals; existing originals are byte-checked. Dictated text ignores only
+layout whitespace. Photo checks require exactly one valid JPEG and no camera window.
+Window scans require a completion marker; browser checks include active page, tab
+count and ordered `pageshow` history. Final inventories, spoken reads, Back sequences
+and PDF timestamp preconditions were audited again after runs. Both final PDF images
+showed one correctly opened current PDF. Owned fixture artifacts are preserved under
+ignored `work/arch/` before removing only their unique Desktop directory.
+
+| Experiment | Clean finishes | Verified final turns | False verified | First input p50 | Sum after speech |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Paired baseline | 9/12 (11 correct outcomes) | 0 | 0 | 1.14 s | 238.3 s |
+| Paired first candidate | 10/12 (11 correct outcomes) | 10 | 0 | 1.31 s | 215.3 s |
+| Second candidate, changed data | 23/24 | 23 | 0 | 1.485 s | 329.0 s |
+| Initial four-case expansion | 2/4 | 1 | 0 | 1.58 s | 130.3 s |
+| Liveness iteration | 15/16 | 15 | 1 | 1.205 s | 265.1 s |
+| Final regression, two rounds | **32/32** | **30** | **0** | **1.37 s** | **520.8 s** |
+| Final actor, output guard | 6/6 | 6 | 0 | 1.03 s | 92.7 s |
+| Final actor, fresh compositions | **2/4** | 2 | **1** | 0.91 s | 96.3 s |
+
+A clean finish requires an independently correct outcome, every turn explicitly
+ended and no stall. An uncertain terminal report can accompany a correct outcome;
+the final 32 have two such runs, and the fresh unchanged-copy/close has one.
+Only the first comparison interleaves baseline/candidate; later timings are not
+causal speed comparisons. First-input medians are measured from the last simulated
+word; total times include a 2 s quiet confirmation per turn. Screenshot totals also
+include speech time and must not be added to the after-speech totals as a breakdown.
+The old 0.85/1.29 s suite is not directly comparable.
+
+The final 32 recorded 11 read timeouts and three rejected ambiguous action objects;
+all recovered. Of 652 planner generation records, 520 were cancelled during growing
+speech (~80%); this is not an exact HTTP-request count because calls can hedge.
+Five-state checker replays also showed resolution-sensitive false acceptance,
+false rejection and transport failures. More pixels and literal reading did not
+eliminate the fresh duplicate-file false acceptance.
+
+**477 offline tests pass**, including queue ownership/order, unknown results without
+redo, field focus, exact outcome checks, action validation and stream deadlines.
+The six output-guard runs and four fresh compositions found no unexpected changes
+to top-level files in Desktop/Documents/Downloads/Pictures. A post-run metadata
+scan found none after the final 32 either. This is not an arbitrary-path filesystem audit.
+
+Remaining work: visual evidence for similar/tiny text and multi-effect goals;
+hosted API tails; partial-speech call churn; real microphone/STT and live barge-in
+(including interruption during long typing); physical Pico/capture card and other
+OSes. Production promotion needs the Agent owner; none was performed.
+
+Structured evidence: [all iterations and fresh failures](results/laptop_reliability_20261023.json).
+Task totals and separate first-input probe rows are appended to `bench/results.csv`
+without altering previous rows. Raw images/calls/files remain ignored under
+`work/arch/reliability-{paired,v2,heldout,v3,final,audit,compositions}/`; corresponding
+`*-source.json` files contain source hashes. The broken first pilot is diagnostic
+only, excluded from fair comparisons (legacy cleanup and cached-Back oracles failed).
+
+To reproduce all 16 regression cases ON the laptop with a fresh output directory:
+
+```sh
+cd ~/exo-bench/continuation-compositions-25b5
+PYTHONPATH=. ~/exo-bench/.venv/bin/python ~/.cache/exo-bench/withkeys.py \
+  bench.arch.laptop_reliability --candidate --repeats 2 \
+  --tests 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 --out work/arch/new-run
+```
+
+Use `bench.arch.laptop_compositions --candidate --out work/arch/new-compositions`
+for the four fresh compositions, or `--variants baseline candidate` on the main
+suite for an interleaved comparison. Do not run a benchmark while using voice mode;
+both control the laptop's keyboard/mouse.
