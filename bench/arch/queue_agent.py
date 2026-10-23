@@ -147,6 +147,8 @@ Rules:
   ends by itself or offers Skip): don't press play or pause on it, since pressing stops it. Press play only when
   the screen shows it stopped: a big play button over the picture, or an error.
 - The user hears say and ask, never done: when they asked to be told something, say it before done.
+- Keys go where the focus is: after a click elsewhere (a sidebar, a list), click the text field before you
+  select or type in it.
 - Use keyboard shortcuts where they are sure.
 - Type only file names and paths you read on the screen or know for sure (~ is the user's home folder): a guessed
   path or a misread name goes nowhere.
