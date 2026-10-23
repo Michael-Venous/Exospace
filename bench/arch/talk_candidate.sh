@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Opt-in launcher for the measured bench candidate. Run ON the configured laptop.
 set -euo pipefail
-task_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+script_path=$(readlink -f -- "${BASH_SOURCE[0]}")
+task_root=$(cd -- "$(dirname -- "$script_path")/../.." && pwd)
 mkdir -p "$HOME/exo-bench/talk-logs"
 log="$HOME/exo-bench/talk-logs/candidate-$(date +%Y%m%d-%H%M%S).txt"
 ln -sf "$log" "$HOME/exo-bench/talk-logs/latest.txt"
