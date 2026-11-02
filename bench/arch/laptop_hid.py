@@ -55,9 +55,7 @@ def emit(fd: int, *events: tuple[int, int, int]) -> None:
     os.write(fd, data)
 
 
-KEYBOARD = device("Exospace bench keyboard", sorted(set(NAMED.values()) | {c for c, _ in CHARS.values()}))
-POINTER = device("Exospace bench pointer", list(BTN.values()), [REL_WHEEL], absolute=True)
-time.sleep(0.5)  # the compositor picks the new devices up
+KEYBOARD = POINTER = -1  # the uinput devices, created by `main` (importing this module creates nothing)
 
 
 def tap(codes: list[int]) -> None:
@@ -81,9 +79,12 @@ def key(names: list[str]) -> None:
 
 
 def type_text(text: str) -> None:
+    # A line break is one ENTER whichever convention the text uses. The whole text is checked before the first key:
+    # an untypable character used to fail mid-way and leave the first half typed.
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    if missing := sorted({char for char in text if char not in CHARS}):
+        raise ValueError(f"can't type {''.join(missing)!r}; nothing was typed")
     for char in text:
-        if char not in CHARS:
-            raise ValueError(f"can't type {char!r}")
         code, shift = CHARS[char]
         tap([NAMED["SHIFT"], code] if shift else [code])
         time.sleep(0.004)
@@ -142,6 +143,10 @@ def grab() -> bytes:
 
 
 def main() -> None:
+    global KEYBOARD, POINTER
+    KEYBOARD = device("Exospace bench keyboard", sorted(set(NAMED.values()) | {c for c, _ in CHARS.values()}))
+    POINTER = device("Exospace bench pointer", list(BTN.values()), [REL_WHEEL], absolute=True)
+    time.sleep(0.5)  # the compositor picks the new devices up
     out = sys.stdout.buffer
     for line in sys.stdin:
         cmd = json.loads(line)

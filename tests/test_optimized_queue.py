@@ -1,0 +1,339 @@
+"""Control invariants from the live stress run, without APIs or desktop access."""
+import json
+import tempfile
+import threading
+import time
+import unittest
+from pathlib import Path
+from unittest.mock import Mock, patch
+
+import httpx
+import numpy as np
+
+from bench.arch.optimized_queue import Planned, Superseded, create
+from bench.arch.openrouter_study import ModelHTTPError
+from bench.arch.pointer import Pointer
+from bench.arch.queue_agent import RUNAWAY, Brain
+from bench.arch.queue_control import changed, thumbnail
+from brain.cancel import CancelToken
+
+
+class Target:
+    def __init__(self):
+        self.sent=[]
+        self.on_send=None
+    def grab(self):
+        return np.zeros((200,320,3),np.uint8)
+    def send(self, command):
+        self.sent.append(command)
+        if self.on_send:self.on_send(command)
+    def is_mounted(self):return True
+    def signal_present(self):return True
+
+
+class ControlTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.target=Target()
+        with patch.dict('os.environ',{'OPENROUTER_API_KEY':'test'}), \
+             patch('bench.arch.optimized_queue.OptimizedExecutor.start'), \
+             patch('bench.arch.optimized_queue.OptimizedBrain.start'):
+            self.agent=create(self.target,'deepseek/deepseek-v4.1-flash-1017','','test',Path(self.tmp.name),'')
+        self.c,self.brain,self.ex=self.agent.control,self.agent.brain,self.agent.executor
+    def tearDown(self):
+        self.brain.client.close()
+        self.ex.checks.close()
+        self.agent.jev.close()
+        self.c.events_log.close()
+        self.tmp.cleanup()
+    def plan(self, action):
+        self.brain.hear('test request',False)
+        self.agent.cancel.reset()
+        self.c.observe(self.target.grab())
+        p=Planned(action,self.c.epoch,self.agent.shared.request,self.c.view)
+        self.ex.active_plan=p
+        return p
+    def test_partial_transcripts_do_not_plan_or_type(self):
+        self.brain.hear('Type the wrong',True)
+        epoch=self.c.epoch
+        self.brain.hear('Actually type the right value',True)
+        self.assertFalse(self.brain._due())
+        self.assertGreater(self.c.epoch,epoch)
+        self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
+        self.brain.hear('Actually type the right value',False)
+        self.assertTrue(self.brain._due())
+    def test_press_stops_old_authority_before_any_new_transcript_arrives(self):
+        p=self.plan({'type':'old'})
+        self.brain.end_turn()
+        self.assertFalse(self.c.valid(p.epoch))
+        with self.assertRaises(Superseded):
+            self.agent.controller.hid.send({'op':'type','text':'old'})
+    def test_stale_stream_cannot_restore_queue_after_interruption(self):
+        p=self.plan({'key':['ENTER']})
+        self.brain.end_turn()
+        record={'epoch':p.epoch,'request':p.request,'view':p.view,'lines':[]}
+        self.brain._take(p.action,record,time.monotonic())
+        self.assertFalse(self.agent.shared.queue)
+    def test_long_typing_is_cancelled_at_the_packet_boundary(self):
+        p=self.plan({'type':'a'*256})
+        def stop(command):
+            if command['op']=='type':self.brain.end_turn()
+        self.target.on_send=stop
+        self.ex._do(p.action)
+        typed=[x for x in self.target.sent if x['op']=='type']
+        self.assertEqual(len(typed),1)
+        self.assertLessEqual(len(typed[0]['text']),32)
+    def test_stopped_plan_cannot_click_after_slow_grounding_returns(self):
+        p=self.plan({'click':'a control'})
+        def found(text):
+            self.brain.end_turn()
+            return .5,.5
+        self.ex._find=found
+        self.ex._do(p.action)
+        self.assertFalse([x for x in self.target.sent if x['op']=='click'])
+    def test_failure_report_does_not_need_goal_success(self):
+        p=self.plan({'say':'That collection is not available.','status':'blocked'})
+        self.ex.checks.claim=Mock(side_effect=AssertionError('should not check task success'))
+        self.assertEqual(self.ex._do(p.action)[0],'blocked')
+        self.assertEqual(self.brain.said,['That collection is not available.'])
+        self.assertTrue(self.agent.shared.finished)
+        self.assertFalse(self.c.valid(p.epoch))
+    def test_new_observation_required_after_input_before_claim(self):
+        p=self.plan({'key':['ENTER']})
+        self.ex._do(p.action)
+        self.ex.checks.claim=Mock(side_effect=AssertionError('no fresh view'))
+        self.assertEqual(self.ex._do({'done':'the result is visible'})[0],'observed')
+        self.assertFalse(self.agent.shared.finished)
+    def test_contradicted_claim_ends_without_redoing_effect(self):
+        p=self.plan({'say':'Saved.','status':'complete'})
+        self.ex.checks.claim=Mock(return_value=False)
+        self.ex.checks.last_reason='The dialog is still open.'
+        self.assertEqual(self.ex._do(p.action)[0],'uncertain')
+        self.assertTrue(self.agent.shared.finished)
+        record={'epoch':p.epoch,'request':p.request,'view':p.view,'lines':[]}
+        self.brain._take({'key':['ENTER']},record,time.monotonic())
+        self.assertFalse(self.agent.shared.queue)
+        self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
+    def test_close_shortcut_cannot_target_whatever_window_is_in_front(self):
+        p=self.plan({'key':['ALT','F4']})
+        self.assertEqual(self.ex._do(p.action)[0],'error')
+        self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
+    def test_close_shortcut_focuses_its_named_window_before_dispatch(self):
+        p=self.plan({'key':['ALT','F4'],'in':'draft.txt editor'})
+        self.ex._find=Mock(return_value=(.5,.5))
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+        sent=[x['op'] for x in self.target.sent if x['op']!='release_all']
+        self.assertEqual(sent,['click','key'])
+    def test_conflicting_text_parameter_does_not_type_a_placeholder(self):
+        p=self.plan({'type':'text','text':'actual value'})
+        self.assertEqual(self.ex._do(p.action)[0],'error')
+        self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
+    def test_check_timeout_is_uncertainty_not_another_ui_attempt(self):
+        p=self.plan({'done':'Saved.'})
+        self.ex.checks.claim=Mock(side_effect=httpx.ReadTimeout('slow service'))
+        self.assertEqual(self.ex._do(p.action)[0],'uncertain')
+        self.assertTrue(self.agent.shared.finished)
+    def test_wait_does_not_call_another_model(self):
+        p=self.plan({'until':'new page'})
+        self.ex.checks.evaluate=Mock(side_effect=AssertionError('extra model call'))
+        self.assertEqual(self.ex._do(p.action)[0],'observed')
+        self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
+    def test_terminal_revokes_inflight_input(self):
+        p=self.plan({'key':['ENTER']})
+        with self.agent.cond:self.c.finish('blocked','Stopped.')
+        with self.assertRaises(Superseded):self.ex._input(lambda:None)
+    def test_service_refusal_stops_instead_of_clicking_again(self):
+        p=self.plan({'click':'Save'})
+        self.ex._find=Mock(side_effect=ModelHTTPError(402,b'output allowance'))
+        self.assertEqual(self.ex._do(p.action)[0],'blocked')
+        self.assertTrue(self.agent.shared.finished)
+        self.assertIn('HTTP 402',self.brain.said[0])
+        self.assertFalse([x for x in self.target.sent if x['op']=='click'])
+    def test_telemetry_measures_hid_dispatch_not_a_check_record(self):
+        p=self.plan({'key':['ENTER']})
+        self.assertNotIn('first_input_at',self.c.requests[p.request])
+        self.ex._do(p.action)
+        self.assertIn('first_input_at',self.c.requests[p.request])
+        self.assertEqual([e['kind'] for e in self.c.events].count('hid'),1)
+    def test_pending_cancel_finishes_before_next_planning_call_resets_token(self):
+        self.plan({'type':'old'})
+        self.agent.shared.state='running'
+        self.brain.end_turn()
+        self.brain.hear('new request',False)
+        self.assertFalse(self.brain._due())
+        self.assertTrue(self.agent.cancel.cancelled)
+    def test_press_sets_cancel_before_waiting_for_a_packet_lock(self):
+        self.plan({'type':'old'})
+        pressed=threading.Event()
+        def press():
+            pressed.set()
+            self.brain.end_turn()
+        with self.agent.cond:
+            thread=threading.Thread(target=press)
+            thread.start()
+            self.assertTrue(pressed.wait(.2))
+            deadline=time.monotonic()+.2
+            while not self.agent.cancel.cancelled and time.monotonic()<deadline:time.sleep(.001)
+            self.assertTrue(self.agent.cancel.cancelled)
+        thread.join(.5)
+        self.assertFalse(thread.is_alive())
+    def test_reasoning_heartbeats_do_not_defeat_planner_deadline(self):
+        class Heartbeats(httpx.SyncByteStream):
+            def __iter__(self):
+                for _ in range(5):
+                    time.sleep(.03)
+                    yield b'data: {"choices":[{"delta":{"reasoning":"thinking"}}]}\n\n'
+        self.brain.client.close()
+        self.brain.client=httpx.Client(transport=httpx.MockTransport(lambda request:httpx.Response(200,stream=Heartbeats())))
+        self.brain.cancel_call.clear()
+        started=time.monotonic()
+        with self.assertRaises(TimeoutError):list(Brain._stream(self.brain,{}, {'deadline_s':.02}))
+        self.assertLess(time.monotonic()-started,.2)
+    def test_permanent_planner_error_does_not_hedge_or_loop(self):
+        self.brain.hear('open an app',False)
+        sent=[]
+        self.brain.client.close()
+        def refuse(request):
+            sent.append(json.loads(request.content))
+            return httpx.Response(402,text='output allowance')
+        self.brain.client=httpx.Client(transport=httpx.MockTransport(refuse))
+        self.brain.cancel_call.clear()  # Brain.run normally clears this before starting the call.
+        self.brain._call()
+        self.assertEqual(len(sent),1)
+        self.assertEqual(sent[0]['max_tokens'],2048)
+        self.assertTrue(self.agent.shared.finished)
+        self.assertEqual(self.c.requests[self.agent.shared.request]['status'],'blocked')
+    def test_window_focus_failure_is_logged_not_fatal_to_the_executor(self):
+        p=self.plan({'key':['ALT','F4'],'in':'draft.txt editor'})
+        self.ex._find_window=Mock(side_effect=TimeoutError('no pointing reply in 3.5 s'))
+        self.assertEqual(self.ex._do(p.action)[0],'error')
+        self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
+    def test_executor_thread_survives_a_failed_action(self):
+        p=self.plan({'key':['ALT','F4'],'in':'draft.txt editor'})
+        self.ex._find_window=Mock(side_effect=TimeoutError('no pointing reply in 3.5 s'))
+        thread=threading.Thread(target=self.ex.run,daemon=True)
+        thread.start()
+        with self.agent.cond:
+            self.agent.shared.queue.append(p)
+            self.agent.cond.notify_all()
+        deadline=time.monotonic()+1
+        while not self.agent.shared.log and time.monotonic()<deadline:time.sleep(.01)
+        self.assertEqual(self.agent.shared.log[-1].result,'error')
+        self.assertEqual(self.agent.shared.state,'idle')
+        self.assertTrue(thread.is_alive())
+        self.ex.closed=True
+        thread.join(1)
+    def test_runaway_reply_stops_and_drops_its_queued_repeats(self):
+        p=self.plan({'key':['CTRL','Z']})
+        record={'epoch':p.epoch,'request':p.request,'view':p.view,'lines':[]}
+        for _ in range(RUNAWAY+3):
+            self.brain._take({'key':['CTRL','Z']},record,time.monotonic())
+        self.assertTrue(record.get('runaway'))
+        self.assertFalse(self.agent.shared.queue)
+        self.assertFalse(self.c.valid(p.epoch))
+    def test_small_screen_changes_count_as_progress_and_a_caret_does_not(self):
+        import cv2
+        base=np.full((1800,2880,3),245,np.uint8)
+        caret=base.copy();cv2.rectangle(caret,(700,375),(701,405),(0,0,0),-1)
+        word=base.copy();cv2.putText(word,'hello',(700,400),cv2.FONT_HERSHEY_SIMPLEX,.9,(30,30,30),2)
+        self.assertFalse(changed(thumbnail(base),thumbnail(caret)))
+        self.assertTrue(changed(thumbnail(base),thumbnail(word)))
+    def test_new_request_restarts_the_progress_clock(self):
+        self.c.changed_at=time.monotonic()-60
+        self.brain.end_turn()
+        self.assertLess(time.monotonic()-self.c.changed_at,1)
+    def _stalling_client(self,sent):
+        def stall(request):
+            sent.append(1)
+            raise httpx.ReadTimeout('stalled')
+        self.brain.client.close()
+        return httpx.Client(transport=httpx.MockTransport(stall))
+    def test_one_planner_stall_is_retried_and_a_second_stops(self):
+        self.brain.hear('open an app',False)
+        sent=[]
+        self.brain._client=lambda:self._stalling_client(sent)
+        self.brain.client=self.brain._client()
+        self.brain.hosts=['a']
+        self.brain.cancel_call.clear()
+        self.brain._call()
+        self.assertFalse(self.agent.shared.finished)
+        self.assertTrue(self.brain.dirty)
+        self.brain.dirty=False
+        self.brain.cancel_call.clear()
+        self.brain._call()
+        self.assertTrue(self.agent.shared.finished)
+        self.assertEqual(self.c.requests[self.agent.shared.request]['status'],'blocked')
+        self.assertIn('twice in a row',self.brain.said[-1])
+    def test_rate_limited_click_is_reported_to_the_model_not_a_stop(self):
+        p=self.plan({'click':'Save'})
+        self.ex._find=Mock(side_effect=ModelHTTPError(429,b'slow down'))
+        self.assertEqual(self.ex._do(p.action)[0],'error')
+        self.assertFalse(self.agent.shared.finished)
+    def test_reply_ended_by_its_own_until_is_remembered(self):
+        self.brain.hear('open the page',False)
+        self.brain.client.close()
+        lines=b'data: {"choices":[{"delta":{"content":"{\\"key\\":[\\"ENTER\\"]}\\n{\\"until\\":\\"the page\\"}\\n"}}]}\n\n'
+        class Slow(httpx.SyncByteStream):
+            def __iter__(inner):
+                yield lines
+                deadline=time.monotonic()+1
+                while len(self.agent.shared.queue)<2 and time.monotonic()<deadline:time.sleep(.005)
+                with self.agent.cond:  # the executor ran the until and ended the batch
+                    self.c.invalidate(batch_ended=True)
+                time.sleep(.2)
+                yield b'data: [DONE]\n\n'
+        self.brain.client=httpx.Client(transport=httpx.MockTransport(lambda r:httpx.Response(200,stream=Slow())))
+        self.brain.cancel_call.clear()
+        self.brain._call()
+        self.assertFalse(self.brain.calls[-1]['cancelled'])
+        self.assertEqual(len(self.brain.history),1)
+    def test_events_stream_to_a_log_and_save_stays_small(self):
+        p=self.plan({'key':['ENTER']})
+        for _ in range(3):self.ex._do(p.action)
+        self.c.save(Path(self.tmp.name)/'control.json')
+        saved=json.loads((Path(self.tmp.name)/'control.json').read_text())
+        self.assertIn(p.request,map(int,saved['requests']))
+        logged=[json.loads(x) for x in (Path(self.tmp.name)/'control-events.jsonl').read_text().splitlines()]
+        self.assertEqual(sum(e['kind']=='hid' for e in logged),3)
+    def test_planner_screenshot_fills_the_hosts_pixel_budget_once(self):
+        import cv2
+        from bench.arch.optimized_queue import planner_jpeg
+        image=cv2.imdecode(np.frombuffer(planner_jpeg(np.zeros((1800,2880,3),np.uint8)),np.uint8),cv2.IMREAD_COLOR)
+        self.assertEqual(image.shape[:2],(1000,1600))
+        small=cv2.imdecode(np.frombuffer(planner_jpeg(np.zeros((800,1280,3),np.uint8)),np.uint8),cv2.IMREAD_COLOR)
+        self.assertEqual(small.shape[:2],(800,1280))  # never enlarged
+    def test_budgets_are_pixels_whatever_the_aspect_ratio(self):
+        import cv2
+        from bench.arch.frames import fit_jpeg
+        for h,w in ((1440,3440),(1440,5120),(1920,1080),(2160,3840)):
+            image=cv2.imdecode(np.frombuffer(fit_jpeg(np.zeros((h,w,3),np.uint8),2_500_000),np.uint8),cv2.IMREAD_COLOR)
+            self.assertAlmostEqual(image.shape[0]*image.shape[1]/min(2_500_000,h*w),1,delta=.01)  # never enlarged
+            self.assertAlmostEqual(image.shape[1]/image.shape[0],w/h,delta=.01)
+    def test_optimized_pointer_gets_its_pixel_budget(self):
+        with patch.dict('os.environ',{'OPENROUTER_API_KEY':'test'}), \
+             patch('bench.arch.optimized_queue.OptimizedExecutor.start'), \
+             patch('bench.arch.optimized_queue.OptimizedBrain.start'):
+            agent=create(Target(),'deepseek/deepseek-v4.1-flash-1017','','test',Path(self.tmp.name),'qwen')
+        try:
+            self.assertEqual(agent.executor.pointer.budget,2_500_000)
+        finally:
+            agent.executor.pointer.close();agent.brain.client.close();agent.executor.checks.close()
+            agent.jev.close();agent.control.events_log.close()
+    def test_click_report_uses_the_planner_screenshot_pixels(self):
+        from brain.types import DeviceProfile, Rect
+        self.ex.profile=DeviceProfile('linux',Rect(0,0,2880,1800),'mouse',0)
+        self.assertEqual(self.ex._where((.5,.5)),'at (800, 500)')
+
+
+class PointingServiceTests(unittest.TestCase):
+    def test_permanent_pointing_error_is_not_retried_or_hedged(self):
+        with patch.dict('os.environ',{'OPENROUTER_API_KEY':'test'}):
+            pointer=Pointer(CancelToken(),Mock())
+        ask=Mock(side_effect=ModelHTTPError(402,b'output allowance'))
+        try:
+            with self.assertRaises(ModelHTTPError):pointer._hedged(ask)
+            self.assertEqual(ask.call_count,1)
+            self.assertEqual(pointer.client.max_tokens,128)
+        finally:pointer.close()
+
+if __name__=='__main__':unittest.main()

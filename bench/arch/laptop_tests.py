@@ -518,14 +518,15 @@ def wait_quiet(agent: QueueAgent, limit_s: float) -> tuple[float, str]:
 
 
 def run(test: Test, index: int, repeat: int, model: str, effort: str, target: LaptopTarget, label: str,
-        clicker: str, plan: str, out: Path, configure: Callable[[QueueAgent], None] | None = None) -> dict:
+        clicker: str, plan: str, out: Path, configure: Callable[[QueueAgent], None] | None = None,
+        agent_factory=QueueAgent, speaker=speak) -> dict:
     folder = out / f"{label}-{index}-{repeat}"
     folder.mkdir(parents=True, exist_ok=True)
     reset()
     test.data = {}
     shell(f"touch /tmp/exo_test_start; {test.setup}", timeout=60)
     grabs_before = len(target.grabs)
-    agent = QueueAgent(target, model, effort, os.environ["TYPESAFE_API_KEY"], folder, clicker, plan)
+    agent = agent_factory(target, model, effort, os.environ["TYPESAFE_API_KEY"], folder, clicker, plan)
     if configure is not None:
         configure(agent)
     timeline: list[tuple[float, str]] = []  # the active window over the run, for debugging (oracle side only)
@@ -533,17 +534,21 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
 
     def watch() -> None:
         while not watching.is_set():
-            timeline.append((round(time.monotonic() - agent.started, 1), active_caption()))
+            try:
+                timeline.append((round(time.monotonic() - agent.started, 1), active_caption()))
+            except RuntimeError as exc:
+                test.data.setdefault('watch_errors', []).append(str(exc))
             watching.wait(0.5)
 
-    threading.Thread(target=watch, daemon=True).start()
+    watcher = threading.Thread(target=watch, daemon=True)
+    watcher.start()
     turns = []
     try:
         for k, words in enumerate(test.turns):
             if k:
                 agent.brain.end_turn()
             inputs_before = len(agent.executor.inputs)
-            heard = speak(agent, words)
+            heard = speaker(agent, words)
             took, stalled = wait_quiet(agent, test.turn_s)
             firsts = agent.executor.inputs[inputs_before:]
             turns.append({"turn": words, "after_speech_s": round(took, 1), "stalled": stalled,
@@ -561,6 +566,7 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
         passed = passed and not any(t["stalled"] for t in turns)
     finally:
         watching.set()
+        watcher.join(3)
         cv2.imwrite(str(folder / "after.jpg"), target.grab())
         agent.close()
         if test.cleanup:
@@ -579,6 +585,7 @@ def run(test: Test, index: int, repeat: int, model: str, effort: str, target: La
     row["outcome_passed"] = outcome_passed
     row["verified"] = turns[-1]["verified"]
     row["uncertain"] = any(r.result == "uncertain" for r in agent.shared.log[agent.shared.turn_start:])
+    row["watch_errors"] = test.data.get('watch_errors', [])
     (folder / "calls.json").write_text(json.dumps(calls, indent=1))
     (folder / "log.json").write_text(json.dumps([asdict(r) for r in agent.shared.log], indent=1))
     (folder / "trace.json").write_text(json.dumps(agent.trace, indent=1, default=str))

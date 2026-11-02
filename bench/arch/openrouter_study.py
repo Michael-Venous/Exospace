@@ -53,6 +53,15 @@ def parse_json(text: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
+class ModelHTTPError(RuntimeError):
+    """Keep service refusals distinguishable from failures to operate the screen."""
+
+    def __init__(self, status_code: int, detail: bytes = b'') -> None:
+        self.status_code = status_code
+        self.permanent = status_code in (400, 401, 402, 403, 404, 413, 422)
+        super().__init__(f"HTTP {status_code}: {detail[:160]!r}")
+
+
 class OpenRouterJSON:
     """`effort` "" turns reasoning off; `fastest` routes to the provider with the lowest latency, `only` to that
     provider alone; `schema` off leaves the schema to the prompt (providers without structured output); `keepalive`
@@ -99,7 +108,7 @@ class OpenRouterJSON:
         text, usage, served = "", {}, ""
         with self.client.stream("POST", OPENROUTER, json=body) as response:
             if response.status_code != 200:
-                raise RuntimeError(f"HTTP {response.status_code}: {response.read()[:200]!r}")
+                raise ModelHTTPError(response.status_code, response.read())
             for line in response.iter_lines():
                 if self.total_s is not None and time.monotonic() - started >= self.total_s:
                     raise TimeoutError(f"stream exceeded {self.total_s:g} s total deadline")

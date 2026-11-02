@@ -858,3 +858,119 @@ claim; cap every model request; repair request-level timing. Then compare both
 versions on the same disposable multi-turn stress episodes, measuring total latency,
 user interventions, repeated effects and actual outcomes. More prompt rules or
 additional generic visual checks alone do not address these failures.
+
+### Optimization after the manual stress run (2026-10-23, in progress)
+
+Implementation is isolated in `optimized_queue.py` and `queue_control.py`. The
+previous candidate remains selectable. No production `brain/` or shared hardware,
+action or CSV contract changes were made. New `in` metadata on a bench keyboard
+proposal is resolved to existing click/key controller actions, not a new HID op.
+
+The new path plans from finalized speech, cancels at the talk-button press, fences
+every HID packet and streamed action by plan epoch, and yields observations instead
+of paying for a model predicate at each `until`. It separates blocked reports from
+success claims, stops after a failed/unavailable terminal check instead of replaying
+UI effects, requires named-window focus before close shortcuts, uses a1920px actor
+frame, limits no-progress repetitions and request lengths, and records actual input
+and request status in `control.json`. Voice mode writes `timings-optimized.jsonl`
+with explicit status and STT-finalization time; legacy timing rows are not repurposed.
+Planner/pointer/checker token limits are2048/128/240; the old candidate receives the
+same shared request-limit fixes for comparison. Its prior uncapped requests were
+being refused at a131072-token reservation, invalidating an early pilot comparison.
+
+**Current validation checkpoint:**498 offline tests pass. In a four-case fair pilot,
+optimized passed4/4 checks versus2/4; the interruption specifically returned in0.1354s
+versus6.7621s, with0 versus1567 additional old characters after the press. These are
+small development samples, not final results. The failure-refusal case scored an
+explicit control invariant; the old candidate sometimes completed the navigation
+through a keyboard fallback, so do not present its failure of that invariant as a
+failed navigation task. The final test makes the stop-on-refusal instruction explicit.
+
+CURRENT full stress process: workstation exec session25581, source
+`~/exo-bench/continuation-opt-v7-25b5`,
+`bench.arch.laptop_stress --repeats 2 --out work/arch/optimized-stress-v7`.
+Eight episodes × two architectures × two rounds; order alternates. Source hashes
+are `work/arch/optimized-v7-source.json`. Poll this process; do not restart it while
+active. Follow with the unchanged native regression suite and fresh compositions,
+then audit independent outcomes, terminal statuses and complete timings before
+promoting the voice launcher. `talk_optimized.sh` is prepared but not yet deployed
+as the user's default. Original source and prior artifacts remain preserved.
+
+The disposable stress suite uses real editor/file-manager windows and an isolated
+native browser. It replays partial-transcript revisions, interruption during long
+typing and a talk press with no words, a covered editor, an unavailable target,
+exact numeric sliders, spoken symbols and a simulated permanent service refusal.
+It never uses personal accounts/messages or real display settings. Browser/FS/window
+APIs are independent setup/oracles only. This still excludes real microphone/STT.
+Early harness pilots (reset metadata loss; a JS syntax error in the address fixture)
+are diagnostics only; both defects were corrected and fixture interactions were
+independently exercised before the matched run.
+
+### Planner screenshot size on the 2880x1800 laptop (study 18, `see_side_study.py`, 2026-11-01)
+Fifteen cases on 2880x1800 screens: ten rendered desktop fixtures at the laptop's 150% scale with known answers
+and target boxes (near-identical file names, sizes and senders, a port beside a decoy port, a title-bar `*`, a
+spreadsheet total beside a transposed one) and a real laptop frame. DeepSeek V4.1 Flash on Together gets the
+optimized prompt and a fresh-request context. Raw rows `work/arch/see-side*/calls.jsonl`.
+
+**Each host's image budget** (prompt tokens of one image, `max_tokens` 1): DeepSeek on Together and on Morph
+rises with size up to about 1.6 MP and is flat above it: 16:10 648 tokens at 1280, 944 at 1568, 968 at 1600 and
+at every size up to 2880; 16:9 951 at 1664x936, 974 from 1696x954 up. The limit is on pixels, not on the long
+side (it matches the common 1,605,632 max-pixels setting). Qwen 3.8 27B on ModelRun has none: 1015 tokens at
+1280, 2295 at 1920, 5055 at 2880.
+
+So the optimized planner now sends `planner_jpeg`: the raw frame resized once (INTER_AREA) to 1.6 MP (1600x1000
+on the laptop) and encoded once at q90, instead of q80, decoded, resized and q80 again (`EXO_OPT_MAX_PIXELS`).
+
+| Planner image | Correct (6 reps x 15) | Prompt tokens | First token p50 | Total p50 | Image |
+| --- | --- | --- | --- | --- | --- |
+| 1280 (earlier queue) | 82/90 | 1778 | 0.42 s | 0.51 s | 53 kB |
+| 1920 (q80 twice) | 89/89 | 2098 | 0.48 s | 0.57 s | 103 kB |
+| 2880 (full frame) | 86/88 | 2098 | 0.55 s | 0.63 s | 202 kB |
+| fit (1600x1000 q90) | 85/87 | 2098 | 0.47 s | 0.55 s | 103 kB |
+
+- **1280 loses small marks**: it read `notes.txt * — Kate` as saved 6 of 6 times; every larger image got it 6 of
+  6. Its other misses: 1.83 MiB read as 1.01 KiB, one detour.
+- **Above the budget, size changes nothing the model sees**: 1920, 2880 and fit send identical token counts and
+  their 1-3 misses (1.83 MiB as KiB or 1.8, "Pria Raman", one refusal) are spread across them: noise at this
+  sample. A full 2880 frame only adds upload time (+0.07 s first token).
+- **Fit is chosen on principle, not a measured accuracy gain over 1920**: the same model input and bytes, one
+  resample by us instead of an unknown one by the host, the right size for any aspect ratio, and the Qwen claim
+  check that receives these frames gets 1.6 MP (about 1565 tokens) instead of 2.3 MP (about 2295).
+- **Smaller text than the budget allows needs a crop**: a zoomed region as an extra image or a zoom action.
+- Two replies used the wrong action key at temperature 0: `{"answer": ...}` (rejected as an unknown action) and
+  `{"type": "The notification says ..."}`, which would type the answer into whatever window has focus. Not
+  changed here.
+- The Qwen pointer hit 52/52 targets at 1280, 1920 and 2880 in the first partial run (stopped by HTTP 402).
+
+#### Other screens: 4K at 100% and a 3440x1440 ultrawide at 100% (2026-11-02)
+The same scenes rendered at each screen's pixels and scale (`--screen`, `--scale`): windows keep their size, so a
+4K desktop at 100% shows them small. 4 reps; planner "tiles" = the fitted screen plus its four quarters, each
+fitted to 1.6 MP; "tiles2" the same with a note that image 1 is the screen and the quarters only magnify it.
+Raw rows `work/arch/see-side-{4k,uw,laptop}-run/calls.jsonl`.
+
+DeepSeek's 1.6-1.7 MP budget holds at 21:9, 32:9, 9:16 and 4:3 as well (tokens flat above it).
+
+| Planner | Laptop 150% | 4K 100% | Ultrawide 100% | First token p50 | Tokens |
+| --- | --- | --- | --- | --- | --- |
+| fit (1.6 MP) | 53/57 | 36/56 | 44/53 | 0.45 s | ~2100 |
+| tiles | 43/53 | 43/56 | 48/55 | 0.8 s | ~5300-6000 |
+| tiles2 | 46/52 | 52/56 | 53/54 | 0.8-0.9 s | ~5200-6100 |
+
+| Qwen pointer | Laptop | 4K | Ultrawide | p50 |
+| --- | --- | --- | --- | --- |
+| 1280 long side (was) | 20/20 | 17/20 | 11/20 | 0.38 s |
+| 1.6 MP | 19/19 | 20/20 | 16/20 | 0.47 s |
+| 2.5 MP | 18/18 | 20/20 | 20/20 | 0.55 s |
+| 4 MP | 19/19 | 20/20 | 18/18 | 0.8-0.95 s |
+| native | 19/19 | 20/20 | 18/18 | 0.9-1.7 s |
+
+- **One 1.6 MP image fails on dense screens, confidently**: on 4K it answered port 5173 (Vite's default, not on
+  the screen), battery 83%, 59.82 Hz, and read the title `*` as saved 4/4. Ultrawide: port 41267 3/4.
+- **Tiles fix dense screens but hurt a normal one**: with the clear note 52/56 and 53/54, but 46/52 on the laptop
+  (a tab misread 3/4); the first note made replies take a quarter for the screen ("the window is no longer
+  visible"). Tiles therefore need a density trigger. A glyph-height estimate from one frame (word components)
+  did not separate the screens: fit-image text 10-12 px on the laptop, 9-10 ultrawide, 7-8 4K, and real laptop
+  frames 6.7-13.3. Not shipped.
+- **The pointer needs a pixel budget, not a long side**: 1280 px gives an ultrawide 0.69 MP. Now
+  `frames.POINTER_PIXELS` 2.5 MP (`EXO_POINT_PIXELS`) for clicks and window focus in the optimized queue, and for
+  the claim check's last screenshot (was the full native frame: about 10k Qwen tokens on 4K).

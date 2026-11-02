@@ -17,7 +17,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import cv2
 import numpy as np
 
-from bench.arch.openrouter_study import OpenRouterJSON
+from bench.arch.frames import fit_jpeg
+from bench.arch.openrouter_study import ModelHTTPError, OpenRouterJSON
 from brain.agent.jev import JevVision
 from brain.cancel import CancelToken
 from brain.imaging import shrink
@@ -38,6 +39,11 @@ PIXEL_PROMPT = ('Find {target}. Reply with JSON {{"found": true|false, "x": ...,
 SCHEMA = {"type": "object", "properties": {"found": {"type": "boolean"}, "x": {"type": "number"},
                                            "y": {"type": "number"}}, "required": ["found", "x", "y"]}
 # Required x and y: with only "found" required, DeepSeek answered {"found": true} and nothing else (study 17).
+WINDOW_PROMPT = ('Locate the visible title bar or tab of the actual application/window {target}. '
+                 'Use its window chrome and title, not matching text in a file path, folder or document body. '
+                 'A target window behind another window can be focused by its visible title bar. '
+                 'If fully hidden, reply found false; do not click a different app. '
+                 'Reply JSON {{"found":true|false,"x":0-1000,"y":0-1000}} for its clickable title centre.')
 
 
 class Pointer:
@@ -48,18 +54,26 @@ class Pointer:
         in the image's pixels, not 0-1000."""
         self.cancel, self.jev, self.pixels = cancel, jev, pixels  # its calls go in Jev's trace, beside Jev's looks
         self.pool = ThreadPoolExecutor(4, thread_name_prefix="pointer")
+        self.give_up_s, self.hedge_s = GIVE_UP_S, HEDGE_S
+        self.budget: int | None = None  # a pixel budget for the image (study 18); None: the long sides below
         # A reply that stalls READ_S, or a dropped connection, is asked once more (a GLM pointing call once hung past
         # 8 s; three clicks in a row once failed on TLS errors while the link was flaky).
         self.client = OpenRouterJSON(model, os.environ["OPENROUTER_API_KEY"], effort, fastest=not only, only=only,
-                                     keepalive=False, read_s=READ_S)
+                                     keepalive=False, read_s=READ_S, max_tokens=128)
 
-    def point(self, image: bytes, target: str) -> tuple[float, float] | None:
+    def point(self, image: bytes, target: str, *, window: bool = False) -> tuple[float, float] | None:
         """Where `target` is (0-1 of the screen), or None if the model doesn't see it."""
         started = time.monotonic()
-        image = shrink(image)
+        if self.budget:
+            image = fit_jpeg(cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_COLOR), self.budget, 85)
+        else:
+            image = shrink(image, 1920 if window else 1280)
         h, w = cv2.imdecode(np.frombuffer(image, np.uint8), cv2.IMREAD_GRAYSCALE).shape[:2]
         scale = (w, h) if self.pixels else (1000, 1000)
         prompt = (PIXEL_PROMPT.format(target=target, w=w, h=h) if self.pixels else PROMPT.format(target=target))
+        if window:
+            prompt = WINDOW_PROMPT.format(target=target)
+            scale = (1000,1000)
         def ask() -> tuple[dict, dict]:
             return self.client.call(image, prompt, "You locate controls in screenshots.", SCHEMA)
 
@@ -75,11 +89,13 @@ class Pointer:
         first good reply wins. A pointing call usually takes 0.5 s, but one stalled 8.7 s behind keep-alive lines
         (no read timeout fires), and three failed on TLS errors while the link was flaky."""
         self.cancel.check()
+        deadline = time.monotonic() + self.give_up_s
         tries = [self.pool.submit(ask)]
-        done, _ = wait(tries, timeout=HEDGE_S)
+        done, _ = wait(tries, timeout=min(self.hedge_s,self.give_up_s))
+        if done and isinstance(tries[0].exception(), ModelHTTPError) and tries[0].exception().permanent:
+            raise tries[0].exception()
         if not done or tries[0].exception() is not None:
             tries.append(self.pool.submit(ask))
-        deadline = time.monotonic() + GIVE_UP_S
         pending = set(tries)
         while pending and time.monotonic() < deadline:
             done, pending = wait(pending, timeout=deadline - time.monotonic(), return_when=FIRST_COMPLETED)
@@ -87,10 +103,12 @@ class Pointer:
                 if future.exception() is None:
                     self.cancel.check()
                     return future.result()[0]
+                if isinstance(future.exception(), ModelHTTPError) and future.exception().permanent:
+                    raise future.exception()
             if not pending and len(tries) < TRIES:  # every try failed (both once got a stale TLS connection): again
                 tries.append(self.pool.submit(ask))
                 pending = {tries[-1]}
-        raise TimeoutError(f"no pointing reply in {GIVE_UP_S} s") if pending else tries[-1].exception()
+        raise TimeoutError(f"no pointing reply in {self.give_up_s} s") if pending else tries[-1].exception()
 
     def close(self) -> None:
         self.pool.shutdown(wait=False, cancel_futures=True)

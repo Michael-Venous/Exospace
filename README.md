@@ -31,7 +31,8 @@ Built at SwampHacks XII (October 16–18, 2026).
 | `firmware/pico/` | CircuitPython HID firmware for the UART protocol ([README](firmware/pico/README.md)) | Hardware |
 | `scripts/pi/` | Deploy to the Pi, setup, user services | Hardware |
 | `bench/` | Architecture studies and benchmarks behind every claim ([README](bench/README.md)) | Models |
-| `tests/` | Offline tests (no API calls) | All |
+| `tests/` | Offline tests of what the voice prototype runs (no API calls) | All |
+| `tests_studies/` | Offline tests of finished studies' harnesses, run on demand | Models |
 
 ## Setup
 
@@ -43,7 +44,10 @@ Built at SwampHacks XII (October 16–18, 2026).
    .venv/bin/python -m brain.voice.layer --agent http://127.0.0.1:8770   # then open :8780
    ```
 4. On the Pi: `scripts/pi/deploy.sh` from the laptop, then follow [docs/hardware-bringup.md](docs/hardware-bringup.md).
-5. Tests: `.venv/bin/python -m unittest discover -s tests` (offline, no API calls).
+5. Tests: `.venv/bin/python -m unittest discover -s tests` (offline, no API calls, about 3 s): the voice
+   prototype's queue, control, pointer, controller and PC-to-laptop input contract. Finished studies, on demand:
+   `.venv/bin/python -m unittest discover -s tests_studies -t .`. This branch dropped the older runtime's
+   tests (race, orchestrator, display, voice layer); they remain on `main`.
 
 ## Documentation
 

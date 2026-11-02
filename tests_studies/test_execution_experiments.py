@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 from bench.experiments.live_direct_experiment import LiveDirectExecutor
 from bench.experiments.prefix_experiment import PrefixExecutor
 from brain.agent.jev_flash import JevFlashExecutor
-import tests.test_recipe_experiment as fixtures
+import tests_studies.test_recipe_experiment as fixtures
 
 
 class ProtocolTests(unittest.TestCase):

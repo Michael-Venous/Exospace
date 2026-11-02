@@ -27,6 +27,7 @@ import cv2
 import httpx
 
 from bench.arch.pointer import Pointer
+from bench.arch.openrouter_study import ModelHTTPError
 from brain.agent.jev import JevVision, probability
 from brain.agent.jev_flash import COMPLETION_GATE
 from brain.agent.triage import GATE, refine
@@ -302,7 +303,10 @@ class Executor(threading.Thread):
                 return "error", f"unknown action {kind!r}"
             return "done", ""
         except Exception as exc:  # noqa: BLE001 - a failed action is logged for the model; the executor carries on
-            return "error", f"{type(exc).__name__}: {exc}"[:160]
+            return self._failure(exc)
+
+    def _failure(self, exc: Exception) -> tuple[str, str]:
+        return "error", f"{type(exc).__name__}: {exc}"[:160]
 
     def _where(self, point: tuple[float, float]) -> str:
         """Where a click landed, in the pixels of the screenshot the model sees: a pointer that put "Never" on its
@@ -451,12 +455,15 @@ class Brain(threading.Thread):
         self.said: list[str] = []
         self.shots: Path | None = None  # a folder to keep each call's screenshot in
         self.prompt = PROMPT
+        self.see_side = SEE_SIDE
         self.stepped_back = -1  # the log length at the last stepping-back call: once per stuck spell
         self.replies: dict[str, int] = {}  # this request's replies and how often each came (a loop guard)
         self.repeated = False  # the last reply was one sent before
         self.hosts = list(PINNED.get(model, ()))  # the providers in the order tried; empty: the fastest serves
         self.history: list[dict] = []  # this request's earlier calls: what each saw and replied
         self.observe = None  # optional bench checker: chronological pixels, never oracle state
+        self.frame_observer = None  # optional instrumentation/observation of this exact planner frame
+        self.loop_handler = None  # optional bench policy owns terminal cancellation and reporting
 
     @staticmethod
     def _client() -> httpx.Client:
@@ -537,7 +544,9 @@ class Brain(threading.Thread):
     def _call(self) -> None:
         self.phase = ("grabbing", round(time.monotonic() - self.started, 2))
         frame = self.target.grab()
-        image = shrink(cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes(), SEE_SIDE)
+        if self.frame_observer is not None:
+            self.frame_observer(frame)
+        image = self._encode(frame)
         if self.observe is not None:
             self.observe(image, self.shared.request)
         if self.shots is not None:  # what each call saw, for debugging
@@ -579,6 +588,7 @@ class Brain(threading.Thread):
         effort = STEP_BACK_EFFORT if step_back else self.effort
         provider = ({"order": self.hosts, "allow_fallbacks": False} if self.hosts else {"sort": "latency"})
         body = {"model": self.model, "stream": True, "temperature": 0, "provider": provider,
+                "max_tokens": 2048,
                 "reasoning": {"effort": effort} if effort else {"enabled": False},
                 "messages": [{"role": "system", "content": self.prompt}, *history,
                              {"role": "user", "content": [
@@ -601,8 +611,10 @@ class Brain(threading.Thread):
             while "\n" in text:
                 done, text = text.split("\n", 1)
                 self._apply(done, record, started)
-        record["cancelled"] = self.cancel_call.is_set()
-        if not record["cancelled"]:
+        cut = self.cancel_call.is_set()
+        # A reply its own plan ended (an until, a failed step) still counts: it is remembered and loop-checked.
+        record["cancelled"] = cut and not self._batch_ended(record)
+        if not cut:
             self._apply(text, record, started)  # the last line, which has no newline after it
             if (not self.executor.strict_reports and record["lines"] and
                     record["lines"][-1].keys() & {"say", "ask"}):
@@ -618,14 +630,25 @@ class Brain(threading.Thread):
             self.repeated = self.replies[reply] > 1
             if self.replies[reply] >= LOOPS:  # the same reply again and again: stop and say so
                 with self.cond:
-                    self.shared.queue.clear()
-                    self.shared.finished = True
-                    self.said.append("I'm going in circles, so I've stopped. Tell me what to change.")
+                    if self.loop_handler is not None:
+                        self.loop_handler()
+                    else:
+                        self.shared.queue.clear()
+                        self.shared.finished = True
+                        self.said.append("I'm going in circles, so I've stopped. Tell me what to change.")
                     self.cond.notify_all()
         if not record["cancelled"] and full.strip():  # a call that added nothing isn't worth remembering
             past = {k: v for k, v in context.items() if k != "conversation_before"}
             self.history.append({"context": json.dumps(past), "reply": full.strip()})
         record["total_s"] = round(time.monotonic() - started, 3)
+
+    def _batch_ended(self, record: dict) -> bool:
+        """Whether the executor, not new speech, cut this reply short (bench subclasses track it)."""
+        return False
+
+    def _encode(self, frame) -> bytes:
+        """The screenshot as the model gets it."""
+        return shrink(cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes(), self.see_side)
 
     def _stream(self, body: dict, record: dict):
         """The reply's text as it streams, hedged: if no host has started answering within HEDGE_S, the same
@@ -640,7 +663,7 @@ class Brain(threading.Thread):
             try:
                 with self.client.stream("POST", OPENROUTER, json=request) as response:
                     if response.status_code != 200:
-                        events.put((k, "error", f"HTTP {response.status_code}: {response.read()[:160]!r}"))
+                        events.put((k, "error", ModelHTTPError(response.status_code, response.read())))
                         return
                     for line in response.iter_lines():
                         if stop.is_set():
@@ -655,7 +678,7 @@ class Brain(threading.Thread):
                                 events.put((k, "alive", ""))
                 events.put((k, "end", ""))
             except Exception as exc:  # noqa: BLE001 - reported to the reader, which decides
-                events.put((k, "error", f"{type(exc).__name__}: {exc}"))
+                events.put((k, "error", exc))
 
         hosts = list(self.hosts)
         threading.Thread(target=attempt, args=(0, hosts), daemon=True).start()
@@ -663,6 +686,8 @@ class Brain(threading.Thread):
         tries, failed, winner = 1, set(), None
         try:
             while True:
+                if record.get('deadline_s') and time.monotonic() - started > record['deadline_s']:
+                    raise TimeoutError(f"planner stream exceeded {record['deadline_s']:g} s total deadline")
                 if winner is None and tries == 1 and len(hosts) > 1 and (failed or time.monotonic() - started > HEDGE_S):
                     threading.Thread(target=attempt, args=(1, hosts[1:] + hosts[:1]), daemon=True).start()
                     tries += 1
@@ -678,9 +703,11 @@ class Brain(threading.Thread):
                 if winner is not None and k != winner:
                     continue
                 if kind == "error":
+                    if isinstance(value, ModelHTTPError) and value.permanent:
+                        raise value
                     failed.add(k)
                     if k == winner or len(failed) == tries and (tries > 1 or len(hosts) < 2):
-                        raise RuntimeError(value)
+                        raise value if isinstance(value, Exception) else RuntimeError(value)
                     continue
                 heard = time.monotonic()
                 if kind == "end":
@@ -708,12 +735,17 @@ class Brain(threading.Thread):
             if isinstance(action, dict) and action:
                 self._take(action, record, started)
 
-    def _take(self, action: dict, record: dict, started: float) -> None:
+    def _runaway(self, action: dict, record: dict) -> bool:
         recent = [{k: v for k, v in line.items() if k != "at_s"} for line in record["lines"][-RUNAWAY:]]
         if len(recent) == RUNAWAY and all(line == action for line in recent):
             # The same action again and again in one reply is a stuck generation, not a plan (655 CTRL+Z once).
             record["runaway"] = True
             self.cancel_call.set()
+            return True
+        return False
+
+    def _take(self, action: dict, record: dict, started: float) -> None:
+        if self._runaway(action, record):
             return
         record["lines"].append({"at_s": round(time.monotonic() - started, 3), **action})
         with self.cond:
@@ -739,7 +771,7 @@ class QueueAgent:
     """The model and executor threads, taking turns, on one target."""
 
     def __init__(self, target, model: str, effort: str, jev_key: str, log_dir: Path, clicker: str = "qwen",
-                 plan: str = "screen") -> None:
+                 plan: str = "screen", *, executor_cls=Executor, brain_cls=Brain, before_start=None) -> None:
         """`plan` "screen": each reply covers one screen; "ahead": replies plan across screens, clicks wait."""
         self.cancel = CancelToken()
         self.trace: list[dict] = []
@@ -751,13 +783,15 @@ class QueueAgent:
         h, w = frame.shape[:2]
         profile = DeviceProfile("linux", Rect(0, 0, w, h), "mouse", time.time())
         self.shared, self.cond = Shared(), threading.Condition()
-        self.executor = Executor(self.controller, self.jev, profile, self.shared, self.cond, self.started, self.trace)
+        self.executor = executor_cls(self.controller, self.jev, profile, self.shared, self.cond, self.started, self.trace)
         if clicker in CLICKERS:
             self.executor.pointer = Pointer(self.cancel, self.jev, *CLICKERS[clicker])
-        self.brain = Brain(target, self.shared, self.cond, self.executor, model, effort, self.started)
+        self.brain = brain_cls(target, self.shared, self.cond, self.executor, model, effort, self.started)
         if plan == "ahead":
             self.executor.appear_s, self.brain.prompt = APPEAR_S, PROMPT_AHEAD
         self.brain.shots = log_dir
+        if before_start is not None:
+            before_start(self)
         self.executor.start()
         self.brain.start()
 

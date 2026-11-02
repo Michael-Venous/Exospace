@@ -155,6 +155,15 @@ class Mic:
                 self.listener.put(None)
             self.listener = None
 
+    def close(self) -> None:
+        self.stop()
+        self.proc.terminate()
+        try:
+            self.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
+
 
 class Utterance:
     """One press of Home: the microphone streamed to Deepgram; `heard(words, speaking)` gets the words so far."""
@@ -164,6 +173,8 @@ class Utterance:
         self.audio = mic.listen()  # audio buffers here while Deepgram connects
         self.ws = connect(DEEPGRAM, additional_headers={"Authorization": f"Token {key}"})
         self.done = threading.Event()
+        # After finish() hands the final words over, a late interim result must not reopen the request as speech.
+        self.lock, self.finished = threading.Lock(), False
         threading.Thread(target=self._send, daemon=True).start()
         self.reader = threading.Thread(target=self._receive, daemon=True)
         self.reader.start()
@@ -190,8 +201,9 @@ class Utterance:
                     self.interim = text
                 if message.get("from_finalize"):
                     break
-                if self.words():
-                    self.heard(self.words(), True)
+                with self.lock:
+                    if self.words() and not self.finished:
+                        self.heard(self.words(), True)
         except Exception:  # noqa: BLE001 - a dropped stream ends the utterance with the words it had
             pass
         self.done.set()
@@ -200,6 +212,8 @@ class Utterance:
         """Let go of Home: the last words, once Deepgram has finalized them (at most 2 s)."""
         self.mic.stop()
         self.done.wait(2)
+        with self.lock:
+            self.finished = True
         self.ws.close()
         return self.words()
 
@@ -207,12 +221,28 @@ class Utterance:
 class Speaker:
     def __init__(self, env: dict) -> None:
         self.voice, self.env = PiperVoice.load(str(VOICE)), env
+        self.lock = threading.Lock()
+        self.generation = 0
+        self.player = None
+
+    def stop(self) -> None:
+        with self.lock:
+            self.generation += 1
+            if self.player is not None and self.player.poll() is None:
+                self.player.terminate()
 
     def say(self, text: str) -> None:
+        with self.lock:
+            generation = self.generation
         sound = io.BytesIO()
         with wave.open(sound, "wb") as out:
             self.voice.synthesize_wav(text, out)
-        subprocess.run(["pw-play", "-"], input=sound.getvalue(), env=self.env, check=False)
+        with self.lock:
+            if generation != self.generation:
+                return
+            player = subprocess.Popen(["pw-play", "-"], stdin=subprocess.PIPE, env=self.env)
+            self.player = player
+        player.communicate(sound.getvalue())
 
 
 def main() -> None:
@@ -229,8 +259,13 @@ def main() -> None:
     speaker, mic = Speaker(env), Mic(env)
     session = LOGS / time.strftime("%Y%m%d-%H%M%S")  # each call's screenshot and Jev's log land here
     session.mkdir(parents=True, exist_ok=True)
-    agent = QueueAgent(LaptopTarget(), MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
-    if os.environ.get("EXO_RELIABLE") == "1":
+    if os.environ.get("EXO_OPTIMIZED") == "1":
+        from bench.arch.optimized_queue import create
+        agent = create(LaptopTarget(), MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
+        print("Optimized queue enabled: finalized speech, fenced input and bounded evidence checks.", flush=True)
+    else:
+        agent = QueueAgent(LaptopTarget(), MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
+    if os.environ.get("EXO_RELIABLE") == "1" and not hasattr(agent, 'control'):
         from bench.arch.reliable_queue import configure
         configure(agent)
         print("Experimental reliability candidate enabled (visual checks can still be wrong).", flush=True)
@@ -241,6 +276,9 @@ def main() -> None:
         while True:
             said = agent.brain.said
             while spoken < len(said):
+                if hasattr(agent.brain,'said_requests') and (agent.brain.said_requests[spoken] != agent.shared.request or agent.brain.speaking):
+                    spoken += 1
+                    continue
                 print(f"  agent: {said[spoken]}", flush=True)
                 speaker.say(said[spoken])
                 spoken += 1
@@ -252,6 +290,17 @@ def main() -> None:
         """One request's timings from letting go of Home: its first action (negative: it started while you still
         spoke) and its end (the agent said, asked or confirmed done)."""
         pressed, released = request["pressed"], request["released"]
+        if hasattr(agent, 'control'):
+            state = dict(agent.control.requests.get(request['request_id'],{}))
+            first, terminal = state.get('first_input_at'), state.get('terminal_at')
+            row = {'request':request['request_id'], 'status':state.get('status'),
+                   'first_input_s':round(first-released,3) if first is not None else None,
+                   'terminal_s':round(terminal-released,3) if terminal is not None else None,
+                   'stt_finalize_s':round(state['transcript_final_at']-released,3) if 'transcript_final_at' in state else None}
+            print('  timing: '+json.dumps(row),flush=True)
+            with (LOGS/'timings-optimized.jsonl').open('a') as f:
+                f.write(json.dumps({'session':session.name,**row})+'\n')
+            return
         actions = [r for r in agent.shared.log if r.t >= pressed]
         calls = [c for c in agent.brain.calls if c["t"] >= pressed and not c.get("cancelled")]
         row = {"when": time.strftime("%H:%M:%S"), "words": request["words"],
@@ -273,6 +322,8 @@ def main() -> None:
         (folder / "log.json").write_text(json.dumps([{"t": r.t, "action": r.action, "result": r.result,
                                                       "detail": r.detail} for r in agent.shared.log], indent=0))
         (folder / "trace.json").write_text(json.dumps(agent.trace, indent=0, default=str))
+        if hasattr(agent,'control'):
+            agent.control.save(folder/'control.json')
 
     def trace() -> None:  # each model reply and each action as it runs, in seconds since the agent started
         calls = ran = 0
@@ -280,7 +331,8 @@ def main() -> None:
         while True:
             open_ = [r for r in requests if "words" in r and not r.get("summarized")]
             for request in open_:
-                if agent.shared.finished or request is not requests[-1]:  # done, or overtaken by a new request
+                terminal = agent.control.requests.get(request['request_id'],{}).get('terminal_at') if hasattr(agent,'control') else None
+                if (terminal is not None if hasattr(agent,'control') else agent.shared.finished) or request is not requests[-1]:
                     summarize(request, time.monotonic() - agent.started if agent.shared.finished else None)
                     request["summarized"] = True
             for call in agent.brain.calls[calls:]:
@@ -321,12 +373,17 @@ def main() -> None:
                     if value == 2:  # key repeat
                         continue
                     if value == 1 and talking is None:
+                        pressed = time.monotonic() - agent.started
+                        speaker.stop()
                         agent.brain.end_turn()  # the last request is over; this is the next one
-                        requests.append({"pressed": time.monotonic() - agent.started})
+                        requests.append({"pressed": pressed, 'request_id':agent.shared.request})
                         talking = Utterance(os.environ["DEEPGRAM_API_KEY"], mic, agent.brain.hear)
                         print("listening...", flush=True)
                     elif value == 0 and talking is not None:
                         released = time.monotonic() - agent.started
+                        if hasattr(agent,'control'):
+                            with agent.cond:
+                                agent.control.requests[requests[-1]['request_id']]['released_at'] = released
                         words, talking = talking.finish(), None
                         print(f"[{released:.2f}] you: {words or '(nothing heard)'}", flush=True)
                         if words:
@@ -334,9 +391,13 @@ def main() -> None:
                             agent.brain.hear(words, speaking=False)
                         else:
                             requests.pop()
+                            if hasattr(agent.brain,'cancel_turn'):
+                                agent.brain.cancel_turn()
     except KeyboardInterrupt:
         pass
     finally:
+        speaker.stop()
+        mic.close()
         keys.close()
         agent.close()
         agent.controller.hid.close()

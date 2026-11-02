@@ -1,6 +1,6 @@
 import unittest
 from bench.experiments.routine_experiment import RoutineExecutor
-import tests.test_recipe_experiment as recipe_tests
+import tests_studies.test_recipe_experiment as recipe_tests
 
 
 class RoutineTests(recipe_tests.RecipeTests):

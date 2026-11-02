@@ -268,7 +268,7 @@ def main(case_factory=cases, default_tests=range(1, 13)):
                         help='default: 1-12; held out: 13 camera, 14 save+close, 15 newest PDF, 16 public Firefox')
     parser.add_argument('--repeats', type=int, default=1)
     parser.add_argument('--candidate', action='store_true')
-    parser.add_argument('--variants', nargs='+', choices=['baseline', 'candidate'],
+    parser.add_argument('--variants', nargs='+', choices=['baseline', 'candidate', 'optimized'],
                         help='interleave both variants; alternate which goes first for each case')
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=False)  # never silently mix repetitions with an earlier run
@@ -298,9 +298,14 @@ def main(case_factory=cases, default_tests=range(1, 13)):
                         from bench.arch.reliable_queue import configure
                     else:
                         configure = None
+                    if variant == 'optimized':
+                        from bench.arch.optimized_queue import create as agent_factory
+                    else:
+                        agent_factory = harness.QueueAgent
                     outside_before = output_files()
                     row = harness.run(test, index, repeat, *harness.MODELS['deepseek'], target,
-                                      variant, 'qwen', 'screen', args.out, configure=configure)
+                                      variant, 'qwen', 'screen', args.out, configure=configure,
+                                      agent_factory=agent_factory)
                     outside_after = output_files()
                     row['unexpected_output_files'] = sorted(path for path in outside_before.keys() | outside_after.keys()
                                                            if outside_before.get(path) != outside_after.get(path))
