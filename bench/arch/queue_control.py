@@ -84,7 +84,7 @@ class Control:
     def finish(self, status: str, message: str = '', *, speak: bool = True) -> None:
         """Must be called with the condition held. Also revokes in-flight input authority."""
         request = self.agent.shared.request
-        if self.agent.shared.finished and self.requests.get(request,{}).get('status') in ('verified','asked','blocked','uncertain','cancelled'):
+        if self.agent.shared.finished and self.requests.get(request,{}).get('status') in ('verified','replied','asked','blocked','uncertain','cancelled'):
             return
         self.invalidate()
         self.agent.shared.finished = True

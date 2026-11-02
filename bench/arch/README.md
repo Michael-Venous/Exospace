@@ -974,3 +974,32 @@ DeepSeek's 1.6-1.7 MP budget holds at 21:9, 32:9, 9:16 and 4:3 as well (tokens f
 - **The pointer needs a pixel budget, not a long side**: 1280 px gives an ultrawide 0.69 MP. Now
   `frames.POINTER_PIXELS` 2.5 MP (`EXO_POINT_PIXELS`) for clicks and window focus in the optimized queue, and for
   the claim check's last screenshot (was the full native frame: about 10k Qwen tokens on 4K).
+
+### Prompt rewrite, speed and the claim check (study 19, `prompt_eval.py`, 2026-11-03)
+A first manual run of the optimized queue was slower than the old queue ("Open Firefox" 9.2 s with 6 planner
+calls vs 4.0-4.9 s with 2-3) and gave up on "what is today's date" (the panel hides itself). Causes: `until`
+returned at once, so every step was a screenshot plus a planner call (and a second until for a half-drawn
+window); app launches came as three replies plus a pointer lookup for the already focused search box; the claim
+check's 1.5 s first-byte limit failed about half its multi-image checks (first token 1.5 s p50), and a
+greeting was screen-checked and replaced by a failure message.
+
+Changes: `until` waits on the laptop until the screen has changed and held still (`UNTIL_S` 3 s); a `reply`
+status for conversation, spoken unchecked; an unchecked answer is still said, flagged; the claim check has its
+own limits (4 s first byte, 8 s total) and at most 4 images; the planner prompt is rewritten (770 to about 450
+words) and the claim-check prompt (244 to 150 words). Old prompts are kept in `prompt_eval.py` as baselines.
+
+First replies on rendered 2880x1800 screens, 4 reps (raw rows `work/arch/prompt-eval3/`):
+
+| Case | Old prompt | New prompt |
+| --- | --- | --- |
+| Reading and click (study 18 cases) | 48/56 | 50/54 |
+| Open an app in one reply (GUI, name, ENTER) | 0/4 | 3/4 (other: clicked it in the taskbar) |
+| Date, panel hidden: look before answering | 0/4 | 4/4 |
+| Dictation: symbols / exact case | 4/4 / 4/4 | 4/4 / 3/4 |
+| Close a covered window by name | 4/4 | 3/4 |
+| Ambiguous "email from Priya" asks | 0/4 | 0/3 (still picks one) |
+| Greeting is a reply | - | 3/3 (9/9 in a live check) |
+
+Claim check, 13 true and false near-miss claims x 3: old prompt accepted 21/21 true and 3/18 false ("Firefox
+is open" on a screen with only its taskbar label); new 18/18 true, 0/18 false. Live latency of the claim check
+0.7-0.9 s warm, one 3.9 s cold start. Speed of the new until and launch replies still needs a live laptop run.

@@ -133,11 +133,47 @@ class ControlTests(unittest.TestCase):
         self.ex.checks.claim=Mock(side_effect=httpx.ReadTimeout('slow service'))
         self.assertEqual(self.ex._do(p.action)[0],'uncertain')
         self.assertTrue(self.agent.shared.finished)
+    def test_conversation_reply_is_spoken_without_a_screen_check(self):
+        p=self.plan({'say':'Hello! How can I help?','status':'reply'})
+        self.ex.checks.claim=Mock(side_effect=AssertionError('a greeting needs no evidence'))
+        self.assertEqual(self.ex._do(p.action)[0],'replied')
+        self.assertEqual(self.brain.said,['Hello! How can I help?'])
+        self.assertEqual(self.c.requests[p.request]['status'],'replied')
+    def test_answer_whose_check_never_returns_is_said_flagged_unchecked(self):
+        p=self.plan({'say':'Your battery is at 63%.','status':'answer'})
+        self.ex.checks.claim=Mock(side_effect=httpx.ReadTimeout('slow check'))
+        self.assertEqual(self.ex._do(p.action)[0],'uncertain')
+        self.assertEqual(self.brain.said,["Your battery is at 63%. I couldn't double-check that on the screen."])
+    def test_claim_check_has_its_own_limits_and_at_most_four_images(self):
+        self.assertEqual((self.ex.checks.client.client.timeout.read,self.ex.checks.client.total_s),(4.0,8.0))
+        for i in range(6):self.ex.checks.observe(bytes([i]),1)
+        sent=[]
+        self.ex.checks.client.call=lambda images,*a:(sent.append(images) or ({'status':'complete','observed':'x'},{}))
+        self.assertTrue(self.ex.checks.claim(b'final','goal','claim',True,[]))
+        self.assertLessEqual(len(sent[0]),4)
     def test_wait_does_not_call_another_model(self):
         p=self.plan({'until':'new page'})
         self.ex.checks.evaluate=Mock(side_effect=AssertionError('extra model call'))
-        self.assertEqual(self.ex._do(p.action)[0],'observed')
+        with patch('bench.arch.optimized_queue.UNTIL_S',.05):
+            self.assertEqual(self.ex._do(p.action)[0],'observed')
         self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
+    def test_wait_returns_once_the_screen_has_changed_and_settled(self):
+        p=self.plan({'until':'the window'})
+        screens=iter([np.zeros((200,320,3),np.uint8),np.full((200,320,3),200,np.uint8),
+                      np.full((200,320,3),200,np.uint8)])
+        self.target.grab=lambda:next(screens)  # unchanged, then drawn, then the same again
+        result,detail=self.ex._do(p.action)
+        self.assertEqual(result,'observed')
+        self.assertIn('settled',detail)
+    def test_wait_stops_when_the_user_presses_talk(self):
+        p=self.plan({'until':'the window'})
+        def grab():
+            self.brain.end_turn()
+            return np.zeros((200,320,3),np.uint8)
+        self.target.grab=grab
+        started=time.monotonic()
+        self.assertEqual(self.ex._do(p.action)[0],'superseded')
+        self.assertLess(time.monotonic()-started,.5)
     def test_terminal_revokes_inflight_input(self):
         p=self.plan({'key':['ENTER']})
         with self.agent.cond:self.c.finish('blocked','Stopped.')

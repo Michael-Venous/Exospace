@@ -287,7 +287,7 @@ def images(image: np.ndarray, side: str) -> list[bytes]:
     return [shrink(cv2.imencode(".jpg", image, [cv2.IMWRITE_JPEG_QUALITY, 80])[1].tobytes(), int(side))]
 
 
-def plan(client: httpx.Client, image: np.ndarray, side: str, request: str) -> dict:
+def plan(client: httpx.Client, image: np.ndarray, side: str, request: str, prompt: str = PROMPT) -> dict:
     """One planner call exactly as `Brain._call` makes it on a fresh request (no log yet), on its pinned host."""
     pictures = images(image, side)
     context = {"device": DEVICE, "user_is_speaking": False, "user_said": request, "conversation_before": [],
@@ -296,7 +296,7 @@ def plan(client: httpx.Client, image: np.ndarray, side: str, request: str) -> di
         context["images"] = TILES_NOTE if side == "tiles" else TILES_NOTE_2
     body = {"model": PLANNER, "stream": True, "temperature": 0, "max_tokens": 2048, "reasoning": {"enabled": False},
             "provider": {"order": list(PINNED[PLANNER]), "allow_fallbacks": False}, "usage": {"include": True},
-            "messages": [{"role": "system", "content": PROMPT}, {"role": "user", "content": [
+            "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": [
                 *({"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode()}}
                   for jpeg in pictures),
                 {"type": "text", "text": json.dumps(context)}]}]}
