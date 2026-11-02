@@ -133,6 +133,16 @@ class ControlTests(unittest.TestCase):
         self.ex.checks.claim=Mock(side_effect=httpx.ReadTimeout('slow service'))
         self.assertEqual(self.ex._do(p.action)[0],'uncertain')
         self.assertTrue(self.agent.shared.finished)
+    def test_a_dropped_check_connection_is_asked_again(self):
+        p=self.plan({'done':'The terminal is minimized.'})
+        self.ex.checks.claim=Mock(side_effect=[httpx.ReadError('bad record mac'),True])
+        self.assertEqual(self.ex._do(p.action)[0],'verified')
+        self.assertEqual(self.ex.checks.claim.call_count,2)
+    def test_a_done_task_whose_check_never_answers_is_not_called_a_failure(self):
+        p=self.plan({'done':'The terminal is minimized.'})
+        self.ex.checks.claim=Mock(side_effect=httpx.ReadError('bad record mac'))
+        self.assertEqual(self.ex._do(p.action)[0],'uncertain')
+        self.assertEqual(self.brain.said[-1],"I think that's done (The terminal is minimized), but I couldn't double-check it on the screen.")
     def test_conversation_reply_is_spoken_without_a_screen_check(self):
         p=self.plan({'say':'Hello! How can I help?','status':'reply'})
         self.ex.checks.claim=Mock(side_effect=AssertionError('a greeting needs no evidence'))
@@ -154,8 +164,8 @@ class ControlTests(unittest.TestCase):
     def test_wait_does_not_call_another_model(self):
         p=self.plan({'until':'new page'})
         self.ex.checks.evaluate=Mock(side_effect=AssertionError('extra model call'))
-        with patch('bench.arch.optimized_queue.UNTIL_S',.05):
-            self.assertEqual(self.ex._do(p.action)[0],'observed')
+        with patch('bench.arch.optimized_queue.UNTIL_STILL_S',.05):
+            self.assertEqual(self.ex._do(p.action)[0],'no_change')
         self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
     def test_wait_returns_once_the_screen_has_changed_and_settled(self):
         p=self.plan({'until':'the window'})
@@ -165,6 +175,64 @@ class ControlTests(unittest.TestCase):
         result,detail=self.ex._do(p.action)
         self.assertEqual(result,'observed')
         self.assertIn('settled',detail)
+    def test_a_wait_with_no_change_at_all_hands_back_early(self):
+        p=self.plan({'until':'the mute icon'})
+        with patch('bench.arch.optimized_queue.UNTIL_STILL_S',.1),patch('bench.arch.optimized_queue.UNTIL_S',5):
+            started=time.monotonic()
+            result,detail=self.ex._do(p.action)
+        self.assertEqual(result,'no_change')
+        self.assertLess(time.monotonic()-started,1)
+        self.assertIn('did not respond',detail)
+    def test_hover_moves_without_clicking(self):
+        p=self.plan({'hover':'the File menu'})
+        self.ex._find=Mock(return_value=(.25,.75))
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+        self.assertEqual([x['op'] for x in self.target.sent if x['op']!='release_all'],['move'])
+    def test_hover_away_parks_the_pointer_at_the_edge(self):
+        p=self.plan({'hover':'away'})
+        self.ex._find=Mock(side_effect=AssertionError('parking needs no lookup'))
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+        moves=[x for x in self.target.sent if x['op']=='move']
+        self.assertEqual(len(moves),1)
+        self.assertGreater(moves[0]['x'],32000)
+    def test_ordinary_keys_go_to_the_window_in_front(self):
+        p=self.plan({'key':['M'],'in':'Instagram'})
+        self.ex._find_window=Mock(side_effect=AssertionError('no lookup for an ordinary key'))
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+        self.assertEqual([x['op'] for x in self.target.sent if x['op']!='release_all'],['key'])
+    def test_out_of_attempts_gets_one_report_only_call(self):
+        self.brain.hear('set 60 hertz',False)
+        self.c.calls,self.c.changed_at=5,time.monotonic()-60
+        notes=[]
+        with patch.object(Brain,'_call',lambda brain:notes.append(brain.note)):
+            self.brain._call()
+        self.assertFalse(self.agent.shared.finished)  # not the generic stop yet
+        self.assertIn('out of attempts',notes[0])
+        record={'epoch':self.brain.call_epoch,'request':self.agent.shared.request,'view':self.c.view,'lines':[]}
+        self.brain._take({'click':'120.00 Hz'},record,time.monotonic())
+        self.brain._take({'say':'Only 120 Hz is offered.','status':'answer'},record,time.monotonic())
+        self.assertEqual([p.action for p in self.agent.shared.queue],[{'say':'Only 120 Hz is offered.','status':'blocked'}])
+        with patch.object(Brain,'_call',lambda brain:None):
+            self.brain._call()  # the report call brought nothing that ended the request
+        self.assertEqual(self.c.requests[self.agent.shared.request]['status'],'blocked')
+        self.assertIn('enough progress',self.brain.said[-1])
+    def test_a_new_request_has_its_attempts_back(self):
+        self.brain.final_report=self.brain.reported=True
+        self.c.unanswered=2
+        self.brain.end_turn()
+        self.assertFalse(self.brain.final_report or self.brain.reported or self.c.unanswered)
+    def test_a_control_that_ignores_two_inputs_leads_to_a_report(self):
+        p=self.plan({'until':'the list'})
+        for result in ('no_change','observed','no_change','no_change'):
+            self.ex._do=Mock(return_value=(result,''))
+            with self.agent.cond:
+                self.agent.shared.queue.append(Planned({'until':'x'},self.c.epoch,p.request,self.c.view))
+            self.ex.closed=False
+            thread=threading.Thread(target=self.ex.run,daemon=True);thread.start()
+            deadline=time.monotonic()+1
+            while self.agent.shared.queue and time.monotonic()<deadline:time.sleep(.005)
+            time.sleep(.02);self.ex.closed=True;thread.join(1)
+            self.assertEqual(self.brain.final_report,result=='no_change' and self.c.unanswered>=2)
     def test_wait_stops_when_the_user_presses_talk(self):
         p=self.plan({'until':'the window'})
         def grab():

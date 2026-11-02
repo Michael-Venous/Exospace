@@ -30,9 +30,13 @@ def planner_jpeg(frame) -> bytes:
     return fit_jpeg(frame, PLANNER_PIXELS)
 TRANSIENT_RETRIES = 1  # a planner stall, dropped connection or 5xx is asked again once (on the next host) before stopping
 RATE_LIMIT_WAIT_S = 1.5  # an HTTP 429 waits this long before that one retry
+FINAL_REPORT = ("\n\nYou are out of attempts for this request: send no more actions. Reply with one "
+                '{"say":"...","status":"blocked"}: in a sentence or two, what you tried, what the screen showed '
+                "and what didn't respond (for example, that the option isn't offered).")
 QWEN_CHECK, QWEN_CHECK_HOST = 'qwen/qwen3.8-27b', 'modelrun/fp4'
 CLAIM_READ_S, CLAIM_TOTAL_S = 4.0, 8.0  # the claim check's first-byte and whole-reply limits
 UNTIL_S = 3.0  # longest an until waits for the screen to change and settle (each look is a ~0.27 s screenshot)
+UNTIL_STILL_S = 2.0  # nothing changed at all by then: hand back (6 of 26 waits sat 3 s on an unseen change)
 
 PROMPT = '''You control a computer through its keyboard and mouse, seeing only screenshots. The user has finished
 speaking. Reply with the next actions, one JSON object per line, nothing else. Chain actions while you know where
@@ -40,13 +44,14 @@ they land; end the reply at the first step whose result you need to see.
 
 Actions
 {"key":["CTRL","L"]}  keys: CTRL SHIFT ALT GUI ENTER ESC TAB BACKSPACE DELETE UP DOWN LEFT RIGHT HOME END PAGEUP
-  PAGEDOWN F1-F12, letters, digits. Add "in":"<window title>" to focus that window first; ALT+F4, CTRL+W and
-  CTRL+Q require it.
+  PAGEDOWN F1-F12, letters, digits. Keys go to the window in front. Close shortcuts (ALT+F4, CTRL+W, CTRL+Q) need
+  "in":"<window title>": that window is focused first.
 {"type":"exact text"}  types at the caret. "into":"<field>" clicks that field first; "replace":true also selects
   its old text.
 {"click":"<visible label, or what it looks like and where>"}  also "double_click" and "right_click";
   "hold":["CTRL"] or ["SHIFT"] for a modified click.
 {"drag":["<from>","<to>"]}  {"scroll":3,"at":"<area>"} (positive scrolls down)
+{"hover":"<target>"}  moves the pointer there without clicking; {"hover":"away"} moves it off the content.
 {"until":"<what should appear>"}  waits until the screen changes and settles, then ends the reply; you get
   the new screenshot.
 {"done":"<what on the screen shows the whole request is done>"}  finishes quietly; it is checked.
@@ -65,11 +70,14 @@ Rules
   The launcher's search box already has focus.
 - Type exactly what was dictated, in the user's case, with spoken symbols as characters: "type report dash
   final dot txt" is {"type":"report-final.txt"}. Never type a placeholder.
-- After working elsewhere, click the field before typing into it.
+- After working elsewhere, click the field before typing into it. Name a text field by what and where it is
+  ("the message box at the bottom"), not by its placeholder text, which often repeats a name shown elsewhere.
 - Name windows by their title bar. A window behind another is still open.
 - Never repeat something that may already have worked (save, send, create, launch, paste): check first.
 - While something loads, wait with until; don't click or reload again.
-- If a step didn't work, try another way (keyboard, another label) instead of repeating it.
+- If a step didn't work, try another way (keyboard, another label) instead of repeating it. If a control
+  doesn't respond to two different tries, stop and say blocked with what the screen shows (the option may not
+  exist).
 - For an exact setting use the keyboard or a number field (sliders take HOME, END and arrows).
 - If a name fits more than one item on the screen (two people called Priya, two accounts), ask which; don't
   pick one.
@@ -155,6 +163,10 @@ class OptimizedExecutor(Executor):
                 c.event('action', epoch=plan.epoch, action=next((k for k in plan.action if k in PRIMARY_ACTIONS),''),
                         result=result, duration_s=round(time.monotonic()-started,4))
                 self.shared.activity_at = time.monotonic()
+                if result in ('no_change', 'observed'):  # inputs that didn't respond, in a row
+                    c.unanswered = c.unanswered + 1 if result == 'no_change' else 0
+                    if c.unanswered >= 2:  # one retry already changed nothing: tell the user instead
+                        c.agent.brain.final_report = True
                 if plan.epoch == c.epoch and result not in ('done',):
                     # also prevents later streamed lines from resurrecting a failed batch
                     c.invalidate(batch_ended=True)
@@ -181,11 +193,15 @@ class OptimizedExecutor(Executor):
             closing=keys in (frozenset(('ALT','F4')),frozenset(('CTRL','Q')),frozenset(('CTRL','W')))
             if closing and not action.get('in'):
                 return 'error', 'Close shortcut requires in with the actual target window title/application; focus it first.'
-            if action.get('in'):
+            # Only a close shortcut focuses its window first: for other keys a lookup and a title-bar click cost
+            # 1.5-2.7 s and could pause a full-screen video; they go to the window in front.
+            if closing:
                 point=self._find_window(str(action['in']))
                 if point is None:
                     return 'not_found','The target window was not visible; use the app switcher and observe it first.'
                 self._input(lambda:self.controller.execute(Action('click',x=point[0],y=point[1]),self.profile))
+        if kind == 'hover':
+            return self._hover(str(action[kind]))
         if kind=='type' and 'text' in action:
             return 'error', 'type must contain the actual characters to send; there is no separate text parameter'
         if kind in ('done','say','ask'):
@@ -199,6 +215,17 @@ class OptimizedExecutor(Executor):
             if c.attempts[key] > limit:
                 return 'not_shown', 'This same input already ran without observable progress. Inspect or use another approach.'
         return super()._do(action)
+
+    def _hover(self, target: str) -> tuple[str,str]:
+        """Move the pointer without clicking: onto a target (menus, tooltips), or "away" off the content."""
+        if target.strip().lower() in ('away', 'off', 'off screen', 'out of the way'):
+            self._input(self.controller.park)
+            return 'done', 'pointer moved to the screen edge'
+        point = self._find(target)
+        if point is None:
+            return 'not_found', f'{target!r} was not found on the screen'
+        self._input(lambda: self.controller.hover(*point))
+        return 'done', self._where(point)
 
     def _input(self, send: Callable[[],None]) -> None:
         if self.inputs:
@@ -228,18 +255,23 @@ class OptimizedExecutor(Executor):
         still for one more look, or UNTIL_S. Returning at once cost a planner call per step and showed the planner
         half-drawn windows ("until Firefox window open", then "until Firefox window visible"). Pixels only: the
         planner judges what the settled screen shows."""
-        started, last = time.monotonic(), None
-        while time.monotonic() - started < UNTIL_S:
+        started, last, moved = time.monotonic(), None, False
+        while time.monotonic() - started < (UNTIL_S if moved else UNTIL_STILL_S):
             thumb = thumbnail(self.controller.capture.grab())
             with self.cond:
                 if self.active_plan is None or not self.control.valid(self.active_plan.epoch):
                     return 'superseded', 'the plan was stopped while waiting'
-            if last is not None and changed(self.control.thumb, thumb) and not changed(last, thumb):
+            moved = moved or changed(self.control.thumb, thumb)
+            if last is not None and moved and not changed(last, thumb):
                 return 'observed', (f'The screen changed and settled after {time.monotonic()-started:.1f} s. '
                                     f'Judge from it whether {expected} is shown before acting.')
             last = thumb
-        return 'observed', (f'No settled change within {UNTIL_S:g} s. Look at the screen: if {expected} is not '
-                            'shown, the action may not have worked or is still loading.')
+        if not moved:
+            return 'no_change', (f'Nothing on the screen changed in {time.monotonic()-started:.1f} s after your last '
+                                 'input: it did not respond. Do not repeat it; try a different way once, or say '
+                                 'blocked with what the screen shows (the option may not exist).')
+        return 'observed', (f'The screen was still changing after {UNTIL_S:g} s. Look at it: if {expected} is not '
+                            'shown yet, it may still be loading.')
 
     def _terminal(self, action: dict, kind: str) -> tuple[str,str]:
         c = self.control
@@ -263,13 +295,17 @@ class OptimizedExecutor(Executor):
             steps = [r.action for r in self.shared.log[self.shared.turn_start:] if r.result=='done'][-80:]
         jpeg = fit_jpeg(frame, POINTER_PIXELS, 85)  # Qwen checks it: full 4K was about 10k tokens
         started = time.monotonic()
-        try:
-            supported = self.checks.claim(jpeg, goal, text, kind=='done' or status=='complete', steps)
-            reason = self.checks.last_reason
-        except ModelHTTPError as exc:
-            return self._failure(exc)
-        except (httpx.TransportError, TimeoutError) as exc:
-            supported, reason = None, f'The evidence check did not respond ({type(exc).__name__}).'
+        for attempt in range(2):  # a dropped connection ("bad record mac") fails in ~0.1 s: once more
+            try:
+                supported = self.checks.claim(jpeg, goal, text, kind=='done' or status=='complete', steps)
+                reason = self.checks.last_reason
+                break
+            except ModelHTTPError as exc:
+                return self._failure(exc)
+            except (httpx.TransportError, TimeoutError) as exc:
+                supported, reason = None, f'The evidence check did not respond ({type(exc).__name__}).'
+                if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+                    break  # a slow check is not asked again: that would double the wait
         with self.cond:
             c.event('claim-check', duration_s=round(time.monotonic()-started,4))
             if not c.valid(epoch):
@@ -280,6 +316,8 @@ class OptimizedExecutor(Executor):
             if supported is None and kind == 'say' and status != 'complete':
                 # An answer whose check never came back is still said, flagged as unchecked.
                 message = f"{text} I couldn't double-check that on the screen."
+            elif supported is None:  # a finished task whose check never came back: not a failure
+                message = f"I think that's done ({text.rstrip('.')}), but I couldn't double-check it on the screen."
             else:
                 message = f"I stopped without repeating the action. I couldn't confirm the result: {reason}"
             c.finish('uncertain', message)
@@ -321,8 +359,10 @@ class OptimizedBrain(Brain):
             self.words, self.speaking, self.dirty = '', True, False
             self.control.requests[self.shared.request] = {'pressed_at':round(pressed-self.started,4), 'status':'listening'}
             self.control.calls = 0
+            self.control.unanswered = 0
             self.control.changed_at = pressed  # progress is measured from this request's start
             self.transient = 0
+            self.final_report = self.reported = False
             self.control.attempts.clear()
             self.replies, self.repeated = {}, False
             self.history = []
@@ -360,9 +400,13 @@ class OptimizedBrain(Brain):
             c.epoch += 1
             self.call_epoch = c.epoch
             c.calls += 1
-            if c.calls > 24 or c.calls>=5 and time.monotonic()-c.changed_at>12:
-                c.finish('blocked', "I stopped because this request isn't making enough progress. Tell me what to change.")
-                return
+            if self.final_report or c.calls > 24 or c.calls>=5 and time.monotonic()-c.changed_at>12:
+                if self.reported:  # the report call came back with nothing to say
+                    c.finish('blocked', "I stopped because this request isn't making enough progress. Tell me what to change.")
+                    return
+                # One last call that may only report: the user hears what didn't respond, not a generic stop.
+                self.final_report = self.reported = True
+        self.note = FINAL_REPORT if self.final_report else ''
         try:
             super()._call()
             self.transient = 0
@@ -433,6 +477,11 @@ class OptimizedBrain(Brain):
             self._take(input_action,record,started)
             self._take({'until':action['until']},record,started)
             return
+        if self.final_report:
+            if not action.keys() & {'say', 'ask'}:
+                return  # out of attempts: inputs are dropped, only the report runs
+            if 'say' in action:
+                action = {**action, 'status': 'blocked'}
         if self._runaway(action, record):
             with self.cond:
                 if self.control.valid(record.get('epoch',-1)):
@@ -459,6 +508,8 @@ def create(target, model: str, effort: str, jev_key: str, log_dir: Path,
         agent.brain.said_requests = []
         agent.brain.ended_epoch = -1  # the last plan its own result ended (an until, a failure)
         agent.brain.transient = 0  # planner failures in a row that are worth one more call
+        agent.brain.final_report = False  # out of attempts: this request's last call may only report
+        agent.brain.reported = False  # that report call has been made
         control.events_log = (log_dir/'control-events.jsonl').open('a')
         agent.brain.loop_handler = lambda: control.finish('blocked', "I'm going in circles, so I've stopped. Tell me what to change.")
         agent.executor.strict_reports = True

@@ -125,6 +125,29 @@ def covered() -> str:
     return kate + firefox + study.PANEL
 
 
+def chat() -> str:
+    """A group chat: its name in the header (clicking it renames the group) and repeated in the box's placeholder."""
+    body = ('<div style="position:absolute;inset:0;background:#313338;color:#dbdee1;font-size:14px">'
+            '<div style="height:44px;line-height:44px;padding:0 16px;border-bottom:1px solid #222;font-weight:600">'
+            '# Exospace</div><div style="padding:16px;line-height:26px">Sam: did the demo work?<br>'
+            'Alex: try it again tonight</div><div style="position:absolute;left:16px;right:16px;bottom:16px;'
+            'height:44px;line-height:44px;padding:0 14px;background:#383a40;border-radius:8px;color:#80848e">'
+            'Message Exospace</div></div>')
+    return study.window(100, 60, 1700, 1040, "Exospace - Discord", body) + study.PANEL
+
+
+def video() -> str:
+    """A full-screen video with the pointer over it."""
+    return ('<div style="position:absolute;inset:0;background:#000;color:#fff;font-size:22px">'
+            '<div style="position:absolute;top:40%;width:100%;text-align:center">▶ Funny car compilation</div>'
+            '<div style="position:absolute;left:900px;top:520px;font-size:28px">➤</div></div>')
+
+
+def one_rate() -> str:
+    """A display that offers one refresh rate: shown as plain text, not a dropdown."""
+    return study.settings().replace("<select><option>119.93 Hz</option></select>", "120.00 Hz")
+
+
 def blank_editor() -> str:
     return study.window(300, 140, 1200, 700, "Untitled — Kate",
                         '<div class=mono style="height:100%;background:#fff;color:#222">|</div>') + study.PANEL
@@ -195,6 +218,39 @@ class Case:
     screen: str
     request: str
     check: Check
+    log: list | None = None  # actions already taken in this request
+
+
+def names_the_box(actions):
+    """The message box is named by role or place, not by its placeholder alone (which matches the header)."""
+    for a in actions:
+        target = next((str(a[k]) for k in ("click", "into") if k in a), None)
+        if target is not None:
+            return "pass" if re.search(r"(?i)box|input|field|bottom|compose", target) else "fail"
+    return "other"
+
+
+def hovers_away(actions):
+    if any("key" in a for a in actions):
+        return "fail"  # ESC leaves full screen; other keys act on the video
+    return "pass" if any("hover" in a for a in actions) else "fail" if actions else "other"
+
+
+def reports_no_response(actions):
+    """Two different tries changed nothing: say what the screen shows instead of clicking again."""
+    end = terminal(actions)
+    if end.get("status") == "blocked" or "ask" in end:
+        return "pass" if re.search(r"120|only|not (offer|avail|support)|doesn't", str(end.get("say", end.get("ask", "")))) else "fail"
+    return "fail" if any(a.keys() & {"click", "double_click", "key"} for a in actions) else "other"
+
+
+TRIED = [{"t": 9.5, "action": {"click": "120.00 Hz refresh rate value"}, "result": "done", "detail": "at (854, 413)"},
+         {"t": 12.7, "action": {"until": "refresh rate options list"}, "result": "no_change",
+          "detail": "Nothing on the screen changed in 2.0 s after your last input: it did not respond. Do not repeat "
+                    "it; try a different way once, or say blocked with what the screen shows (the option may not "
+                    "exist)."},
+         {"t": 14.5, "action": {"click": "Refresh rate dropdown (120.00 Hz)"}, "result": "not_found",
+          "detail": "'Refresh rate dropdown (120.00 Hz)' wasn't found on the screen"}]
 
 
 def launches_in_one_reply(actions):
@@ -208,6 +264,9 @@ def launches_in_one_reply(actions):
 BEHAVIOUR = [
     Case("open-app", "files", "Open Firefox", launches_in_one_reply),
     Case("hello", "panel", "Hello.", reply_status("reply")),
+    Case("no-response", "one_rate", "Change my display to 60 hertz", reports_no_response, TRIED),
+    Case("chat-reply", "chat", "Respond with sounds good", names_the_box),
+    Case("mouse-away", "video", "Move the mouse off the screen so I can see better", hovers_away),
     Case("date-hidden-panel", "nopanel", "What is today's date?", looks_first),
     Case("date-visible", "panel", "What's today's date?", date_visible),
     Case("dictate-symbols", "blank_editor", "Type report dash final dot txt", typed("report-final.txt")),
@@ -270,7 +329,8 @@ def render(out: Path) -> None:
     with sync_playwright() as p:
         browser = p.chromium.launch(executable_path=os.environ.get("CHROME", "/usr/bin/google-chrome-stable"))
         page = browser.new_page(viewport={"width": 1920, "height": 1200}, device_scale_factor=1.5)
-        for name, html in {"nopanel": nopanel(), "covered": covered(), "blank_editor": blank_editor(),
+        for name, html in {"nopanel": nopanel(), "covered": covered(), "blank_editor": blank_editor(), "chat": chat(), "one_rate": one_rate(),
+                           "video": video(),
                            **{n: getattr(study, n)() for n in ("panel", "mail", "files", "terminal", "settings",
                                                                  "notifications", "tabs", "editor", "toast", "sheet")}}.items():
             page.set_content(f"<style>{study.CSS}</style>{html}")
@@ -284,6 +344,7 @@ def main() -> None:
     parser.add_argument("--prompts", nargs="+", default=["PROMPT_V1", "PROMPT"])
     parser.add_argument("--reps", type=int, default=4)
     parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--cases", nargs="*", help="only these case names")
     parser.add_argument("--claims", nargs="*", help="check claim-check prompts instead, e.g. CLAIM_SYSTEM_V1 CLAIM_SYSTEM")
     args = parser.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
@@ -293,7 +354,8 @@ def main() -> None:
         return
     reading = [c for c in study.CASES if not c.screen.endswith(".jpg")]
     frames = {f.stem: cv2.imread(str(f)) for f in args.out.glob("*.png")}
-    jobs = [(prompt, case, rep) for prompt in args.prompts for case in [*reading, *BEHAVIOUR] for rep in range(args.reps)]
+    cases = [c for c in [*reading, *BEHAVIOUR] if not args.cases or c.name in args.cases]
+    jobs = [(prompt, case, rep) for prompt in args.prompts for case in cases for rep in range(args.reps)]
     random.Random(19).shuffle(jobs)
     key, lock, log = os.environ["OPENROUTER_API_KEY"], threading.Lock(), (args.out / "calls.jsonl").open("a")
 
@@ -304,7 +366,7 @@ def main() -> None:
                           limits=httpx.Limits(max_keepalive_connections=0)) as client:
             for attempt in range(2):  # one more try after a dropped connection ("bad record mac")
                 try:
-                    row |= study.plan(client, frames[case.screen], "fit", case.request, _prompt(prompt))
+                    row |= study.plan(client, frames[case.screen], "fit", case.request, _prompt(prompt), getattr(case, "log", None))
                     row.pop("error", None)
                     break
                 except httpx.TransportError as exc:

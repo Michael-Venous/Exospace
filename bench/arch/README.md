@@ -1003,3 +1003,22 @@ First replies on rendered 2880x1800 screens, 4 reps (raw rows `work/arch/prompt-
 Claim check, 13 true and false near-miss claims x 3: old prompt accepted 21/21 true and 3/18 false ("Firefox
 is open" on a screen with only its taskbar label); new 18/18 true, 0/18 false. Live latency of the claim check
 0.7-0.9 s warm, one 3.9 s cold start. Speed of the new until and launch replies still needs a live laptop run.
+
+#### Follow-ups from the second manual run (2026-11-03)
+- **Moving the pointer**: there was no action for it, so "move the mouse off screen" became CTRL+SHIFT+ESC and
+  ESC (which left the full-screen video) and a click. New `{"hover":"<target>"}` and `{"hover":"away"}` (the
+  controller's `park`, right edge). Eval: 4/4 use hover away, no keys.
+- **Chat renamed instead of sent**: the planner named the box by its placeholder, "Message Exospace"; Qwen put
+  it on the group name in the header (317, 38), 4/4 on the saved screenshot, which opens a rename. "The message
+  input box at the bottom" landed in the box 4/4. Prompt: name text fields by what and where they are. Eval on a
+  rendered chat: 4/4.
+- **`"in"` only for close shortcuts**: 4 of 5 uses were ordinary keys (GUI+PAGEUP, M, ENTER), each a 1.5-2.7 s
+  lookup plus a title-bar click; other keys now go to the window in front.
+- **`until` with no change at all** hands back after 2 s (`UNTIL_STILL_S`; 6 of 26 waits sat 3 s) as
+  `no_change`, telling the planner the input did not respond.
+- **A control that doesn't respond** (60 Hz on a one-rate display: the value is plain text): two `no_change`
+  results in a row, or the progress guard, make the next call report-only; inputs are dropped and the reply is
+  said as blocked. On the rendered one-rate page 4/4 reports said the value is plain text with no dropdown, so
+  60 Hz can't be selected. Prompt wording alone did not stop a third click (0/4).
+- **Evidence check `ReadError`** (dropped TLS connection) is asked once more; a done task whose check never
+  answers is said as "I think that's done (...), but I couldn't double-check it".

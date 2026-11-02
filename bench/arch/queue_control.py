@@ -52,6 +52,7 @@ class Control:
         self.requests: dict[int, dict] = {}
         self.attempts: Counter = Counter()
         self.calls = 0
+        self.unanswered = 0  # inputs in a row after which the screen didn't change (a control that doesn't respond)
         self.frame = None
         self.thumb = None
         self.changed_at = self.started

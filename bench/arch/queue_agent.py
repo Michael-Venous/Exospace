@@ -61,7 +61,7 @@ RUNAWAY = 8  # the same action this many times in a row ends a reply
 LOOPS = 3  # the same reply this many times in one request: it is going in circles, and stops
 DONE_TAIL = 300  # actions of this request each call sees, compactly
 FAILED = {"not_shown", "not_found", "error", "not_verified"}
-PRIMARY_ACTIONS = {"key", "type", "click", "double_click", "right_click", "drag", "scroll",
+PRIMARY_ACTIONS = {"key", "type", "click", "double_click", "right_click", "drag", "scroll", "hover",
                    "done", "until", "say", "ask"}
 STEP_BACK_EFFORT = "low"  # medium took 3.9 s, or ran out of tokens reasoning (11.6 s)
 STEP_BACK = ("\n\nYou are stuck. Step back before you act: say in one sentence what is actually on the screen and why "
@@ -464,6 +464,7 @@ class Brain(threading.Thread):
         self.observe = None  # optional bench checker: chronological pixels, never oracle state
         self.frame_observer = None  # optional instrumentation/observation of this exact planner frame
         self.loop_handler = None  # optional bench policy owns terminal cancellation and reporting
+        self.note = ""  # optional bench instruction appended to this call's context
 
     @staticmethod
     def _client() -> httpx.Client:
@@ -594,7 +595,8 @@ class Brain(threading.Thread):
                              {"role": "user", "content": [
                                  {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,"
                                                                      + base64.b64encode(image).decode()}},
-                                 {"type": "text", "text": json.dumps(context) + (STEP_BACK if step_back else "")}]}]}
+                                 {"type": "text", "text": json.dumps(context) + (STEP_BACK if step_back else "")
+                                  + self.note}]}]}
         started = time.monotonic()
         self.phase = ("streaming", round(started - self.started, 2))
         record = {"t": round(started - self.started, 2), "speaking": self.speaking, "words": self.words,
