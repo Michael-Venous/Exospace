@@ -53,6 +53,7 @@ class Control:
         self.attempts: Counter = Counter()
         self.calls = 0
         self.unanswered = 0  # inputs in a row after which the screen didn't change (a control that doesn't respond)
+        self.corrected = False  # this request's report was already corrected once after the check disagreed
         self.frame = None
         self.thumb = None
         self.changed_at = self.started

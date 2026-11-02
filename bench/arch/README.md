@@ -1022,3 +1022,17 @@ is open" on a screen with only its taskbar label); new 18/18 true, 0/18 false. L
   60 Hz can't be selected. Prompt wording alone did not stop a third click (0/4).
 - **Evidence check `ReadError`** (dropped TLS connection) is asked once more; a done task whose check never
   answers is said as "I think that's done (...), but I couldn't double-check it".
+
+### Scrolling, selecting text and self-correction (study 20, 2026-11-03)
+- **The recipe "stop" was a check, not a scroll guard**: the planner read "2 ⅓ cups" flour as "2 1/4" at its
+  1.6 MP view; the 2.5 MP claim check caught it and the request ended as uncertain. Now a contradicted report
+  gets the check's reason and one correction (no inputs redone); eval: 4/4 corrected to 2 1/3.
+- **Scrolling** a long page repeats the same reply: it no longer counts toward the same-reply loop guard ("going
+  in circles", stepping back); the per-screen repeat limit still stops a scroll that changes nothing. Prompt:
+  CTRL+F or 5-10 notches at a time. Eval (ingredients below the fold): 4/4 scroll.
+- **Selecting text** (Playwright, Firefox and Chromium, clicks at word centres as a pointer places them): click +
+  SHIFT click and drag start mid-word; double-click + SHIFT click starts right and may end mid-word, fixed by
+  one SHIFT+RIGHT; triple-click selected list items and paragraphs exactly in both. New `triple_click`
+  (HID click count 3) and a selection rule. Eval: line 4/4 (with click-count spellings normalised), a span
+  named by its ends 4/4; "the sentence about X" inside a paragraph 0/4: DeepSeek anchors on the paragraph's
+  first word (a reading limit, not the mechanism).

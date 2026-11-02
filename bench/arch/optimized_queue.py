@@ -20,6 +20,7 @@ from bench.arch.queue_control import Control, Planned, Superseded, TimedTarget, 
 from bench.arch.openrouter_study import ModelHTTPError, OpenRouterJSON
 from bench.arch.queue_agent import Brain, Executor, INPUT_GAP_S, PRIMARY_ACTIONS, QueueAgent, Record
 from bench.arch.reliable_queue import SCHEMA, ScreenChecks
+from brain.hid import HID_MAX
 from brain.types import Action
 
 
@@ -52,6 +53,7 @@ Actions
   "hold":["CTRL"] or ["SHIFT"] for a modified click.
 {"drag":["<from>","<to>"]}  {"scroll":3,"at":"<area>"} (positive scrolls down)
 {"hover":"<target>"}  moves the pointer there without clicking; {"hover":"away"} moves it off the content.
+{"triple_click":"<line or paragraph>"}  selects the whole line, list item or paragraph, never just one sentence.
 {"until":"<what should appear>"}  waits until the screen changes and settles, then ends the reply; you get
   the new screenshot.
 {"done":"<what on the screen shows the whole request is done>"}  finishes quietly; it is checked.
@@ -70,6 +72,11 @@ Rules
   The launcher's search box already has focus.
 - Type exactly what was dictated, in the user's case, with spoken symbols as characters: "type report dash
   final dot txt" is {"type":"report-final.txt"}. Never type a placeholder.
+- To find something on a long page, press CTRL+F, type a word from it and ENTER (ESC closes the find bar), or
+  scroll 5-10 notches at a time and look.
+- To select text: double_click a word; triple_click a whole line, list item or paragraph. For one sentence or
+  any part of a paragraph: {"double_click":"<its first word>"} {"click":"<its last word>","hold":["SHIFT"]},
+  then look and fix the end with SHIFT+RIGHT or SHIFT+LEFT. CTRL+A selects everything in a field; CTRL+C copies.
 - After working elsewhere, click the field before typing into it. Name a text field by what and where it is
   ("the message box at the bottom"), not by its placeholder text, which often repeats a name shown elsewhere.
 - Name windows by their title bar. A window behind another is still open.
@@ -202,6 +209,8 @@ class OptimizedExecutor(Executor):
                 self._input(lambda:self.controller.execute(Action('click',x=point[0],y=point[1]),self.profile))
         if kind == 'hover':
             return self._hover(str(action[kind]))
+        if kind == 'triple_click':
+            return self._triple_click(str(action[kind]))
         if kind=='type' and 'text' in action:
             return 'error', 'type must contain the actual characters to send; there is no separate text parameter'
         if kind in ('done','say','ask'):
@@ -225,6 +234,15 @@ class OptimizedExecutor(Executor):
         if point is None:
             return 'not_found', f'{target!r} was not found on the screen'
         self._input(lambda: self.controller.hover(*point))
+        return 'done', self._where(point)
+
+    def _triple_click(self, target: str) -> tuple[str,str]:
+        """Selects a whole line, list item or paragraph (exact in Firefox and Chromium, study 20)."""
+        point = self._find(target)
+        if point is None:
+            return 'not_found', f'{target!r} was not found on the screen'
+        x, y = round(point[0] * HID_MAX), round(point[1] * HID_MAX)
+        self._input(lambda: self.controller.hid.send({'op': 'click', 'x': x, 'y': y, 'button': 'left', 'count': 3}))
         return 'done', self._where(point)
 
     def _input(self, send: Callable[[],None]) -> None:
@@ -313,6 +331,12 @@ class OptimizedExecutor(Executor):
             if supported:
                 c.finish('verified', text, speak=kind=='say')
                 return 'verified','claim supported by screen evidence'
+            if supported is False and self.checks.last_status == 'incomplete' and not c.corrected:
+                # The check read the screen differently (a misread "2 1/3" as "2 1/4"): one chance to correct the
+                # report from the screen. Never a reason to redo inputs.
+                c.corrected = True
+                return 'not_verified', (f'The screen check disagrees: {reason} Read the screen again closely and '
+                                        'correct your report. Do not redo any action.')
             if supported is None and kind == 'say' and status != 'complete':
                 # An answer whose check never came back is still said, flagged as unchecked.
                 message = f"{text} I couldn't double-check that on the screen."
@@ -360,6 +384,7 @@ class OptimizedBrain(Brain):
             self.control.requests[self.shared.request] = {'pressed_at':round(pressed-self.started,4), 'status':'listening'}
             self.control.calls = 0
             self.control.unanswered = 0
+            self.control.corrected = False
             self.control.changed_at = pressed  # progress is measured from this request's start
             self.transient = 0
             self.final_report = self.reported = False
@@ -459,6 +484,12 @@ class OptimizedBrain(Brain):
     def _batch_ended(self, record: dict) -> bool:
         return record.get('epoch') is not None and record.get('epoch') == self.ended_epoch
 
+    def _counts_as_repeat(self, record: dict) -> bool:
+        """Scrolling through a page sends the same reply again and again: the per-screen repeat limit, not the
+        same-reply loop guard, stops a scroll that no longer changes anything (one at the bottom of a page)."""
+        moves = {'scroll', 'until', 'hover'}
+        return not all(line.keys() & PRIMARY_ACTIONS <= moves for line in record['lines'] if 'unparsed' not in line)
+
     def _stream(self, body: dict, record: dict):
         c = self.control
         with self.cond:
@@ -469,6 +500,14 @@ class OptimizedBrain(Brain):
         yield from super()._stream({**body,'max_tokens':2048}, record)
 
     def _take(self, action: dict, record: dict, started: float) -> None:
+        # A click spelled with a count or a flag ({"click":x,"click_count":3}, {"click":x,"triple_click":true}) is
+        # the matching double or triple click, not a single click or a rejected two-action object.
+        if isinstance(action.get('click'), str):
+            count = 3 if action.get('triple_click') is True else 2 if action.get('double_click') is True else None
+            count = count or (action.get('click_count') if action.get('click_count') in (2, 3) else None)
+            if count:
+                rest = {k: v for k, v in action.items() if k not in ('click', 'click_count', 'double_click', 'triple_click')}
+                action = {('double_click' if count == 2 else 'triple_click'): action['click'], **rest}
         # An input plus a string postcondition has an unambiguous order. Normalize it into
         # atomic actions; genuinely ambiguous multi-input objects remain rejected.
         kinds = action.keys() & PRIMARY_ACTIONS

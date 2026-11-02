@@ -143,6 +143,45 @@ class ControlTests(unittest.TestCase):
         self.ex.checks.claim=Mock(side_effect=httpx.ReadError('bad record mac'))
         self.assertEqual(self.ex._do(p.action)[0],'uncertain')
         self.assertEqual(self.brain.said[-1],"I think that's done (The terminal is minimized), but I couldn't double-check it on the screen.")
+    def test_a_contradicted_report_gets_one_correction_then_stops(self):
+        p=self.plan({'say':'It needs 2 1/4 cups of flour.','status':'answer'})
+        def disagree(*a):
+            self.ex.checks.last_status,self.ex.checks.last_reason='incomplete','The flour shown is 2 1/3 cups.'
+            return False
+        self.ex.checks.claim=Mock(side_effect=disagree)
+        result,detail=self.ex._do(p.action)
+        self.assertEqual(result,'not_verified')
+        self.assertIn('2 1/3',detail)
+        self.assertFalse(self.agent.shared.finished)
+        self.assertEqual(self.brain.said,[])
+        p=self.plan({'say':'It needs 2 1/4 cups of flour.','status':'answer'})
+        self.c.corrected=True  # same request: plan() starts a new one, so restore its state
+        self.assertEqual(self.ex._do(p.action)[0],'uncertain')
+        self.assertTrue(self.agent.shared.finished)
+    def test_triple_click_selects_a_line(self):
+        p=self.plan({'triple_click':'the flour ingredient line'})
+        self.ex._find=Mock(return_value=(.5,.25))
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+        clicks=[x for x in self.target.sent if x['op']=='click']
+        self.assertEqual([(c['count'],c['button']) for c in clicks],[(3,'left')])
+    def test_a_click_spelled_with_a_count_becomes_that_click(self):
+        p=self.plan({'click':'x'})
+        record={'epoch':p.epoch,'request':p.request,'view':p.view,'lines':[]}
+        for action,want in (({'click':'the flour line','click_count':3},{'triple_click':'the flour line'}),
+                            ({'click':'the flour line','triple_click':True},{'triple_click':'the flour line'}),
+                            ({'click':'Preheat','double_click':True},{'double_click':'Preheat'})):
+            self.agent.shared.queue.clear()
+            self.brain._take(action,record,time.monotonic())
+            self.assertEqual([q.action for q in self.agent.shared.queue],[want])
+    def test_scrolling_through_a_page_is_not_going_in_circles(self):
+        scroll={'lines':[{'scroll':5,'at':'the recipe'}]}
+        self.assertFalse(self.brain._counts_as_repeat(scroll))
+        self.assertFalse(self.brain._counts_as_repeat({'lines':[{'scroll':5},{'until':'the ingredients'}]}))
+        self.assertTrue(self.brain._counts_as_repeat({'lines':[{'click':'Next'}]}))
+    def test_a_new_request_may_correct_again(self):
+        self.c.corrected=True
+        self.brain.end_turn()
+        self.assertFalse(self.c.corrected)
     def test_conversation_reply_is_spoken_without_a_screen_check(self):
         p=self.plan({'say':'Hello! How can I help?','status':'reply'})
         self.ex.checks.claim=Mock(side_effect=AssertionError('a greeting needs no evidence'))

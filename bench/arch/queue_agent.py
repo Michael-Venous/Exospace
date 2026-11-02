@@ -61,7 +61,7 @@ RUNAWAY = 8  # the same action this many times in a row ends a reply
 LOOPS = 3  # the same reply this many times in one request: it is going in circles, and stops
 DONE_TAIL = 300  # actions of this request each call sees, compactly
 FAILED = {"not_shown", "not_found", "error", "not_verified"}
-PRIMARY_ACTIONS = {"key", "type", "click", "double_click", "right_click", "drag", "scroll", "hover",
+PRIMARY_ACTIONS = {"key", "type", "click", "double_click", "triple_click", "right_click", "drag", "scroll", "hover",
                    "done", "until", "say", "ask"}
 STEP_BACK_EFFORT = "low"  # medium took 3.9 s, or ran out of tokens reasoning (11.6 s)
 STEP_BACK = ("\n\nYou are stuck. Step back before you act: say in one sentence what is actually on the screen and why "
@@ -624,7 +624,7 @@ class Brain(threading.Thread):
                     self.shared.finished = True
         if not record["lines"]:
             record["raw"] = full[:600]  # a reply with no action in it: what it said instead
-        if not record["cancelled"] and record["lines"] and not record["speaking"]:
+        if not record["cancelled"] and record["lines"] and not record["speaking"] and self._counts_as_repeat(record):
             # only replies to the finished request: while the user speaks, calls on growing words repeat the same
             # first steps by design (a profile switch was stopped as "in circles" after 2.6 s)
             reply = json.dumps([{k: v for k, v in line.items() if k != "at_s"} for line in record["lines"]])
@@ -643,6 +643,10 @@ class Brain(threading.Thread):
             past = {k: v for k, v in context.items() if k != "conversation_before"}
             self.history.append({"context": json.dumps(past), "reply": full.strip()})
         record["total_s"] = round(time.monotonic() - started, 3)
+
+    def _counts_as_repeat(self, record: dict) -> bool:
+        """Whether this reply counts toward the same-reply loop guard (bench subclasses exempt some)."""
+        return True
 
     def _batch_ended(self, record: dict) -> bool:
         """Whether the executor, not new speech, cut this reply short (bench subclasses track it)."""

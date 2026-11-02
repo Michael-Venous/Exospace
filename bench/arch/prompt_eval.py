@@ -148,6 +148,19 @@ def one_rate() -> str:
     return study.settings().replace("<select><option>119.93 Hz</option></select>", "120.00 Hz")
 
 
+def recipe(top: bool) -> str:
+    """A recipe page in the browser: from its top (ingredients below the fold) or scrolled to the ingredients."""
+    intro = ('<h1 style="font-size:34px">Easy Vanilla Cake</h1><p>4.3 stars, 131 reviews. Prep 15 min, cook 45 min.'
+             '</p><div style="height:900px;background:#eee;margin:20px 0">photo</div><p>Why you\'ll love this recipe: '
+             'simple staple ingredients.</p>' if top else '')
+    body = ('<div style="position:absolute;inset:0;background:#fff;padding:30px 300px;font-size:16px;line-height:30px">'
+            f'{intro}<h2>Ingredients</h2><ul><li>cooking spray</li><li>2 ⅓ cups all-purpose flour</li>'
+            '<li>1 ½ cups white sugar</li><li>2 ¼ teaspoons baking powder</li><li>¼ teaspoon salt</li></ul>'
+            '<h2>Directions</h2><p>Gather all ingredients. Preheat the oven to 350 degrees F. Grease and flour a 9-inch '
+            'pan.</p></div>')
+    return study.window(0, 0, 1920, 1156, "Easy Vanilla Cake Recipe — Mozilla Firefox", body) + study.PANEL
+
+
 def blank_editor() -> str:
     return study.window(300, 140, 1200, 700, "Untitled — Kate",
                         '<div class=mono style="height:100%;background:#fff;color:#222">|</div>') + study.PANEL
@@ -253,6 +266,39 @@ TRIED = [{"t": 9.5, "action": {"click": "120.00 Hz refresh rate value"}, "result
           "detail": "'Refresh rate dropdown (120.00 Hz)' wasn't found on the screen"}]
 
 
+def finds_on_page(actions):
+    if any("ctrl" in str(a.get("key", "")).lower() and "f" in str(a.get("key", "")).lower() for a in actions):
+        return "pass"
+    if any("scroll" in a for a in actions):
+        return "pass"
+    return "fail" if actions else "other"
+
+
+def triple_clicks_flour(actions):
+    a = next((a for a in actions if a.keys() & {"click", "double_click", "triple_click", "drag"}), {})
+    return "pass" if re.search("flour", str(a.get("triple_click", ""))) else "fail" if a else "other"
+
+
+def selects_sentence(actions):
+    """Anchored on the sentence's first word, extended with a SHIFT click on its last (not the paragraph's)."""
+    first = next((a for a in actions if a.keys() & {"click", "double_click", "triple_click", "drag"}), {})
+    end = next((a for a in actions if a.get("hold") == ["SHIFT"] and "click" in a), {})
+    ok = re.search("(?i)grease", str(first.get("double_click", ""))) and re.search("(?i)pan", str(end.get("click", "")))
+    return "pass" if ok else "fail" if first else "other"
+
+
+def corrects_report(actions):
+    if any(a.keys() & {"click", "double_click", "scroll", "key", "type"} for a in actions):
+        return "fail"  # a correction never redoes inputs
+    said = str(terminal(actions).get("say", ""))
+    return "pass" if re.search(r"2 ?(⅓|1/3)", said) and "1/4 cups" not in said else "fail" if said else "other"
+
+
+CHECKED = [{"t": 9.0, "action": {"say": "It needs 2 1/4 cups of all-purpose flour.", "status": "answer"},
+            "result": "not_verified", "detail": "The screen check disagrees: The flour shown is 2 1/3 cups. Read "
+                                                "the screen again closely and correct your report. Do not redo any action."}]
+
+
 def launches_in_one_reply(actions):
     """GUI, the app's name typed straight into the launcher, ENTER, in one reply."""
     kinds = [("GUI" if a.get("key") == ["GUI"] else "ENTER" if a.get("key") == ["ENTER"] else
@@ -264,6 +310,11 @@ def launches_in_one_reply(actions):
 BEHAVIOUR = [
     Case("open-app", "files", "Open Firefox", launches_in_one_reply),
     Case("hello", "panel", "Hello.", reply_status("reply")),
+    Case("find-on-page", "recipe_top", "Show me the ingredients", finds_on_page),
+    Case("select-line", "recipe_list", "Highlight the flour line", triple_clicks_flour),
+    Case("select-sentence", "recipe_list", "Select the sentence about greasing the pan", selects_sentence),
+    Case("select-span", "recipe_list", "Highlight from Grease to pan", selects_sentence),
+    Case("correction", "recipe_list", "How much flour does it need?", corrects_report, CHECKED),
     Case("no-response", "one_rate", "Change my display to 60 hertz", reports_no_response, TRIED),
     Case("chat-reply", "chat", "Respond with sounds good", names_the_box),
     Case("mouse-away", "video", "Move the mouse off the screen so I can see better", hovers_away),
@@ -330,6 +381,7 @@ def render(out: Path) -> None:
         browser = p.chromium.launch(executable_path=os.environ.get("CHROME", "/usr/bin/google-chrome-stable"))
         page = browser.new_page(viewport={"width": 1920, "height": 1200}, device_scale_factor=1.5)
         for name, html in {"nopanel": nopanel(), "covered": covered(), "blank_editor": blank_editor(), "chat": chat(), "one_rate": one_rate(),
+                           "recipe_top": recipe(True), "recipe_list": recipe(False),
                            "video": video(),
                            **{n: getattr(study, n)() for n in ("panel", "mail", "files", "terminal", "settings",
                                                                  "notifications", "tabs", "editor", "toast", "sheet")}}.items():
