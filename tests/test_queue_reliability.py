@@ -83,6 +83,12 @@ class CompletionOrderingTests(unittest.TestCase):
         self.assertEqual(ex._do({'type': 'note.txt', 'into': 'file name', 'replace': True})[0], 'done')
         self.assertEqual([call[0] for call in ex.controller.mock_calls], ['execute', 'hotkey', 'type_text'])
 
+    def test_replace_without_a_field_selects_the_old_text(self):
+        ex = executor()
+        ex._input = lambda send: send()
+        self.assertEqual(ex._do({'type': 'hello world', 'replace': True})[0], 'done')
+        self.assertEqual([call[0] for call in ex.controller.mock_calls], ['hotkey', 'type_text'])
+
     def test_reports_are_queued_with_the_actions_that_precede_them(self):
         ex = executor()
         brain = Brain.__new__(Brain)

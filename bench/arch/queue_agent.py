@@ -257,8 +257,8 @@ class Executor(threading.Thread):
                     if point is None:
                         return "not_found", "the destination text field was not found; no text was typed"
                     self._input(lambda: self.controller.execute(Action("click", x=point[0], y=point[1]), self.profile))
-                    if action.get("replace"):
-                        self._input(lambda: self.controller.hotkey(["CTRL", "A"]))
+                if action.get("replace"):  # also without "into": after a separate click, old text must not stay
+                    self._input(lambda: self.controller.hotkey(["CTRL", "A"]))
                 self._input(lambda: self.controller.type_text(str(value)))
             elif kind in ("click", "double_click", "right_click"):
                 point = self._find(str(value))
