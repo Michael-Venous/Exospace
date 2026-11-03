@@ -39,7 +39,8 @@ from brain.types import Action, DeviceProfile, Rect
 
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
 DEVICE = os.environ.get("EXO_DEVICE", "Linux laptop, KDE Plasma desktop. The GUI key opens the application "
-                                      "launcher; GUI+PAGEUP maximizes the window in front. The panel hides itself.")  # the target as the model is told it
+                                      "launcher; GUI+PAGEUP maximizes the window in front. The panel hides itself: "
+                                      "GUI also shows it, with its clock.")  # the target as the model is told it
 MODIFIERS = {"CTRL", "SHIFT", "ALT"}  # pressed alone they do nothing (GUI alone opens the launcher)
 SEE_SIDE = int(os.environ.get("EXO_SEE_SIDE", "1280"))  # the longest side of the screenshot the brain sees
 # CTRL+L then typing 0.06 s later lost the first letters ("youtube.com" became "tube.com") while Chrome focused its

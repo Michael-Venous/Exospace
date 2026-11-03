@@ -255,16 +255,23 @@ def main() -> None:
     except PermissionError:
         raise SystemExit("Can't read the keyboard: add yourself to the input group (sudo usermod -aG input $USER), "
                          "then log out and back in.") from None
-    env = {**os.environ, **SESSION}
+    pi = os.environ.get("EXO_TARGET") == "pi"  # the real rig: capture card + Pico, the talk keyboard on the Pi
+    env = dict(os.environ) if pi else {**os.environ, **SESSION}
     speaker, mic = Speaker(env), Mic(env)
     session = LOGS / time.strftime("%Y%m%d-%H%M%S")  # each call's screenshot and Jev's log land here
     session.mkdir(parents=True, exist_ok=True)
+    if pi:
+        from bench.arch.pi_target import PiTarget
+        from brain.config import Config
+        target = PiTarget(Config.load())
+    else:
+        target = LaptopTarget()
     if os.environ.get("EXO_OPTIMIZED") == "1":
         from bench.arch.optimized_queue import create
-        agent = create(LaptopTarget(), MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
+        agent = create(target, MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
         print("Optimized queue enabled: finalized speech, fenced input and bounded evidence checks.", flush=True)
     else:
-        agent = QueueAgent(LaptopTarget(), MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
+        agent = QueueAgent(target, MODEL, "", os.environ["TYPESAFE_API_KEY"], session, "qwen")
     if os.environ.get("EXO_RELIABLE") == "1" and not hasattr(agent, 'control'):
         from bench.arch.reliable_queue import configure
         configure(agent)

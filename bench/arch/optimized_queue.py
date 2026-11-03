@@ -66,10 +66,10 @@ say, ask and done end the request: put one last, never before actions you still 
 
 Rules
 - Judge from the current screenshot and the log: a sent input is only an attempt until the screen shows it.
-- If what you need isn't visible, go and look before answering or giving up: open the launcher (GUI also shows
-  the panel and its clock), the app, menu or settings page that shows it. Say blocked only after trying.
-- Open an app in one reply: {"key":["GUI"]} {"type":"firefox"} {"key":["ENTER"]} {"until":"Firefox window"}.
-  The launcher's search box already has focus.
+- If what you need isn't visible, go and look before answering or giving up: open the launcher, panel, app, menu
+  or settings page that shows it (see the device). Say blocked only after trying.
+- Open an app in one reply with the device's launcher: on a GUI-key launcher, {"key":["GUI"]} {"type":"firefox"}
+  {"key":["ENTER"]} {"until":"Firefox window"}. The launcher's search box already has focus.
 - Type exactly what was dictated, in the user's case, with spoken symbols as characters: "type report dash
   final dot txt" is {"type":"report-final.txt"}. Never type a placeholder.
 - To find something on a long page, press CTRL+F, type a word from it and ENTER (ESC closes the find bar), or
@@ -211,6 +211,9 @@ class OptimizedExecutor(Executor):
             return self._hover(str(action[kind]))
         if kind == 'triple_click':
             return self._triple_click(str(action[kind]))
+        if action.get('hold') and 'hold' not in self._features():
+            return 'error', ("This device can't hold a key during a click. Use the keyboard instead: to extend a "
+                             'selection, SHIFT+RIGHT or SHIFT+END after a double_click; CTRL+SHIFT+RIGHT per word.')
         if kind=='type' and 'text' in action:
             return 'error', 'type must contain the actual characters to send; there is no separate text parameter'
         if kind in ('done','say','ask'):
@@ -242,8 +245,16 @@ class OptimizedExecutor(Executor):
         if point is None:
             return 'not_found', f'{target!r} was not found on the screen'
         x, y = round(point[0] * HID_MAX), round(point[1] * HID_MAX)
-        self._input(lambda: self.controller.hid.send({'op': 'click', 'x': x, 'y': y, 'button': 'left', 'count': 3}))
+        if 'triple_click' in self._features():
+            self._input(lambda: self.controller.hid.send({'op': 'click', 'x': x, 'y': y, 'button': 'left', 'count': 3}))
+        else:  # the Pico clicks at most twice per command: a double then a single at once (not yet tried on it)
+            self._input(lambda: (self.controller.hid.send({'op': 'click', 'x': x, 'y': y, 'button': 'left', 'count': 2}),
+                                 self.controller.hid.send({'op': 'click', 'x': x, 'y': y, 'button': 'left', 'count': 1})))
         return 'done', self._where(point)
+
+    def _features(self) -> frozenset:
+        """What the target's input supports beyond PLAN.md §5.1 (the laptop rig: held keys, triple clicks)."""
+        return getattr(self.controller.hid, 'features', frozenset())
 
     def _input(self, send: Callable[[],None]) -> None:
         if self.inputs:

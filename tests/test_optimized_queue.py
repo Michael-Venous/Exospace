@@ -159,6 +159,7 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.ex._do(p.action)[0],'uncertain')
         self.assertTrue(self.agent.shared.finished)
     def test_triple_click_selects_a_line(self):
+        self.target.features=frozenset({'triple_click'})  # the laptop rig; the Pico's fallback is test_pi_target's
         p=self.plan({'triple_click':'the flour ingredient line'})
         self.ex._find=Mock(return_value=(.5,.25))
         self.assertEqual(self.ex._do(p.action)[0],'done')

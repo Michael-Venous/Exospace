@@ -1036,3 +1036,18 @@ is open" on a screen with only its taskbar label); new 18/18 true, 0/18 false. L
   (HID click count 3) and a selection rule. Eval: line 4/4 (with click-count spellings normalised), a span
   named by its ends 4/4; "the sentence about X" inside a paragraph 0/4: DeepSeek anchors on the paragraph's
   first word (a reading limit, not the mechanism).
+
+### Running the voice queue on the real rig (Pi + Pico + capture card, 2026-11-03, not yet tried on it)
+`EXO_TARGET=pi EXO_OPTIMIZED=1 python -m bench.arch.talk` on the Pi: frames come from the capture card
+(`CAPTURE_DEVICE`, cropped to the screen inside any black border with `active_rect`) and input goes through the
+Pico (`PICO_SERIAL`), both from `brain/config.py` as `python -m brain --backend pi` uses them. The talk key is
+Home on a keyboard plugged into the Pi; the microphone and speaker need PipeWire (`pw-record`, `pw-play`).
+Describe the target computer in `EXO_DEVICE` (its OS and how its launcher opens: on macOS CMD+SPACE, since GUI
+alone does nothing there); the default describes the KDE laptop.
+
+The Pico's protocol (PLAN.md §5.1) has no held keys during a click and clicks at most twice per command. On the
+laptop rig `laptop_hid.py` does both, so targets declare `features`: on the Pico a held-key click is refused
+with a keyboard alternative for the planner, and a triple click is sent as a double then a single click (not
+yet tried on hardware). `tests/test_pi_target.py` runs the optimized executor over the real `PicoHID` and the
+real firmware command handler through a pseudo-terminal, with a letterboxed capture frame. No `brain/`,
+`firmware/` or PLAN.md contract was changed; `python -m brain --backend pi` is as on `main`.
