@@ -17,16 +17,16 @@ class HomeTalkTests(unittest.TestCase):
     def test_press_stops_the_agent_and_release_sends_the_whole_request(self):
         self.home.changed(True)
         self.home.changed(True)  # a second down while held (another keyboard) changes nothing
-        self.assertEqual(self.sent, [("/stop", None)])
+        self.assertEqual(self.sent, [("/listen", None)])
         self.speaker.stop.assert_called_once()
         self.home.changed(False)
         self.assertEqual(self.sent[-1], ("/goal", {"text": "open firefox"}))
 
-    def test_nothing_heard_sends_nothing(self):
+    def test_nothing_heard_drops_the_request(self):
         self.words = ""
         self.home.changed(True)
         self.home.changed(False)
-        self.assertEqual(self.sent, [("/stop", None)])
+        self.assertEqual(self.sent, [("/listen", None), ("/stop", None)])
 
     def test_only_the_agents_lines_are_spoken_and_never_over_the_user(self):
         self.home.hear({"ev": "run", "goal": "open firefox"})

@@ -1,4 +1,4 @@
-"""The Qwen queue agent behind Jev's agent API (POST /goal, /stop; GET /events, /screen.jpg) on :8770,
+"""The Qwen queue agent behind Jev's agent API (POST /goal, /stop, /listen; GET /events, /screen.jpg) on :8770,
 so the unchanged voice page (brain.voice.layer) and its orb drive it: the page hears, this acts and answers.
 
 On the Pi (the default) the target is the capture card and the Pico; `EXO_TARGET=laptop` drives the laptop rig
@@ -73,7 +73,18 @@ class Reporter:
         print("  timing: " + json.dumps(row), flush=True)
         with self.timings.open("a") as f:
             f.write(json.dumps(row) + "\n")
-        self.agent.control.save(self.session / "control.json")
+        self.save()
+
+    def save(self) -> None:
+        """Every planner call, action and click point so far, as talk.py saves them, for looking into a run later."""
+        agent = self.agent
+        with agent.cond:  # copies, so the agent's threads can go on appending
+            calls, trace = list(agent.brain.calls), list(agent.trace)
+            log = [{"t": r.t, "action": r.action, "result": r.result, "detail": r.detail} for r in agent.shared.log]
+        (self.session / "calls.json").write_text(json.dumps(calls, indent=0, default=str))
+        (self.session / "log.json").write_text(json.dumps(log, indent=0))
+        (self.session / "trace.json").write_text(json.dumps(trace, indent=0, default=str))
+        agent.control.save(self.session / "control.json")
 
     def run(self) -> None:
         while True:
@@ -84,6 +95,10 @@ class Reporter:
 def server(agent, target, events: Events, port: int = 8770) -> ThreadingHTTPServer:
     """The agent API on 127.0.0.1:`port` (0: any free port)."""
     brain, lock = agent.brain, threading.Lock()
+
+    def running() -> bool:
+        with agent.cond:
+            return not agent.shared.finished and bool(brain.words or brain.speaking)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args) -> None:
@@ -97,12 +112,16 @@ def server(agent, target, events: Events, port: int = 8770) -> ThreadingHTTPServ
                     text = str(body.get("text", "")).strip()
                     if not text:
                         return self._reply(400, b'{"error":"no text"}')
-                    brain.end_turn()  # each request arrives whole: it replaces whatever ran before
-                    events.emit("run", goal=text)
+                    if not brain.speaking:  # the page: each request arrives whole and replaces what ran before
+                        brain.end_turn()
+                    events.emit("run", goal=text)  # after /listen the request is already open: it is heard
                     print(f"you: {text}", flush=True)
                     brain.hear(text, speaking=False)
+                elif self.path == "/listen":  # a push-to-talk press: what runs stops now, as "interrupted"
+                    brain.end_turn()
                 elif self.path == "/stop":
-                    brain.cancel_turn()
+                    if running():  # nothing running: nothing to stop, and no empty request is logged
+                        brain.cancel_turn()
                 else:
                     return self._reply(404, b"{}")
             self._reply(200, b'{"ok":true}')

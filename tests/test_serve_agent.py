@@ -48,6 +48,20 @@ class ServeAgentTests(unittest.TestCase):
         self.assertEqual(self.post(httpd, "/stop", {}), 200)
         self.assertEqual(self.agent.control.requests[self.agent.shared.request]["status"], "cancelled")
 
+    def test_stop_when_idle_logs_nothing_and_a_press_interrupts_what_runs(self):
+        httpd = serve_agent.server(self.agent, self.agent.controller.capture, self.events, port=0)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        self.addCleanup(httpd.shutdown)
+        self.assertEqual(self.post(httpd, "/stop", {}), 200)
+        self.assertEqual(self.agent.control.requests, {})  # no empty request 0
+        self.post(httpd, "/goal", {"text": "open firefox"})  # running
+        running = self.agent.shared.request
+        self.post(httpd, "/listen", {})  # Home pressed mid-request
+        self.post(httpd, "/goal", {"text": "close it"})
+        self.assertEqual(self.agent.control.requests[running]["status"], "interrupted")
+        self.assertEqual(self.agent.shared.request, running + 1)  # one new request, not two
+        self.assertEqual(self.agent.brain.words, "close it")
+
     def test_results_are_spoken_once_and_quiet_ends_still_end_the_wait(self):
         timings = self.dir / "timings.jsonl"
         reporter = serve_agent.Reporter(self.agent, self.events, self.dir, timings)
@@ -66,7 +80,8 @@ class ServeAgentTests(unittest.TestCase):
                          [("ask_user", "Your battery is at 63%."), ("done", "")])
         rows = [json.loads(line) for line in timings.read_text().splitlines()]
         self.assertEqual([r["status"] for r in rows], ["verified", "verified"])
-        self.assertTrue((self.dir / "control.json").exists())
+        for name in ("control.json", "calls.json", "log.json", "trace.json"):
+            self.assertTrue((self.dir / name).exists(), name)
 
     def test_the_pi_is_the_default_target_and_the_laptop_is_opt_in(self):
         with patch("bench.arch.laptop.LaptopTarget", return_value="laptop rig"):

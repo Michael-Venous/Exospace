@@ -1,7 +1,8 @@
 """Hold Home anywhere to talk to the agent server (serve_agent.py), with no browser: the laptop rig's own push-to-talk.
 
-Pressing Home stops whatever the agent is doing; the microphone streams to Deepgram while it is held (talk.py's Mic
-and Utterance, half a second of pre-roll included); letting go sends the whole request to POST /goal. What the agent
+Pressing Home stops whatever the agent is doing (POST /listen: it is logged "interrupted", as in talk.py); the
+microphone streams to Deepgram while it is held (talk.py's Mic and Utterance, half a second of pre-roll included);
+letting go sends the whole request to POST /goal, or POST /stop when nothing was heard. What the agent
 says comes back on GET /events and is spoken with Piper, never while Home is held. The voice page and its Space key
 are a separate front end (`serve_laptop.sh --page`); this one never touches the page.
 """
@@ -27,7 +28,7 @@ def post(path: str, body: dict | None = None) -> None:
 
 
 class HomeTalk:
-    """Home's press and release, turned into /stop and /goal; the agent's lines, spoken."""
+    """Home's press and release, turned into /listen and /goal (or /stop); the agent's lines, spoken."""
 
     def __init__(self, post, speaker, listen) -> None:
         """`listen()` starts one utterance and returns it (its `finish()` gives the words heard)."""
@@ -39,7 +40,7 @@ class HomeTalk:
         if down and self.talking is None:
             self.held.set()
             self.speaker.stop()
-            self.post("/stop")  # Home stops the agent at once, as in talk.py
+            self.post("/listen")  # Home stops the agent at once and opens the next request, as in talk.py
             self.talking = self.listen()
             print("listening...", flush=True)
         elif not down and self.talking is not None:
@@ -48,6 +49,8 @@ class HomeTalk:
             print(f"you: {words or '(nothing heard)'}", flush=True)
             if words:
                 self.post("/goal", {"text": words})
+            else:  # nothing heard: the request /listen opened is dropped
+                self.post("/stop")
 
     def hear(self, event: dict) -> None:
         """One agent event: a line it says (a result the page would speak word for word) is spoken."""

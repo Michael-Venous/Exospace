@@ -1,7 +1,7 @@
 """The test laptop as a capture + HID target (study 16, bench only).
 
 The whole test runs on the laptop itself (CachyOS, KDE Plasma on Wayland; address in the Assistant hub's
-MACHINES.md), so no SSH sits between the agent and the screen; `laptop_run.sh` starts runs from the workstation.
+MACHINES.md), so no SSH sits between the agent and the screen (`laptop_run.sh` only starts runs remotely).
 `LaptopTarget` has the browser target's interface (`brain/browser.py`): `grab()` is a spectacle screenshot,
 `send()` is a PLAN.md §5.1 HID command, both through `laptop_hid.py` (a uinput keyboard + absolute mouse, as
 the Pico presents) in a child process. `shell()` runs a command in the desktop session for test setup and

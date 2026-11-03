@@ -1,4 +1,4 @@
-"""Runs ON the test laptop (copied there by `laptop.py`): a USB-HID stand-in over SSH. Standard library only.
+"""Runs ON the test laptop, a child process of `laptop.py` on a pipe: a USB-HID stand-in. Standard library only.
 
 It creates a virtual keyboard and an absolute mouse through /dev/uinput, the same two devices the Pico
 presents (PLAN.md §5.1: absolute 0-32767), and takes screenshots with spectacle. One JSON command per stdin
@@ -135,7 +135,7 @@ def handle(cmd: dict) -> None:
 
 
 def grab() -> bytes:
-    path = "/tmp/exo_grab.jpg"  # JPEG: a fifth of the PNG's bytes over SSH
+    path = "/tmp/exo_grab.jpg"  # JPEG: a fifth of the PNG's bytes through the pipe; spectacle's start is most of 0.29 s
     subprocess.run(["spectacle", "-b", "-n", "-f", "-o", path], check=True, timeout=3,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     with open(path, "rb") as f:
