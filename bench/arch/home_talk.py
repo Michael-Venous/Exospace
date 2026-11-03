@@ -16,6 +16,9 @@ import time
 import urllib.request
 
 AGENT = os.environ.get("EXO_AGENT", "http://127.0.0.1:8770")
+# A request that ended without saying anything still gets a word, as the voice page says (brain.voice.layer
+# narrate): without it, a finished task sounded like one still running. A stop the user caused needs none.
+QUIET_LINES = {"done": "Done.", "fail": "Sorry, I couldn't do that."}
 
 
 def post(path: str, body: dict | None = None) -> None:
@@ -53,11 +56,15 @@ class HomeTalk:
                 self.post("/stop")
 
     def hear(self, event: dict) -> None:
-        """One agent event: a line it says (a result the page would speak word for word) is spoken."""
-        if event.get("ev") == "result" and event.get("status") == "ask_user" and event.get("message"):
-            print(f"  agent: {event['message']}", flush=True)
+        """One agent event: a line it says (a result the page would speak word for word) is spoken, and a request
+        that ended quietly gets the page's short line."""
+        if event.get("ev") != "result":
+            return
+        line = event.get("message") if event.get("status") == "ask_user" else QUIET_LINES.get(event.get("status"))
+        if line:
+            print(f"  agent: {line}", flush=True)
             if not self.held.is_set():
-                self.speaker.say(event["message"])
+                self.speaker.say(line)
 
     def follow(self) -> None:
         """The agent's event stream, reconnected whenever it drops (the agent may start after this)."""

@@ -28,13 +28,16 @@ class HomeTalkTests(unittest.TestCase):
         self.home.changed(False)
         self.assertEqual(self.sent, [("/listen", None), ("/stop", None)])
 
-    def test_only_the_agents_lines_are_spoken_and_never_over_the_user(self):
+    def test_the_agents_lines_and_quiet_ends_are_spoken_but_never_over_the_user(self):
         self.home.hear({"ev": "run", "goal": "open firefox"})
-        self.home.hear({"ev": "result", "status": "done", "message": ""})
         self.home.hear({"ev": "result", "status": "ask_user", "message": "Firefox is open."})
+        self.home.hear({"ev": "result", "status": "done", "message": ""})  # a task that finished quietly
+        self.home.hear({"ev": "result", "status": "cancelled", "message": ""})  # the user stopped it: no word
+        self.home.hear({"ev": "result", "status": "fail", "message": ""})
         self.home.changed(True)
-        self.home.hear({"ev": "result", "status": "ask_user", "message": "Late line."})
-        self.assertEqual([c.args[0] for c in self.speaker.say.call_args_list], ["Firefox is open."])
+        self.home.hear({"ev": "result", "status": "done", "message": ""})
+        self.assertEqual([c.args[0] for c in self.speaker.say.call_args_list],
+                         ["Firefox is open.", "Done.", "Sorry, I couldn't do that."])
 
     def test_an_agent_that_is_not_up_does_not_break_the_key(self):
         with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
