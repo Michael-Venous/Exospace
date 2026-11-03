@@ -37,6 +37,7 @@ from websockets.sync.client import connect
 
 from bench.arch.laptop import SESSION, LaptopTarget
 from bench.arch.queue_agent import QueueAgent
+from brain.voice import button
 
 # Home, and the keypad's 7/Home, which this laptop's Home key sends (code 71; Home while Num Lock is off).
 HOME_KEYS = {102, 71}
@@ -74,6 +75,9 @@ class PassThrough:
     however it ends. Caps/Num Lock lights are passed back."""
 
     def __init__(self, paths: list[str]) -> None:
+        if not paths:  # no keyboard plugged in: only the GPIO button talks, and there is nothing to pass on
+            self.real, self.virtual = [], os.pipe()[0]  # a pipe that never becomes readable
+            return
         self.real = [os.open(p, os.O_RDWR) for p in paths]
         self.virtual = os.open("/dev/uinput", os.O_RDWR | os.O_NONBLOCK)
         for kind in (EV_KEY, EV_LED):
@@ -117,7 +121,8 @@ class PassThrough:
     def close(self) -> None:
         for fd in self.real:
             os.close(fd)  # closing lets go of the grab
-        fcntl.ioctl(self.virtual, UI_DEV_DESTROY)
+        if self.real:  # without a keyboard, virtual is a plain pipe
+            fcntl.ioctl(self.virtual, UI_DEV_DESTROY)
         os.close(self.virtual)
 
 
@@ -368,15 +373,21 @@ def main() -> None:
     threading.Thread(target=speak_back, daemon=True).start()
     threading.Thread(target=trace, daemon=True).start()
     talking: Utterance | None = None
+    button_r, button_w = os.pipe()  # the Pi push-to-talk button (GPIO17) counts as holding Home
+    if button.available():
+        threading.Thread(target=button.watch, args=(lambda down: os.write(button_w, b"1" if down else b"0"),),
+                         daemon=True).start()
     try:
         while True:
-            ready, _, _ = select.select([*keys.real, keys.virtual], [], [])
+            ready, _, _ = select.select([*keys.real, keys.virtual, button_r], [], [])
             if keys.virtual in ready:
                 keys.lights()
             for fd in ready:
                 if fd == keys.virtual:
                     continue
-                for code, value in keys.forward(os.read(fd, EVENT.size * 64)):
+                events = ([(0, b - 48) for b in os.read(fd, 64)] if fd == button_r
+                          else keys.forward(os.read(fd, EVENT.size * 64)))
+                for code, value in events:
                     if value == 2:  # key repeat
                         continue
                     if value == 1 and talking is None:

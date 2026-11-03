@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from collections import deque
 from pathlib import Path
@@ -67,7 +68,8 @@ say, ask and done end the request: put one last, never before actions you still 
 Rules
 - Judge from the current screenshot and the log: a sent input is only an attempt until the screen shows it.
 - If what you need isn't visible, go and look before answering or giving up: open the launcher, panel, app, menu
-  or settings page that shows it (see the device). Say blocked only after trying.
+  or settings page that shows it (see the device). Say blocked only after trying. When you can see where the answer
+  is (a contents link, a tab, a section further down), go there and read it: never answer that it's somewhere else.
 - Open an app in one reply with the device's launcher: on a GUI-key launcher, {"key":["GUI"]} {"type":"firefox"}
   {"key":["ENTER"]} {"until":"Firefox window"}. The launcher's search box already has focus.
 - Type exactly what was dictated, in the user's case, with spoken symbols as characters: "type report dash
@@ -90,6 +92,10 @@ Rules
   pick one.
 - Claim only what the screen shows: a still image can't prove sound, playback or delivery.
 - After an interruption, plan from the current screen; old steps were discarded.
+- Do only what the newest request asks. Earlier requests are finished: use them to tell what "it" means, never
+  redo or restore their results unless asked.
+- When the user answers your question ("yes", a choice), that answer is the request: do what you offered now.
+  Never reply that you will do it, or that you are on it.
 '''
 
 
@@ -164,7 +170,8 @@ class OptimizedExecutor(Executor):
             result, detail = self._do(plan.action)
             with self.cond:
                 # finish() revokes its own token. Preserve its terminal result but never new work.
-                if plan.epoch != c.epoch and result not in ('verified', 'replied', 'asked', 'reported', 'blocked', 'uncertain'):
+                # 'done' stays done: its input already reached the computer; calling it superseded made the next plan redo it.
+                if plan.epoch != c.epoch and result not in ('done', 'verified', 'replied', 'asked', 'reported', 'blocked', 'uncertain'):
                     result, detail = 'superseded', 'a revised or stopped plan owns input'
                 self.shared.log.append(Record(round(time.monotonic()-self.started, 2), plan.action, result, detail))
                 c.event('action', epoch=plan.epoch, action=next((k for k in plan.action if k in PRIMARY_ACTIONS),''),
@@ -226,7 +233,22 @@ class OptimizedExecutor(Executor):
             c.attempts[key] += 1
             if c.attempts[key] > limit:
                 return 'not_shown', 'This same input already ran without observable progress. Inspect or use another approach.'
+        if kind == 'key' and action['key'] in (['GUI'], 'GUI'):
+            return self._open_launcher(action)
         return super()._do(action)
+
+    def _open_launcher(self, action) -> tuple[str,str]:
+        # Cinnamon's menu opens ~0.3 s after Super: the name typed right after it went into the focused window.
+        # shortcut: waits for any screen change (up to 1.5 s), not for the menu itself.
+        before = thumbnail(self.controller.capture.grab())
+        result = super()._do(action)
+        deadline = time.monotonic() + 1.5
+        while time.monotonic() < deadline:
+            if changed(before, thumbnail(self.controller.capture.grab())):
+                time.sleep(0.15)  # the search box takes focus just after the menu draws
+                break
+            time.sleep(0.03)
+        return result
 
     def _hover(self, target: str) -> tuple[str,str]:
         """Move the pointer without clicking: onto a target (menus, tooltips), or "away" off the content."""
@@ -324,17 +346,40 @@ class OptimizedExecutor(Executor):
             steps = [r.action for r in self.shared.log[self.shared.turn_start:] if r.result=='done'][-80:]
         jpeg = fit_jpeg(frame, POINTER_PIXELS, 85)  # Qwen checks it: full 4K was about 10k tokens
         started = time.monotonic()
-        for attempt in range(2):  # a dropped connection ("bad record mac") fails in ~0.1 s: once more
-            try:
-                supported = self.checks.claim(jpeg, goal, text, kind=='done' or status=='complete', steps)
-                reason = self.checks.last_reason
-                break
-            except ModelHTTPError as exc:
-                return self._failure(exc)
-            except (httpx.TransportError, TimeoutError) as exc:
-                supported, reason = None, f'The evidence check did not respond ({type(exc).__name__}).'
-                if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
-                    break  # a slow check is not asked again: that would double the wait
+        out = {}
+        def check():
+            for attempt in range(2):  # a dropped connection ("bad record mac") fails in ~0.1 s: once more
+                try:
+                    supported = self.checks.claim(jpeg, goal, text, kind=='done' or status=='complete', steps)
+                    out.update(supported=supported, reason=self.checks.last_reason, status=self.checks.last_status)
+                    break
+                except ModelHTTPError as exc:
+                    out['error'] = exc
+                    break
+                except (httpx.TransportError, TimeoutError) as exc:
+                    out.update(supported=None, reason=f'The evidence check did not respond ({type(exc).__name__}).')
+                    if isinstance(exc, (httpx.TimeoutException, TimeoutError)):
+                        break  # a slow check is not asked again: that would double the wait
+                except Exception as exc:  # anything else is re-raised on the agent's thread, as before
+                    out['raise'] = exc
+                    break
+            with self.cond:
+                out['done'] = True
+                self.cond.notify_all()
+        # The check runs aside so a new request ("go back") doesn't wait up to 8 s for a verdict it would discard.
+        # shortcut: an abandoned check may still set self.checks.last_* when it lands; we read our own copy in out.
+        threading.Thread(target=check, daemon=True).start()
+        with self.cond:
+            while 'done' not in out and c.valid(epoch):
+                self.cond.wait(0.1)
+            if 'done' not in out:
+                c.event('claim-check', duration_s=round(time.monotonic()-started,4), abandoned=True)
+                return 'superseded', 'the user interrupted this check'
+        if 'raise' in out:
+            raise out['raise']
+        if 'error' in out:
+            return self._failure(out['error'])
+        supported, reason = out['supported'], out['reason']
         with self.cond:
             c.event('claim-check', duration_s=round(time.monotonic()-started,4))
             if not c.valid(epoch):
@@ -342,12 +387,17 @@ class OptimizedExecutor(Executor):
             if supported:
                 c.finish('verified', text, speak=kind=='say')
                 return 'verified','claim supported by screen evidence'
-            if supported is False and self.checks.last_status == 'incomplete' and not c.corrected:
+            if supported is False and out.get('status') == 'incomplete' and not c.corrected:
                 # The check read the screen differently (a misread "2 1/3" as "2 1/4"): one chance to correct the
                 # report from the screen. Never a reason to redo inputs.
                 c.corrected = True
                 return 'not_verified', (f'The screen check disagrees: {reason} Read the screen again closely and '
                                         'correct your report. Do not redo any action.')
+            if supported is False and out.get('status') == 'unknown' and kind == 'say' and status == 'answer' and not c.corrected:
+                # An answer from memory ("where was he born") that the screen doesn't show yet: one chance to find it.
+                c.corrected = True
+                return 'not_verified', (f'The screen does not show your answer: {reason} Find it on the screen first '
+                                        '(click the matching section or link, or scroll), then answer from what it shows.')
             if supported is None and kind == 'say' and status != 'complete':
                 # An answer whose check never came back is still said, flagged as unchecked.
                 message = f"{text} I couldn't double-check that on the screen."
@@ -560,7 +610,7 @@ def create(target, model: str, effort: str, jev_key: str, log_dir: Path,
         agent.brain.transient = 0  # planner failures in a row that are worth one more call
         agent.brain.final_report = False  # out of attempts: this request's last call may only report
         agent.brain.reported = False  # that report call has been made
-        control.events_log = (log_dir/'control-events.jsonl').open('a')
+        control.events_log = (log_dir/'control-events.jsonl').open('a', buffering=1)  # line-buffered: readable while the agent runs
         agent.brain.loop_handler = lambda: control.finish('blocked', "I'm going in circles, so I've stopped. Tell me what to change.")
         agent.executor.strict_reports = True
         agent.executor.checks = ClaimChecks(agent.trace)
