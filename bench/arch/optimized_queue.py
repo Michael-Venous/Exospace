@@ -216,6 +216,10 @@ class OptimizedExecutor(Executor):
         if len(kinds) != 1:
             return 'error', 'use one primary action per object'
         kind = kinds[0]
+        if 'status' in action and kind not in ('say', 'done', 'ask'):
+            # {"type":"born","status":"answer"} typed "born" into the page: an answer mixed into an input.
+            return 'error', ('status only goes with say ({"say":"...","status":"answer"}); an action never has one. '
+                             'Nothing was sent: send the action, or the answer, on its own.')
         if kind=='key':
             keys=frozenset(str(k).upper() for k in (action[kind] if isinstance(action[kind],list) else [action[kind]]))
             closing=keys in (frozenset(('ALT','F4')),frozenset(('CTRL','Q')),frozenset(('CTRL','W')))
@@ -579,6 +583,24 @@ class OptimizedBrain(Brain):
 
     def _encode(self, frame) -> bytes:
         return planner_jpeg(frame)
+
+    def _apply(self, line: str, record: dict, started: float) -> None:
+        """A line that isn't valid JSON ({"click":"the 'Khentii Mountains" link"}) is dropped, and so is the rest of
+        the reply: what follows assumed it ran, and an until after it waited 2 s for nothing. The planner is told."""
+        if record.get('broken'):
+            return
+        before = len(record['lines'])
+        super()._apply(line, record, started)
+        if any('unparsed' in entry for entry in record['lines'][before:]):
+            record['broken'] = True
+            with self.cond:
+                if self.control.valid(record.get('epoch', -1)):
+                    self.shared.log.append(Record(round(time.monotonic() - self.started, 2),
+                                                  {'unparsed': line.strip()[:120]}, 'error',
+                                                  "That line wasn't valid JSON (check its quotes); nothing after it "
+                                                  'in that reply ran. Send it again, fixed.'))
+                    self.control.event('unparsed')
+                    self.cond.notify_all()
 
     def _batch_ended(self, record: dict) -> bool:
         return record.get('epoch') is not None and record.get('epoch') == self.ended_epoch

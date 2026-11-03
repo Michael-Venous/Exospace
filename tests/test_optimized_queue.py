@@ -212,6 +212,23 @@ class ControlTests(unittest.TestCase):
         with patch.object(self.agent.cancel,'sleep') as sleep:
             self.assertEqual(self.ex._do({'key':['super']})[0],'done')
         self.assertEqual(sleep.call_args_list[-1].args[0],.15)  # the menu drew: a beat for its search box
+    def test_a_broken_line_drops_the_rest_of_its_reply_and_tells_the_planner(self):
+        p=self.plan({'key':['ENTER']})
+        record={'epoch':p.epoch,'request':p.request,'view':p.view,'lines':[]}
+        self.brain._apply('{"key":["CTRL","L"]}',record,time.monotonic())  # before the broken line: runs
+        self.brain._apply('{"click":"the \'Khentii Mountains" link in the Born row"}',record,time.monotonic())
+        self.brain._apply('{"until":"the Khentii Mountains article opens"}',record,time.monotonic())
+        self.assertEqual([q.action for q in self.agent.shared.queue],[{'key':['CTRL','L']}])
+        self.assertEqual(self.agent.shared.log[-1].result,'error')
+        self.assertIn('valid JSON',self.agent.shared.log[-1].detail)
+    def test_an_input_carrying_a_status_is_refused_before_anything_is_sent(self):
+        for action in ({'type':'born','status':'answer'},{'click':'Born','status':'answer'}):
+            p=self.plan(action)
+            self.ex._find=Mock(return_value=(.5,.5))
+            result,detail=self.ex._do(p.action)
+            self.assertEqual(result,'error')
+            self.assertIn('status only goes with say',detail)
+        self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
     def test_conversation_reply_is_spoken_without_a_screen_check(self):
         p=self.plan({'say':'Hello! How can I help?','status':'reply'})
         self.ex.checks.claim=Mock(side_effect=AssertionError('a greeting needs no evidence'))
