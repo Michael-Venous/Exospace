@@ -257,7 +257,15 @@ async function start() {
     // Each pause ends a segment: send it now so execution starts while the user keeps talking. A clause goes
     // sooner, once the words after it end it: "Open up Google Chrome and search up YouTube." had no pause after
     // "Chrome", so Chrome waited for the whole sentence.
-    // Not continuous: nothing is sent while the button is held; the whole request goes once on release (onclose).
+    const [clauses] = clausesOf(m.is_final ? done : `${done} ${words}`);
+    if (m.speech_final) {
+      const left = leftover(done);
+      if (left) { send(left, sent); sent = true; }
+      done = ""; early = 0;
+    } else if (clauses.length > early) {
+      send(clauses.slice(early).join(", "), sent);
+      sent = true; early = clauses.length;
+    }
   };
   sock.onclose = e => {
     stopListening = null;
@@ -267,7 +275,8 @@ async function start() {
     document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Hold to talk";
     live.textContent = "";
     speakHeld();
-    if (done) send(done, false);
+    const left = leftover(done);
+    if (left) send(left, sent);
     waiting(sent || !!done);
     // A close after letting go, or once words came back, lost nothing. Still holding: listen again at once.
     if (e.code === 1000 || ended || sent || done) return;
