@@ -209,9 +209,9 @@ class ControlTests(unittest.TestCase):
         self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
     def test_wait_returns_once_the_screen_has_changed_and_settled(self):
         p=self.plan({'until':'the window'})
-        screens=iter([np.zeros((200,320,3),np.uint8),np.full((200,320,3),200,np.uint8),
-                      np.full((200,320,3),200,np.uint8)])
-        self.target.grab=lambda:next(screens)  # unchanged, then drawn, then the same again
+        screens=iter([np.zeros((200,320,3),np.uint8)])
+        drawn=np.full((200,320,3),200,np.uint8)
+        self.target.grab=lambda:next(screens,drawn)  # unchanged, then drawn and held
         result,detail=self.ex._do(p.action)
         self.assertEqual(result,'observed')
         self.assertIn('settled',detail)

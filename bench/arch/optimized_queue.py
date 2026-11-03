@@ -37,6 +37,7 @@ FINAL_REPORT = ("\n\nYou are out of attempts for this request: send no more acti
                 "and what didn't respond (for example, that the option isn't offered).")
 QWEN_CHECK, QWEN_CHECK_HOST = 'qwen/qwen3.8-27b', 'modelrun/fp4'
 CLAIM_READ_S, CLAIM_TOTAL_S = 4.0, 8.0  # the claim check's first-byte and whole-reply limits
+SETTLE_S = 0.5  # how long the screen must hold still to count as settled
 UNTIL_S = 3.0  # longest an until waits for the screen to change and settle (each look is a ~0.27 s screenshot)
 UNTIL_STILL_S = 2.0  # nothing changed at all by then: hand back (6 of 26 waits sat 3 s on an unseen change)
 
@@ -48,7 +49,7 @@ Actions
 {"key":["CTRL","L"]}  keys: CTRL SHIFT ALT GUI ENTER ESC TAB BACKSPACE DELETE UP DOWN LEFT RIGHT HOME END PAGEUP
   PAGEDOWN F1-F12, letters, digits. Keys go to the window in front. Close shortcuts (ALT+F4, CTRL+W, CTRL+Q) need
   "in":"<window title>": that window is focused first.
-{"type":"exact text"}  types at the caret. "into":"<field>" clicks that field first; "replace":true also selects
+{"type":"<the text>"}  types at the caret. "into":"<field>" clicks that field first; "replace":true also selects
   its old text.
 {"click":"<visible label, or what it looks like and where>"}  also "double_click" and "right_click";
   "hold":["CTRL"] or ["SHIFT"] for a modified click.
@@ -92,6 +93,9 @@ Rules
   pick one.
 - Claim only what the screen shows: a still image can't prove sound, playback or delivery.
 - After an interruption, plan from the current screen; old steps were discarded.
+- Tabs cannot be placed on the screen. "One tab on the left, one on the right" (or any two side by side) means
+  two windows, tiled by keys only (a click can land on another app): in the window in front press GUI+RIGHT, then
+  CTRL+N for a second window, then GUI+LEFT. Done only when both halves show that app.
 - Do only what the newest request asks. Earlier requests are finished: use them to tell what "it" means, never
   redo or restore their results unless asked.
 - When the user answers your question ("yes", a choice), that answer is the request: do what you offered now.
@@ -306,17 +310,22 @@ class OptimizedExecutor(Executor):
         still for one more look, or UNTIL_S. Returning at once cost a planner call per step and showed the planner
         half-drawn windows ("until Firefox window open", then "until Firefox window visible"). Pixels only: the
         planner judges what the settled screen shows."""
-        started, last, moved = time.monotonic(), None, False
+        started, last, moved, still = time.monotonic(), None, False, time.monotonic()
         while time.monotonic() - started < (UNTIL_S if moved else UNTIL_STILL_S):
             thumb = thumbnail(self.controller.capture.grab())
             with self.cond:
                 if self.active_plan is None or not self.control.valid(self.active_plan.epoch):
                     return 'superseded', 'the plan was stopped while waiting'
             moved = moved or changed(self.control.thumb, thumb)
-            if last is not None and moved and not changed(last, thumb):
+            if last is None or changed(last, thumb):
+                still = time.monotonic()
+            # Settled = unchanged for SETTLE_S, not two looks in a row: grabs return in ms now, and the closed menu
+            # read as settled 0.02 s after ENTER, before Chrome's window drew, so "google chrome" was typed again.
+            elif moved and time.monotonic() - still >= SETTLE_S:
                 return 'observed', (f'The screen changed and settled after {time.monotonic()-started:.1f} s. '
                                     f'Judge from it whether {expected} is shown before acting.')
             last = thumb
+            time.sleep(0.05)
         if not moved:
             return 'no_change', (f'Nothing on the screen changed in {time.monotonic()-started:.1f} s after your last '
                                  'input: it did not respond. Do not repeat it; try a different way once, or say '
