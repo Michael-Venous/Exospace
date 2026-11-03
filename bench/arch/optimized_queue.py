@@ -37,7 +37,10 @@ FINAL_REPORT = ("\n\nYou are out of attempts for this request: send no more acti
                 "and what didn't respond (for example, that the option isn't offered).")
 QWEN_CHECK, QWEN_CHECK_HOST = 'qwen/qwen3.8-27b', 'modelrun/fp4'
 CLAIM_READ_S, CLAIM_TOTAL_S = 4.0, 8.0  # the claim check's first-byte and whole-reply limits
-SETTLE_S = 0.5  # how long the screen must hold still to count as settled
+# How long the screen must hold still to count as settled, on every target. Two identical frames in a row ended a
+# Pi wait 20 ms after the launcher closed, before Chrome drew; 0.5 s fixed that, 0.3 s still spans it and saves
+# 0.2 s per wait on the Pi and one 0.29 s screenshot per wait on the laptop. A slower first paint gets another until.
+SETTLE_S = 0.3
 WAIT_MAX_S = 3.0  # longest pause a {"wait": n} gets
 UNTIL_S = 3.0  # longest an until waits for the screen to change and settle (each look is a ~0.27 s screenshot)
 UNTIL_STILL_S = 2.0  # nothing changed at all by then: hand back (6 of 26 waits sat 3 s on an unseen change)
