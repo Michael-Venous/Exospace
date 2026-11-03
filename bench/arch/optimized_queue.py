@@ -13,7 +13,6 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
-import cv2
 import httpx
 
 from bench.arch.frames import PLANNER_PIXELS, POINTER_PIXELS, fit_jpeg, fit_scale
@@ -21,6 +20,7 @@ from bench.arch.queue_control import Control, Planned, Superseded, TimedTarget, 
 from bench.arch.openrouter_study import ModelHTTPError, OpenRouterJSON
 from bench.arch.queue_agent import Brain, Executor, INPUT_GAP_S, PRIMARY_ACTIONS, QueueAgent, Record
 from bench.arch.reliable_queue import SCHEMA, ScreenChecks
+from brain.cancel import Cancelled
 from brain.hid import HID_MAX
 from brain.types import Action
 
@@ -38,6 +38,7 @@ FINAL_REPORT = ("\n\nYou are out of attempts for this request: send no more acti
 QWEN_CHECK, QWEN_CHECK_HOST = 'qwen/qwen3.8-27b', 'modelrun/fp4'
 CLAIM_READ_S, CLAIM_TOTAL_S = 4.0, 8.0  # the claim check's first-byte and whole-reply limits
 SETTLE_S = 0.5  # how long the screen must hold still to count as settled
+WAIT_MAX_S = 3.0  # longest pause a {"wait": n} gets
 UNTIL_S = 3.0  # longest an until waits for the screen to change and settle (each look is a ~0.27 s screenshot)
 UNTIL_STILL_S = 2.0  # nothing changed at all by then: hand back (6 of 26 waits sat 3 s on an unseen change)
 
@@ -133,7 +134,9 @@ class ClaimChecks(ScreenChecks):
         if not self.evidence or self.evidence[-1] != image:
             self.evidence.append(image)
 
-    def claim(self, jpeg: bytes, goal: str, claim: str, complete: bool, steps: list[dict]) -> bool:
+    def claim(self, jpeg: bytes, goal: str, claim: str, complete: bool, steps: list[dict]) -> tuple[bool, str, str]:
+        """(supported, status, reason) of this check alone: an abandoned check still running in the background
+        must not hand its verdict to the next request's check through shared fields."""
         question = {'claim': claim, 'executed_inputs': steps}
         if complete:
             question['goal'] = goal
@@ -144,7 +147,8 @@ class ClaimChecks(ScreenChecks):
         self.last_reason = str(result.get('reason', ''))
         self.last_observed = str(result.get('observed', ''))
         self.trace.append({'label':'claim-check', 'by': 'qwen-check', 'reply':result, **timing})
-        return self.last_status == 'complete' and bool(self.last_observed.strip())
+        status, observed = str(result.get('status', 'unknown')), str(result.get('observed', ''))
+        return status == 'complete' and bool(observed.strip()), status, str(result.get('reason', ''))
 
 
 class OptimizedExecutor(Executor):
@@ -174,8 +178,11 @@ class OptimizedExecutor(Executor):
             result, detail = self._do(plan.action)
             with self.cond:
                 # finish() revokes its own token. Preserve its terminal result but never new work.
-                # 'done' stays done: its input already reached the computer; calling it superseded made the next plan redo it.
-                if plan.epoch != c.epoch and result not in ('done', 'verified', 'replied', 'asked', 'reported', 'blocked', 'uncertain'):
+                # An input that reached the computer stays done (calling it superseded made the next plan redo it),
+                # but one sent for an earlier request is not this request's step.
+                if result == 'done' and plan.request != self.shared.request:
+                    result, detail = 'done_earlier', 'sent for the previous request before it was interrupted'
+                elif plan.epoch != c.epoch and result not in ('done', 'verified', 'replied', 'asked', 'reported', 'blocked', 'uncertain'):
                     result, detail = 'superseded', 'a revised or stopped plan owns input'
                 self.shared.log.append(Record(round(time.monotonic()-self.started, 2), plan.action, result, detail))
                 c.event('action', epoch=plan.epoch, action=next((k for k in plan.action if k in PRIMARY_ACTIONS),''),
@@ -222,6 +229,8 @@ class OptimizedExecutor(Executor):
             return self._hover(str(action[kind]))
         if kind == 'triple_click':
             return self._triple_click(str(action[kind]))
+        if kind == 'wait':
+            return self._wait(action[kind])
         if action.get('hold') and 'hold' not in self._features():
             return 'error', ("This device can't hold a key during a click. Use the keyboard instead: to extend a "
                              'selection, SHIFT+RIGHT or SHIFT+END after a double_click; CTRL+SHIFT+RIGHT per word.')
@@ -237,21 +246,39 @@ class OptimizedExecutor(Executor):
             c.attempts[key] += 1
             if c.attempts[key] > limit:
                 return 'not_shown', 'This same input already ran without observable progress. Inspect or use another approach.'
-        if kind == 'key' and action['key'] in (['GUI'], 'GUI'):
+        if kind == 'key' and self._opens_launcher(action['key']) and getattr(self.controller.hid, 'launcher_settles', False):
             return self._open_launcher(action)
         return super()._do(action)
 
+    @staticmethod
+    def _opens_launcher(keys) -> bool:
+        keys = keys if isinstance(keys, list) else [keys]
+        return len(keys) == 1 and str(keys[0]).upper() in ('GUI', 'SUPER', 'META', 'WIN')
+
+    def _wait(self, value) -> tuple[str,str]:
+        """{"wait": seconds}: the planner sometimes asks for a pause; up to WAIT_MAX_S, cut short by new speech."""
+        try:
+            seconds = min(max(float(value), 0.0), WAIT_MAX_S)
+        except (TypeError, ValueError):
+            seconds = 1.0
+        self.controller.cancel.sleep(seconds)
+        return 'done', f'waited {seconds:g} s'
+
     def _open_launcher(self, action) -> tuple[str,str]:
-        # Cinnamon's menu opens ~0.3 s after Super: the name typed right after it went into the focused window.
-        # shortcut: waits for any screen change (up to 1.5 s), not for the menu itself.
+        """On a target whose launcher draws slowly (the Pi rig's Cinnamon: ~0.3 s after Super, and the name typed
+        at once went into the focused window), wait for the screen to change, up to 1.5 s. The laptop's KDE
+        launcher takes typing at once, so it doesn't wait (`launcher_settles` is the target's)."""
         before = thumbnail(self.controller.capture.grab())
         result = super()._do(action)
         deadline = time.monotonic() + 1.5
-        while time.monotonic() < deadline:
-            if changed(before, thumbnail(self.controller.capture.grab())):
-                time.sleep(0.15)  # the search box takes focus just after the menu draws
-                break
-            time.sleep(0.03)
+        try:
+            while time.monotonic() < deadline:
+                if changed(before, thumbnail(self.controller.capture.grab())):
+                    self.controller.cancel.sleep(0.15)  # the search box takes focus just after the menu draws
+                    break
+                self.controller.cancel.sleep(0.03)
+        except Cancelled:
+            pass  # the key went out; new speech owns what comes next
         return result
 
     def _hover(self, target: str) -> tuple[str,str]:
@@ -359,8 +386,8 @@ class OptimizedExecutor(Executor):
         def check():
             for attempt in range(2):  # a dropped connection ("bad record mac") fails in ~0.1 s: once more
                 try:
-                    supported = self.checks.claim(jpeg, goal, text, kind=='done' or status=='complete', steps)
-                    out.update(supported=supported, reason=self.checks.last_reason, status=self.checks.last_status)
+                    supported, verdict, reason = self.checks.claim(jpeg, goal, text, kind=='done' or status=='complete', steps)
+                    out.update(supported=supported, reason=reason, status=verdict)
                     break
                 except ModelHTTPError as exc:
                     out['error'] = exc
@@ -376,7 +403,6 @@ class OptimizedExecutor(Executor):
                 out['done'] = True
                 self.cond.notify_all()
         # The check runs aside so a new request ("go back") doesn't wait up to 8 s for a verdict it would discard.
-        # shortcut: an abandoned check may still set self.checks.last_* when it lands; we read our own copy in out.
         threading.Thread(target=check, daemon=True).start()
         with self.cond:
             while 'done' not in out and c.valid(epoch):
@@ -557,7 +583,7 @@ class OptimizedBrain(Brain):
     def _counts_as_repeat(self, record: dict) -> bool:
         """Scrolling through a page sends the same reply again and again: the per-screen repeat limit, not the
         same-reply loop guard, stops a scroll that no longer changes anything (one at the bottom of a page)."""
-        moves = {'scroll', 'until', 'hover'}
+        moves = {'scroll', 'until', 'hover', 'wait'}
         return not all(line.keys() & PRIMARY_ACTIONS <= moves for line in record['lines'] if 'unparsed' not in line)
 
     def _stream(self, body: dict, record: dict):

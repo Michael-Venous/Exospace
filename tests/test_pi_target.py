@@ -3,7 +3,6 @@ command handler (a pseudo-terminal between them, as in test_pico_loopback), with
 
 import os
 import tempfile
-import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch

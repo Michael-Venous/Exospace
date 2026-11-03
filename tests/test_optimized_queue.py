@@ -106,8 +106,7 @@ class ControlTests(unittest.TestCase):
         self.assertFalse(self.agent.shared.finished)
     def test_contradicted_claim_ends_without_redoing_effect(self):
         p=self.plan({'say':'Saved.','status':'complete'})
-        self.ex.checks.claim=Mock(return_value=False)
-        self.ex.checks.last_reason='The dialog is still open.'
+        self.ex.checks.claim=Mock(return_value=(False,'unknown','The dialog is still open.'))
         self.assertEqual(self.ex._do(p.action)[0],'uncertain')
         self.assertTrue(self.agent.shared.finished)
         record={'epoch':p.epoch,'request':p.request,'view':p.view,'lines':[]}
@@ -135,7 +134,7 @@ class ControlTests(unittest.TestCase):
         self.assertTrue(self.agent.shared.finished)
     def test_a_dropped_check_connection_is_asked_again(self):
         p=self.plan({'done':'The terminal is minimized.'})
-        self.ex.checks.claim=Mock(side_effect=[httpx.ReadError('bad record mac'),True])
+        self.ex.checks.claim=Mock(side_effect=[httpx.ReadError('bad record mac'),(True,'complete','')])
         self.assertEqual(self.ex._do(p.action)[0],'verified')
         self.assertEqual(self.ex.checks.claim.call_count,2)
     def test_a_done_task_whose_check_never_answers_is_not_called_a_failure(self):
@@ -145,10 +144,10 @@ class ControlTests(unittest.TestCase):
         self.assertEqual(self.brain.said[-1],"I think that's done (The terminal is minimized), but I couldn't double-check it on the screen.")
     def test_a_contradicted_report_gets_one_correction_then_stops(self):
         p=self.plan({'say':'It needs 2 1/4 cups of flour.','status':'answer'})
-        def disagree(*a):
-            self.ex.checks.last_status,self.ex.checks.last_reason='incomplete','The flour shown is 2 1/3 cups.'
-            return False
-        self.ex.checks.claim=Mock(side_effect=disagree)
+        # The shared fields say something else: only this check's own verdict counts (a check abandoned
+        # after an interrupt may still write them).
+        self.ex.checks.last_status,self.ex.checks.last_reason='complete','stale verdict of an abandoned check'
+        self.ex.checks.claim=Mock(return_value=(False,'incomplete','The flour shown is 2 1/3 cups.'))
         result,detail=self.ex._do(p.action)
         self.assertEqual(result,'not_verified')
         self.assertIn('2 1/3',detail)
@@ -183,6 +182,36 @@ class ControlTests(unittest.TestCase):
         self.c.corrected=True
         self.brain.end_turn()
         self.assertFalse(self.c.corrected)
+    def test_an_input_landing_for_the_previous_request_is_not_this_ones_step(self):
+        p=self.plan({'key':['ENTER']})
+        def slow(action):
+            self.brain.end_turn()  # the user spoke while the key went out
+            return 'done',''
+        self.ex._do=slow
+        with self.agent.cond:self.agent.shared.queue.append(p)
+        thread=threading.Thread(target=self.ex.run,daemon=True);thread.start()
+        deadline=time.monotonic()+1
+        while not self.agent.shared.log and time.monotonic()<deadline:time.sleep(.005)
+        self.ex.closed=True;thread.join(1)
+        self.assertEqual(self.agent.shared.log[-1].result,'done_earlier')
+    def test_a_wait_pauses_at_most_three_seconds(self):
+        p=self.plan({'wait':60})
+        with patch.object(self.agent.cancel,'sleep') as sleep:
+            self.assertEqual(self.ex._do(p.action)[0],'done')
+            self.ex._do({'wait':'a moment'})
+        self.assertEqual([c.args[0] for c in sleep.call_args_list],[3.0,1.0])
+    def test_the_launcher_wait_belongs_to_slow_launchers_only(self):
+        p=self.plan({'key':['GUI']})
+        grabs=[]
+        self.target.grab=lambda:(grabs.append(1),np.zeros((200,320,3),np.uint8))[1]
+        self.ex._do(p.action)
+        self.assertEqual(grabs,[])  # the laptop's KDE launcher: typing goes right after the key
+        self.target.launcher_settles=True
+        screens=iter([np.zeros((200,320,3),np.uint8),np.full((200,320,3),200,np.uint8)])
+        self.target.grab=lambda:next(screens,np.full((200,320,3),200,np.uint8))
+        with patch.object(self.agent.cancel,'sleep') as sleep:
+            self.assertEqual(self.ex._do({'key':['super']})[0],'done')
+        self.assertEqual(sleep.call_args_list[-1].args[0],.15)  # the menu drew: a beat for its search box
     def test_conversation_reply_is_spoken_without_a_screen_check(self):
         p=self.plan({'say':'Hello! How can I help?','status':'reply'})
         self.ex.checks.claim=Mock(side_effect=AssertionError('a greeting needs no evidence'))
@@ -199,7 +228,7 @@ class ControlTests(unittest.TestCase):
         for i in range(6):self.ex.checks.observe(bytes([i]),1)
         sent=[]
         self.ex.checks.client.call=lambda images,*a:(sent.append(images) or ({'status':'complete','observed':'x'},{}))
-        self.assertTrue(self.ex.checks.claim(b'final','goal','claim',True,[]))
+        self.assertEqual(self.ex.checks.claim(b'final','goal','claim',True,[]),(True,'complete',''))
         self.assertLessEqual(len(sent[0]),4)
     def test_wait_does_not_call_another_model(self):
         p=self.plan({'until':'new page'})

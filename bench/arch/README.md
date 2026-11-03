@@ -1051,3 +1051,19 @@ with a keyboard alternative for the planner, and a triple click is sent as a dou
 yet tried on hardware). `tests/test_pi_target.py` runs the optimized executor over the real `PicoHID` and the
 real firmware command handler through a pseudo-terminal, with a letterboxed capture frame. No `brain/`,
 `firmware/` or PLAN.md contract was changed; `python -m brain --backend pi` is as on `main`.
+
+### The voice page as the runtime (`serve_agent.py`, 2026-11-03)
+The voice page (`brain.voice.layer`) drives the optimized queue through `serve_agent.py`: each request is sent
+whole when the talk button is released. On the Pi (default) the target is the capture card and the Pico:
+`python -m bench.arch.serve_agent`, then `python -m brain.voice.layer --agent http://127.0.0.1:8770`. On the
+laptop rig, `bench/arch/serve_laptop.sh` starts both with `EXO_TARGET=laptop`; open http://127.0.0.1:8780 and
+hold the orb or Space. Each request's end reaches the page (a spoken line verbatim; done, stopped or failed when
+it ended quietly) and its timings go to `talk-logs/timings-optimized.jsonl` (`"via":"page"`) with the session's
+`control.json`, as talk.py does.
+
+Fixes after review: the claim check returns its own verdict (a check abandoned on interrupt could hand its
+status and reason to the next one through shared fields); an input that lands for a request already replaced is
+logged `done_earlier`, not counted as the new request's step; `{"wait": n}` (seen 3/4 in the date case) pauses
+up to 3 s instead of failing the reply; the launcher wait after GUI is a target setting (`launcher_settles`: on
+for the Pi rig's Cinnamon target, off for the laptop's KDE, which takes typing at once), recognises
+SUPER/META/WIN and lower case, and stops on new speech.

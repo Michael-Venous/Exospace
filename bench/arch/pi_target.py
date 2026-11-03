@@ -20,6 +20,7 @@ FIRST_FRAME_S = 5.0  # how long to wait for the capture card's first frame
 class PiTarget:
     # The Pico's protocol has no held keys during a click and no triple click (PLAN.md §5.1: count 1 or 2).
     features: frozenset[str] = frozenset()
+    launcher_settles = True  # the target's Cinnamon menu takes ~0.3 s to accept typing after Super
 
     def __init__(self, cfg: Config) -> None:
         self.capture = V4L2Capture(cfg.capture_device, cfg.capture_width, cfg.capture_height)

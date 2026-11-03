@@ -356,8 +356,7 @@ def claims(out: Path, prompts: list[str], reps: int) -> None:
         row = {"prompt": prompt, "claim": claim, "screen": screen, "truth": truth}
         for attempt in range(2):
             try:
-                row["accepted"] = checks.claim(image, goal, claim, complete, [])
-                row["status"] = checks.last_status
+                row["accepted"], row["status"], _ = checks.claim(image, goal, claim, complete, [])
                 break
             except (httpx.TransportError, TimeoutError) as exc:
                 row["error"] = f"{type(exc).__name__}"

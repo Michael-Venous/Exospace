@@ -63,6 +63,7 @@ LOOPS = 3  # the same reply this many times in one request: it is going in circl
 DONE_TAIL = 300  # actions of this request each call sees, compactly
 FAILED = {"not_shown", "not_found", "error", "not_verified"}
 PRIMARY_ACTIONS = {"key", "type", "click", "double_click", "triple_click", "right_click", "drag", "scroll", "hover",
+                   "wait",
                    "done", "until", "say", "ask"}
 STEP_BACK_EFFORT = "low"  # medium took 3.9 s, or ran out of tokens reasoning (11.6 s)
 STEP_BACK = ("\n\nYou are stuck. Step back before you act: say in one sentence what is actually on the screen and why "

@@ -38,6 +38,7 @@ def shell(script: str, timeout: float = 60) -> str:
 
 class LaptopTarget:
     features = frozenset({"hold", "triple_click"})  # laptop_hid.py holds keys through a click and clicks any count
+    launcher_settles = False  # KDE's launcher takes the app's name the moment GUI is pressed: no wait
     def __init__(self) -> None:
         self._hid = subprocess.Popen(["python3", "-u", str(HELPER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                      env={**os.environ, **SESSION})
