@@ -2,7 +2,7 @@
 so the unchanged voice page (brain.voice.layer) and its orb drive it: the page hears, this acts and answers.
 
 On the Pi (the default) the target is the capture card and the Pico; `EXO_TARGET=laptop` drives the laptop rig
-instead (`serve_laptop.sh` starts this and the page there). The page sends each request whole, once the talk
+instead (`serve_laptop.sh` starts it there with a front end). The page sends each request whole, once the talk
 button is released.
 """
 

@@ -1056,8 +1056,9 @@ real firmware command handler through a pseudo-terminal, with a letterboxed capt
 The voice page (`brain.voice.layer`) drives the optimized queue through `serve_agent.py`: each request is sent
 whole when the talk button is released. On the Pi (default) the target is the capture card and the Pico:
 `python -m bench.arch.serve_agent`, then `python -m brain.voice.layer --agent http://127.0.0.1:8770`. On the
-laptop rig, `bench/arch/serve_laptop.sh` starts both with `EXO_TARGET=laptop`; open http://127.0.0.1:8780 and
-hold the orb or Space. Each request's end reaches the page (a spoken line verbatim; done, stopped or failed when
+laptop rig, `bench/arch/serve_laptop.sh` starts the agent with `EXO_TARGET=laptop` and `home_talk.py`: hold Home
+anywhere (the keypad's 7/Home too), no browser; the system microphone, Deepgram and Piper as in talk.py.
+`serve_laptop.sh --page` starts the voice page instead (http://127.0.0.1:8780, the orb or Space). Each request's end reaches the page (a spoken line verbatim; done, stopped or failed when
 it ended quietly) and its timings go to `talk-logs/timings-optimized.jsonl` (`"via":"page"`) with the session's
 `control.json`, as talk.py does.
 

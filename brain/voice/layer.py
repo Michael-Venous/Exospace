@@ -257,15 +257,6 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[s
     return server
 
 
-def _watch_home(lines: queue.Queue) -> None:
-    from brain.voice import talk_key
-    try:
-        talk_key.watch(lambda down: lines.put({"button": "down" if down else "up"}))
-    except PermissionError:
-        print("Home can't talk: add yourself to the input group (sudo usermod -aG input $USER) and log in again.",
-              flush=True)
-
-
 def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
     lines: queue.Queue[dict[str, Any]] = queue.Queue()
     threading.Thread(target=agent.follow, args=(lines,), name="agent-events", daemon=True).start()
@@ -273,8 +264,6 @@ def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
     if button.available():  # the Pi's push-to-talk button: the page holds and lets go of its orb
         threading.Thread(target=button.watch, args=(lambda down: lines.put({"button": "down" if down else "up"}),),
                          name="ptt-button", daemon=True).start()
-    if os.environ.get("EXO_TALK_KEY") == "home":  # the laptop rig: its Home key does what the Pi's button does
-        threading.Thread(target=_watch_home, args=(lines,), name="ptt-home-key", daemon=True).start()
     page_server(agent, port, ws_port, lines)
     print(f"Voice layer on http://127.0.0.1:{port} -> agent {agent.base}", flush=True)
     asyncio.run(_relay_forever(port, ws_port, deepgram_key))
