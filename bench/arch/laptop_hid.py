@@ -118,7 +118,7 @@ def handle(cmd: dict) -> None:
         for _ in range(abs(cmd["dy"])):
             emit(POINTER, (EV_REL, REL_WHEEL, -1 if cmd["dy"] > 0 else 1))
             time.sleep(0.01)
-    elif op == "swipe":
+    elif op in ("swipe", "drag"):
         move(cmd["x1"], cmd["y1"])
         emit(POINTER, (EV_KEY, BTN["left"], 1))
         for i in range(1, 11):

@@ -123,7 +123,7 @@ class XTarget:
         elif op == "scroll":
             if cmd["dy"]:
                 self._xdo("click", "--repeat", str(abs(cmd["dy"])), "5" if cmd["dy"] > 0 else "4")
-        elif op == "swipe":
+        elif op in ("swipe", "drag"):
             self._xdo("mousemove", *self._px(cmd["x1"], cmd["y1"]), "mousedown", "1",
                       "mousemove", *self._px(cmd["x2"], cmd["y2"]), "mouseup", "1")
         elif op == "release_all":

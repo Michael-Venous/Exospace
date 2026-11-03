@@ -17,7 +17,7 @@ class Commands:
     """Runs one command dict and returns its reply dict.
 
     keyboard: press_keys(names), type_text(text), release_all()
-    mouse:    click(x, y, buttons, count), move(x, y), scroll(dy), release_all()
+    mouse:    click(x, y, buttons, count), move(x, y), drag(x1, y1, x2, y2, ms, abort), scroll(dy), release_all()
     touch:    tap(x, y), swipe(x1, y1, x2, y2, ms, abort), release_all()
     """
 
@@ -30,7 +30,7 @@ class Commands:
         self._ops = {
             "ping": self._ping, "key": self._key, "type": self._type,
             "move": self._move, "click": self._click, "scroll": self._scroll,
-            "tap": self._tap, "swipe": self._swipe, "release_all": self.release_all,
+            "tap": self._tap, "swipe": self._swipe, "drag": self._drag, "release_all": self.release_all,
         }
 
     def handle(self, cmd: dict) -> dict:
@@ -104,4 +104,13 @@ class Commands:
             ms, self._should_abort,
         )
         if not done:
+            raise ValueError("aborted")
+
+    def _drag(self, cmd) -> None:
+        ms = cmd["ms"]
+        if not isinstance(ms, int):
+            raise ValueError("ms must be an int")
+        ms = max(1, min(MAX_SWIPE_MS, ms))
+        if not self._mouse.drag(_coord(cmd["x1"]), _coord(cmd["y1"]), _coord(cmd["x2"]), _coord(cmd["y2"]),
+                                ms, self._should_abort):
             raise ValueError("aborted")

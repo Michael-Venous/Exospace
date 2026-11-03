@@ -175,7 +175,7 @@ class LocalHID:
                       button=cmd.get("button", "left"))
         elif op == "scroll":
             gui.scroll(-int(cmd["dy"]) * 5)  # pyautogui: positive = up
-        elif op == "swipe":
+        elif op in ("swipe", "drag"):
             gui.moveTo(*self._px(cmd["x1"], cmd["y1"]))
             gui.dragTo(*self._px(cmd["x2"], cmd["y2"]), duration=cmd.get("ms", 300) / 1000)
         elif op == "release_all":

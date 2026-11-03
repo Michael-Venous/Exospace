@@ -66,6 +66,12 @@ class CommandTests(unittest.TestCase):
         self.run_cmd(op="swipe", x1=0, y1=1, x2=2, y2=3, ms=300)
         self.touch.swipe.assert_called_once_with(0, 1, 2, 3, 300, self.commands._should_abort)
 
+    def test_drag_uses_the_mouse(self):
+        self.mouse.drag.return_value = True
+        self.run_cmd(op="drag", x1=0, y1=1, x2=2, y2=3, ms=9999)
+        self.mouse.drag.assert_called_once_with(0, 1, 2, 3, 2000, self.commands._should_abort)
+        self.touch.swipe.assert_not_called()
+
     def test_swipe_duration_is_clamped(self):
         self.run_cmd(op="swipe", x1=0, y1=1, x2=2, y2=3, ms=9999)
         self.assertEqual(self.touch.swipe.call_args.args[4], 2000)

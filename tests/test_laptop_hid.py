@@ -82,7 +82,7 @@ class LaptopContractTests(unittest.TestCase):
         c.hid.send({"op": "click", "x": 100, "y": 200, "button": "left", "count": 1, "hold": ["CTRL"]})  # held-key
         c.release_all()
         ops = {command["op"] for command in self.target.sent}
-        self.assertTrue({"click", "swipe", "scroll", "key", "move", "type", "release_all"} <= ops, ops)
+        self.assertTrue({"click", "drag", "scroll", "key", "move", "type", "release_all"} <= ops, ops)
         for command in self.target.sent:
             laptop_hid.handle(command)  # raises on anything the laptop can't do
 

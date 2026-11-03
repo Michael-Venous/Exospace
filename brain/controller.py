@@ -99,7 +99,8 @@ class Controller:
         elif kind == "swipe":
             x1, y1 = _hid_xy(action.x, action.y)
             x2, y2 = _hid_xy(action.x2, action.y2)
-            self._send({"op": "swipe", "x1": x1, "y1": y1, "x2": x2, "y2": y2, "ms": action.ms})
+            # A finger on Chrome's tab strip drags the whole window; a held mouse button pulls the tab out.
+            self._send({"op": "swipe" if touch else "drag", "x1": x1, "y1": y1, "x2": x2, "y2": y2, "ms": action.ms})
         elif kind == "scroll" and touch:
             # A phone takes no wheel (Samsung DeX scrolled nothing for 3x5 notches, 2026-10-19): a finger drags the
             # page the other way. shortcut: through the screen's middle, as a wheel without a pointer; swipe at

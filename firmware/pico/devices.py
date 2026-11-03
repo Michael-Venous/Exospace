@@ -10,11 +10,12 @@ from adafruit_hid.keycode import Keycode
 
 import keys
 from descriptors import MOUSE_REPORT_ID, TOUCH_REPORT_ID
-from reports import mouse_report, touch_report
+from reports import BUTTON_LEFT, mouse_report, touch_report
 
 CLICK_HOLD_S = 0.04  # over libinput's 25 ms debounce: a shorter release is held back and lands after the next move (a drag)
 TAP_HOLD_S = 0.05
 SWIPE_STEP_MS = 20
+DRAG_HOLD_S = 0.15  # button held still before moving and before release
 
 
 def _find(usage_page: int, usage: int):
@@ -74,6 +75,24 @@ class AbsMouse:
             time.sleep(CLICK_HOLD_S)
             self._send(0, 0)
             time.sleep(CLICK_HOLD_S)
+
+    def drag(self, x1: int, y1: int, x2: int, y2: int, ms: int, should_abort) -> bool:
+        """Press, hold, move in steps, hold, release: like a hand. Apps start a drag (a tab out of its strip, a
+        file) only once the button has been down a moment; a finger swipe on Chrome's tab strip moves the window."""
+        self.move(x1, y1)
+        self._send(BUTTON_LEFT, 0)
+        time.sleep(DRAG_HOLD_S)
+        steps = max(1, ms // SWIPE_STEP_MS)
+        for step in range(1, steps + 1):
+            if should_abort():
+                self._send(0, 0)
+                return False
+            time.sleep(ms / steps / 1000)
+            self._x, self._y = x1 + (x2 - x1) * step // steps, y1 + (y2 - y1) * step // steps
+            self._send(BUTTON_LEFT, 0)
+        time.sleep(DRAG_HOLD_S)
+        self._send(0, 0)
+        return True
 
     def scroll(self, dy: int) -> None:
         """Positive dy scrolls down (as in LocalHID); the HID wheel is + = up."""
