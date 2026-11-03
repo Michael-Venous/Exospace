@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # The voice page driving the Qwen queue on the laptop rig. Run ON the laptop, then open http://127.0.0.1:8780 and
-# hold the orb (or Space) to talk. The Pi keeps its own path: python -m bench.arch.serve_agent (EXO_TARGET=pi).
+# hold Home (anywhere), the orb or Space to talk. The Pi keeps its own path: python -m bench.arch.serve_agent (EXO_TARGET=pi).
 set -euo pipefail
 script_path=$(readlink -f -- "${BASH_SOURCE[0]}")  # through a symlink too
 root=$(cd -- "$(dirname -- "$script_path")/../.." && pwd)
 cd "$root"
-export PYTHONPATH=. EXO_TARGET=laptop
+export PYTHONPATH=. EXO_TARGET=laptop EXO_TALK_KEY=home
 python="$HOME/exo-bench/.venv/bin/python"
 keys="$HOME/.cache/exo-bench/withkeys.py"
 mkdir -p "$HOME/exo-bench/talk-logs"
