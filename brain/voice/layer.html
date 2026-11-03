@@ -169,22 +169,9 @@ describe.onclick = () => setDescribe(!describing);
 setDescribe(describing);
 function speakHeld() { if (unspoken.length) { speak(unspoken.at(-1)); unspoken = []; } }
 
-// Later segments of one hold continue its request ("go to youtube" ... "and search lofi"). One at a time: an
-// early clause and the words said right after it must reach the agent in order.
-let sending = Promise.resolve();
-function send(text, continues) {
-  sending = sending.then(() => post("/segment", {text, continues})).then(r => { if (r.error) showError(r.error); });
-}
-
-// The ended clauses of "open chrome, go to youtube and search cats", and what follows them. A clause ends at
-// "and", "then", or a comma or full stop with more words after it (a live transcript ends in one).
-// shortcut: "and" inside one request ("search cats and dogs") ends it early and "dogs" arrives as a request of
-// its own; wait for the word after "and" to start a request if such phrases get said.
-const CLAUSE = /^\s*(\S.*?)(?:[,;.](?=\s+\S)|(?=\s+(?:and|then)\b))[\s,]*(?:(?:and|then)\b[\s,]*)*(.*)$/i;
-function clausesOf(text) {
-  const clauses = [];
-  for (let m; (m = CLAUSE.exec(text)) && m[1].trim(); text = m[2]) clauses.push(m[1].trim());
-  return [clauses, text.trim()];
+// One request per hold, sent on release: acting on each pause planned twice and repeated steps.
+function send(text) {
+  post("/segment", {text, continues: false}).then(r => { if (r.error) showError(r.error); });
 }
 
 // The mic stays open between presses: opening it took most of the delay before listening.
@@ -213,11 +200,7 @@ async function start() {
   // so the first words are neither delayed nor lost.
   const queued = [];
   let ended = false;
-  let done = "", sent = false, early = 0;  // early: this segment's ended clauses already sent
-  // shortcut: skips sent clauses by count; a final transcript that moves a clause boundary resends or drops one.
-  const leftover = text => { if (!early) return text;
-    const [clauses, rest] = clausesOf(text);
-    return [...clauses.slice(early), rest].filter(Boolean).join(", "); };
+  let done = "";
   const ctx = new AudioContext(), an = ctx.createAnalyser(), buf = new Uint8Array(512);
   an.fftSize = buf.length;
   ctx.createMediaStreamSource(mic).connect(an);
@@ -254,10 +237,6 @@ async function start() {
     const shown = (said.textContent + live.textContent).length;
     heard.classList.toggle("long", shown > 80);
     heard.classList.toggle("longer", shown > 120);
-    // Each pause ends a segment: send it now so execution starts while the user keeps talking. A clause goes
-    // sooner, once the words after it end it: "Open up Google Chrome and search up YouTube." had no pause after
-    // "Chrome", so Chrome waited for the whole sentence.
-    // Not continuous: nothing is sent while the button is held; the whole request goes once on release (onclose).
   };
   sock.onclose = e => {
     stopListening = null;
@@ -267,10 +246,10 @@ async function start() {
     document.body.classList.remove("on"); talk.setAttribute("aria-pressed", false); talk.ariaLabel = "Hold to talk";
     live.textContent = "";
     speakHeld();
-    if (done) send(done, false);
-    waiting(sent || !!done);
+    if (done) send(done);
+    waiting(!!done);
     // A close after letting go, or once words came back, lost nothing. Still holding: listen again at once.
-    if (e.code === 1000 || ended || sent || done) return;
+    if (e.code === 1000 || ended || done) return;
     if (held) return start();
     showError(`Speech service closed (${e.code}). Try again.`);
   };
