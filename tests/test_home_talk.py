@@ -39,6 +39,22 @@ class HomeTalkTests(unittest.TestCase):
         self.say("type talk faster in the doc")
         self.assertEqual(self.sent[-1], ("/goal", {"text": "type talk faster in the doc"}))
 
+    def test_dictation_sends_typing_goals_reads_them_back_and_skips_done(self):
+        self.say("Start dictating.")
+        self.speaker.say.assert_called_with("Dictating. Say stop dictating when you're done.", 1.0)
+        self.say("Dear Janet,")
+        path, body = self.sent[-1]
+        self.assertEqual(path, "/goal")
+        self.assertTrue(body["text"].startswith("Dictation: type exactly"))
+        self.assertTrue(body["text"].endswith(": Dear Janet,"))
+        self.speaker.say.assert_called_with("Dear Janet,", 1.0)
+        self.home.hear({"ev": "result", "status": "done", "message": ""})  # read back already: no "Done."
+        self.speaker.say.assert_called_with("Dear Janet,", 1.0)
+        self.say("Stop dictating.")
+        self.speaker.say.assert_called_with("Stopped dictating.", 1.0)
+        self.say("open firefox")
+        self.assertEqual(self.sent[-1], ("/goal", {"text": "open firefox"}))
+
     def test_press_stops_the_agent_and_release_sends_the_whole_request(self):
         self.home.changed(True)
         self.home.changed(True)  # a second down while held (another keyboard) changes nothing

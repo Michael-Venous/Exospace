@@ -17,15 +17,17 @@ PATH = Path(os.environ.get("EXO_VOICE_SETTINGS") or Path.home() / ".config/exosp
 @dataclass(frozen=True)
 class Settings:
     speed: float = 1.0  # how fast the box talks: 2.0 is twice normal
+    echo: bool = True  # dictated words are read back aloud, as a screen reader echoes typing
 
 
 def load(path: Path = PATH) -> Settings:
     try:
         saved = json.loads(path.read_text())
         speed = float(saved.get("speed", Settings.speed))
+        echo = saved.get("echo", Settings.echo)
     except (OSError, ValueError, TypeError, AttributeError):
         return Settings()
-    return Settings(speed=min(MAX_SPEED, max(MIN_SPEED, speed)))
+    return Settings(speed=min(MAX_SPEED, max(MIN_SPEED, speed)), echo=echo if isinstance(echo, bool) else True)
 
 
 def save(settings: Settings, path: Path = PATH) -> None:

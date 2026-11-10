@@ -3,7 +3,8 @@
 Pressing Home stops whatever the agent is doing (POST /listen: it is logged "interrupted", as in talk.py); the
 microphone streams to Deepgram while it is held (talk.py's Mic and Utterance, half a second of pre-roll included);
 letting go sends the whole request to POST /goal, or POST /stop when nothing was heard. A command for the box
-itself ("talk faster", "repeat that": brain.voice.commands) is answered here and never reaches the agent. What the
+itself ("talk faster", "repeat that", "start dictating": brain.voice.commands) is answered here and never reaches
+the agent; while dictating, each request is a goal to type its words at the caret, read back aloud. What the
 agent says comes back on GET /events and is spoken with Piper at the chosen speed, never while Home is held. The
 voice page and its Space key are a separate front end (`serve_laptop.sh --page`); this one never touches the page.
 """
@@ -74,6 +75,8 @@ class HomeTalk:
         if event.get("ev") != "result":
             return
         line = event.get("message") if event.get("status") == "ask_user" else QUIET_LINES.get(event.get("status"))
+        if self.controls.dictating and event.get("status") == "done":
+            return  # each dictated line was already read back: "Done." after every one is noise
         if line:
             print(f"  agent: {line}", flush=True)
             if self.held.is_set():
@@ -96,13 +99,14 @@ class HomeTalk:
 
 def main() -> None:
     from bench.arch.laptop import SESSION
-    from bench.arch.talk import Mic, Speaker, Utterance
+    from bench.arch.talk import DEEPGRAM, Mic, Speaker, Utterance
     from brain.voice import talk_key
 
     env = {**os.environ, **SESSION}
-    speaker, mic = Speaker(env), Mic(env)
+    speaker, mic, controls = Speaker(env), Mic(env), Controls()
     key = os.environ["DEEPGRAM_API_KEY"]
-    home = HomeTalk(post, speaker, lambda: Utterance(key, mic, lambda words, speaking: None), Controls())
+    home = HomeTalk(post, speaker, lambda: Utterance(key, mic, lambda words, speaking: None,
+                                                     controls.deepgram(DEEPGRAM)), controls)
     threading.Thread(target=home.follow, daemon=True).start()
     print("Ready: hold Home anywhere and speak; let go when you're done. Ctrl+C stops.", flush=True)
     try:
