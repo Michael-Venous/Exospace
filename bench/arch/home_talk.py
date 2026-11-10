@@ -5,7 +5,8 @@ microphone streams to Deepgram while it is held (talk.py's Mic and Utterance, ha
 letting go sends the whole request to POST /goal, or POST /stop when nothing was heard. A command for the box
 itself ("talk faster", "repeat that", "start dictating": brain.voice.commands) is answered here and never reaches
 the agent; while dictating, each request is a goal to type its words at the caret, read back aloud. A first run
-(or "set up") starts the spoken setup, answered here too (brain.voice.setup). What the agent says comes back on
+(or "set up") starts the spoken setup, answered here too (brain.voice.setup), as is the question of which computer
+this is when its screen matches no profile for sure (brain.voice.plug_in). What the agent says comes back on
 GET /events and is spoken with Piper at the chosen speed, never while Home is held. The voice page and its Space
 key are a separate front end (`serve_laptop.sh --page`); this one never touches the page.
 """
@@ -18,7 +19,8 @@ import threading
 import time
 import urllib.request
 
-from brain.voice import settings
+from brain.types import Frame
+from brain.voice import profiles, settings
 from brain.voice.controls import Controls
 
 AGENT = os.environ.get("EXO_AGENT", "http://127.0.0.1:8770")
@@ -34,6 +36,15 @@ def post(path: str, body: dict | None = None) -> None:
         urllib.request.urlopen(request, timeout=5).close()
     except OSError as exc:
         print(f"  (agent not reachable at {AGENT}: {exc})", flush=True)
+
+
+def screen() -> Frame | None:
+    """The agent's screen now, for the computer profiles' fingerprint; None when it has none or is down."""
+    try:
+        with urllib.request.urlopen(AGENT + "/screen.jpg", timeout=2) as response:
+            return profiles.from_jpeg(response.read())
+    except OSError:
+        return None
 
 
 class HomeTalk:
@@ -105,13 +116,13 @@ def main() -> None:
     from brain.voice import talk_key
 
     env = {**os.environ, **SESSION}
-    speaker, mic, controls = Speaker(env), Mic(env), Controls(first_run_setup=settings.FIRST_RUN_SETUP)
+    speaker, mic, controls = Speaker(env), Mic(env), Controls(first_run_setup=settings.FIRST_RUN_SETUP, frame=screen)
     key = os.environ["DEEPGRAM_API_KEY"]
     home = HomeTalk(post, speaker, lambda: Utterance(key, mic, lambda words, speaking: None,
                                                      controls.deepgram(DEEPGRAM)), controls)
     threading.Thread(target=home.follow, daemon=True).start()
     print("Ready: hold Home anywhere and speak; let go when you're done. Ctrl+C stops.", flush=True)
-    if greeting := controls.greeting():  # a first run: the spoken setup's first question
+    if greeting := controls.greeting():  # the spoken setup on a first run, or which computer this is
         print(f"  box: {greeting}", flush=True)
         home.say(greeting)
     try:

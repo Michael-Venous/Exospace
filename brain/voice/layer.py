@@ -19,7 +19,8 @@ writes HID. A command for the box itself ("talk faster", "repeat that": brain.vo
 agent: it is answered here, and every spoken line carries the talking speed for the page. While dictating ("start
 dictating" ... "stop dictating") each request types its words at the caret and they are read back aloud; the
 agent's narration then speaks only questions and failures. "Set up" (and a first run) starts the spoken setup
-(brain.voice.setup), whose answers never reach the agent either.
+(brain.voice.setup), whose answers never reach the agent either. At start, a screen no computer profile places for
+sure is asked about the same way: "Is this a new computer?" (brain.voice.plug_in).
 
 Mic audio is relayed to Deepgram server-side, so DEEPGRAM_API_KEY never reaches
 the browser. The page and relay only answer to this machine.
@@ -43,7 +44,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from brain.net import ipv4_only
-from brain.voice import button, settings
+from brain.voice import button, profiles, settings
 from brain.voice.controls import Controls
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
@@ -286,7 +287,7 @@ def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
     if button.available():  # the Pi's push-to-talk button: the page holds and lets go of its orb
         threading.Thread(target=button.watch, args=(lambda down: lines.put({"button": "down" if down else "up"}),),
                          name="ptt-button", daemon=True).start()
-    if greeting := agent.controls.greeting():  # a first run: the spoken setup asks its first question
+    if greeting := agent.controls.greeting():  # the spoken setup on a first run, or which computer this is
         lines.put(agent.voice(greeting))
     page_server(agent, port, ws_port, lines)
     print(f"Voice layer on http://127.0.0.1:{port} -> agent {agent.base}", flush=True)
@@ -337,8 +338,9 @@ def main() -> int:
         return 1
     gemini = os.environ.get("GEMINI_API_KEY", "")
     describer = Describer(gemini, os.environ.get("DESCRIBE_MODEL") or DESCRIBE_MODEL) if gemini else None
-    controls = Controls(first_run_setup=settings.FIRST_RUN_SETUP)
-    serve(Agent(args.agent, describer, controls), args.port, args.ws_port, key)
+    agent = Agent(args.agent, describer, Controls(first_run_setup=settings.FIRST_RUN_SETUP,
+                                                  frame=lambda: profiles.from_jpeg(agent.screen())))
+    serve(agent, args.port, args.ws_port, key)
     return 0
 
 

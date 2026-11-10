@@ -1043,7 +1043,8 @@ is open" on a screen with only its taskbar label); new 18/18 true, 0/18 false. L
 Pico (`PICO_SERIAL`), both from `brain/config.py` as `python -m brain --backend pi` uses them. The talk key is
 Home on a keyboard plugged into the Pi; the microphone and speaker need PipeWire (`pw-record`, `pw-play`).
 Describe the target computer in `EXO_DEVICE` (its OS and how its launcher opens: on macOS CMD+SPACE, since GUI
-alone does nothing there); the default describes the KDE laptop.
+alone does nothing there); the default describes the KDE laptop. Without `EXO_DEVICE`, the active computer profile
+(`brain/voice/profiles.py`, issue #29) is used when it has an OS, launcher or keys filled in.
 
 The Pico's protocol (PLAN.md §5.1) has no held keys during a click and clicks at most twice per command. On the
 laptop rig `laptop_hid.py` does both, so targets declare `features`: on the Pico a held-key click is refused

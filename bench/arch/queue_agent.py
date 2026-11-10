@@ -36,6 +36,7 @@ from brain.controller import Controller
 from brain.hid import HID_MAX
 from brain.imaging import shrink
 from brain.types import Action, DeviceProfile, Rect
+from brain.voice import profiles
 
 OPENROUTER = "https://openrouter.ai/api/v1/chat/completions"
 DEVICE = os.environ.get("EXO_DEVICE", "Linux laptop, KDE Plasma desktop. The GUI key opens the application "
@@ -556,7 +557,7 @@ class Brain(threading.Thread):
             (self.shots / f"call-{len(self.calls)}.jpg").write_bytes(image)
         with self.cond:
             context = {
-                "device": DEVICE,
+                "device": profiles.device(DEVICE),  # $EXO_DEVICE, else the active computer profile's text
                 "user_is_speaking": self.speaking, "user_words_so_far" if self.speaking else "user_said": self.words,
                 "conversation_before": self.conversation[-12:],
                 "log": [{"t": r.t, "action": r.action, "result": r.result, "detail": r.detail}

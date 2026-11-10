@@ -20,6 +20,10 @@ Open http://127.0.0.1:8780 and press **Talk** (or Space, so a single accessibili
 - The first run (no `~/.config/exospace/voice.json` yet), or saying "set up", starts a spoken setup: talking
   speed, a name for this computer and how much the box talks, with "repeat that", "go back", "skip" and "stop
   setup" anywhere (`setup.py`). `EXO_FIRST_RUN_SETUP=0` keeps it from starting by itself.
+- Each computer named is a profile in `~/.config/exospace/profiles.json` (`profiles.py`): a screen fingerprint
+  matched at start without a model call, plus an OS, launcher, shortcuts to prefer and keys to avoid, filled in by
+  hand and passed to the agent as its device text (`EXO_DEVICE` still overrides). A screen no profile places for
+  sure is asked about: "Is this a new computer?", "Is this Work laptop or Home PC?" (`plug_in.py`).
 - Needs `DEEPGRAM_API_KEY`; the server relays the audio, so the key never reaches the browser.
 - Browsers only allow the microphone on localhost or https, and both servers listen on localhost: open the page
   in Chromium on the Pi itself, with a USB mic and speaker (the Pi 5 has no headphone jack).

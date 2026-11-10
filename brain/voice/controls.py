@@ -6,17 +6,22 @@ exactly those words at the caret, and the words are read back (a blind user can'
 is turned off.
 
 While the spoken setup runs ("set up", or by itself on a first run: brain.voice.setup) every utterance is an answer
-to it, and none reaches the agent.
+to it, and none reaches the agent; so too while the box asks which computer it is plugged into (brain.voice.plug_in,
+when it starts on a screen its computer profiles don't place for sure).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Protocol
 
-from brain.voice import settings
+from brain.types import Frame
+from brain.voice import profiles, settings
 from brain.voice.commands import Dictate, Echo, Repeat, SetUp, Speed, parse, speed_line
-from brain.voice.setup import Setup
+from brain.voice.plug_in import WhichComputer
+from brain.voice.setup import Setup, Turn
 
 # Deepgram's dictation mode turns spoken "comma" and "period" into punctuation; it needs punctuate on.
 DEEPGRAM_DICTATION = "&punctuate=true&dictation=true"
@@ -39,12 +44,23 @@ def dictation_goal(words: str, first: bool) -> str:
             f"and nothing else; no clicks and no other keys: {words}")
 
 
+class Dialog(Protocol):
+    """A spoken exchange that takes every utterance until it is over: the setup, or which computer this is."""
+
+    def question(self) -> str: ...
+
+    def handle(self, words: str, current: settings.Settings) -> Turn: ...
+
+
 class Controls:
-    def __init__(self, path: Path = settings.PATH, first_run_setup: bool = False) -> None:
+    def __init__(self, path: Path = settings.PATH, first_run_setup: bool = False,
+                 frame: Callable[[], Frame | None] = lambda: None) -> None:
         """With `first_run_setup`, a missing settings file starts the spoken setup (front ends pass
-        settings.FIRST_RUN_SETUP; tests leave it off)."""
-        self.path = path
-        self.setup = Setup() if first_run_setup and not path.exists() else None
+        settings.FIRST_RUN_SETUP; tests leave it off). `frame()` is the target's screen now, or None: it
+        fingerprints the computer profiles, kept next to the settings file."""
+        self.path, self.frame = path, frame
+        self.profiles = path.with_name(profiles.PATH.name)
+        self.dialog: Dialog | None = self._setup() if first_run_setup and not path.exists() else None
         self.settings = settings.load(path)
         self.last = ""  # the last line spoken
         self.dictating = False
@@ -63,16 +79,19 @@ class Controls:
         self.last = line
 
     def greeting(self) -> str | None:
-        """What a front end says as it starts: setup's first question on a first run, else nothing."""
-        return self.setup.question() if self.setup else None
+        """What a front end says as it starts: setup's first question on a first run, else which computer this is
+        when its screen matches no profile for sure; nothing for a known computer."""
+        self.dialog = self.dialog or self._which_computer()
+        return self.dialog.question() if self.dialog else None
 
     def handle(self, words: str) -> Reply:
-        if self.setup:
-            return self._answer(self.setup, words)
+        if self.dialog:
+            return self._answer(self.dialog, words)
         command = parse(words)
         if isinstance(command, SetUp):
-            self.setup, self.dictating = Setup(), False
-            return Reply(say=self.setup.question())
+            setup = self._setup()
+            self.dialog, self.dictating = setup, False
+            return Reply(say=setup.question())
         if isinstance(command, Speed):
             before = self.settings.speed
             self._save(speed=command.apply(before))
@@ -93,16 +112,37 @@ class Controls:
             return Reply(goal=dictation_goal(words, self.dictated == 1), say=words if self.settings.echo else None)
         return Reply(goal=words)
 
-    def _answer(self, setup: Setup, words: str) -> Reply:
-        """One answer to the spoken setup. Its end is saved even with nothing changed, so a first run is over."""
-        turn = setup.handle(words, self.settings)
+    def _answer(self, dialog: Dialog, words: str) -> Reply:
+        """One answer to a dialog. Its end is saved even with nothing changed, so a first run is over."""
+        turn = dialog.handle(words, self.settings)
         if turn.settings != self.settings or turn.over:
             self.settings = turn.settings
             settings.save(self.settings, self.path)
         if turn.over:
-            self.setup = None
+            self.dialog = None
         return Reply(say=turn.say)
 
-    def _save(self, **changes: float | bool) -> None:
+    def _setup(self) -> Setup:
+        return Setup(self._name_computer)
+
+    def _name_computer(self, name: str) -> None:
+        """The name setup heard becomes this computer's profile, with its screen's fingerprint when there is one."""
+        profiles.save(profiles.remember(profiles.load(self.profiles), name, self.frame()), self.profiles)
+
+    def _which_computer(self) -> WhichComputer | None:
+        """The computer on the screen now: a sure match quietly becomes the active profile (its fingerprint
+        refreshed); an unsure one is asked about. With no profiles or no frame there is nothing to ask."""
+        store = profiles.load(self.profiles)
+        frame = self.frame() if store.profiles else None
+        if frame is None:
+            return None
+        found = profiles.match(store.profiles, frame)
+        if found.kind != "match" or found.profile is None:
+            return WhichComputer(found, frame, self.profiles)
+        profiles.save(profiles.remember(store, found.profile.name, frame), self.profiles)
+        self._save(computer=found.profile.name)
+        return None
+
+    def _save(self, **changes: float | bool | str) -> None:
         self.settings = replace(self.settings, **changes)
         settings.save(self.settings, self.path)
