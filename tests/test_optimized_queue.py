@@ -607,6 +607,10 @@ class ConfirmTests(unittest.TestCase):
             self.assertIsNotNone(candidate({'key':keys},after_typing=True),keys)
         for keys in (['BACKSPACE'],['CTRL','BACKSPACE'],['CTRL','A'],['GUI']):
             self.assertIsNone(candidate({'key':keys},after_typing=False),keys)
+    def test_key_aliases_are_judged_as_the_hid_would_send_them(self):
+        for value in ('ctrl+enter',['Return_R'],['windows','backspace'],[' enter'],'Del',['control','shift','del']):
+            self.assertIsNotNone(candidate({'key':value},after_typing=False),value)
+        self.assertIsNone(candidate({'key':['NOT_A_KEY']},after_typing=False))  # the HID refuses it: nothing is sent
     def test_sibling_click_kinds_and_drags_to_the_trash_are_judged(self):
         for action in ({'right_click':'the Delete item'},{'triple_click':'the Send row'},
                        {'click':'Send','hold':['SHIFT']},{'drag':['report.pdf','the Trash']},

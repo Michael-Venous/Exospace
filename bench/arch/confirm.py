@@ -17,6 +17,7 @@ import httpx
 
 from bench.arch.openrouter_study import ModelHTTPError, OpenRouterJSON
 from brain.agent.jev import IRREVERSIBLE_KINDS
+from brain.keys import canonical_combo
 
 IRREVERSIBLE_AT, SAFE_BELOW = 0.5, 0.25  # the score in between is unsure, and asks
 GATE_READ_S, GATE_TOTAL_S = 2.0, 5.0  # one image, a short reply: the single-image checks' limits, a little looser
@@ -28,7 +29,6 @@ COMMITS = re.compile(r'\b(send|submit|pay|payment|buy|purchase|check ?out|delete
                      r'publish|place order|order now|transfer|confirm|follow|star|subscribe|share|vote|upvote|'
                      r'format|reset|uninstall|save and exit|save & exit)\b', re.IGNORECASE)
 BINS = re.compile(r'\b(trash|bin|recycle|recycling)\b', re.IGNORECASE)  # a drag there deletes
-GUI, CTRL = {'GUI', 'CMD', 'COMMAND', 'WIN', 'META', 'SUPER'}, {'CTRL', 'CONTROL'}
 YES = re.compile(r"(?:(?:yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|send it|confirm(?:ed)?)\b[\s,.!]*)+",
                  re.IGNORECASE)
 PLEASE = re.compile(r"\bplease\b", re.IGNORECASE)
@@ -62,7 +62,10 @@ def candidate(action: dict, after_typing: bool) -> str | None:
     rule: DELETE before ENTER clears the completion)."""
     if 'key' in action:
         value = action['key']
-        names = [str(k).upper() for k in (value if isinstance(value, list) else [value])]
+        try:  # the HID's own spelling ("ctrl+enter", "Return_R", "windows"), so no alias slips past the gate
+            names = canonical_combo([str(k) for k in (value if isinstance(value, list) else [value])])
+        except ValueError:  # the HID refuses it too: nothing would be sent
+            return None
         return '+'.join(names) if _commit_keys(set(names), after_typing) else None
     if 'type' in action:
         return 'typing with a line break' if _breaks_line(str(action['type'])) else None
@@ -75,16 +78,16 @@ def candidate(action: dict, after_typing: bool) -> str | None:
     return None
 
 
-def _commit_keys(keys: set[str], after_typing: bool) -> bool:
+def _commit_keys(keys: set[str], after_typing: bool) -> bool:  # canonical names (brain.keys)
     """ENTER sends or submits; DELETE deletes a selected item (a plain one right after typing edits that text);
     GUI+BACKSPACE moves a file to the Trash (macOS Finder), CTRL+SHIFT+BACKSPACE clears data in some apps. Plain
     BACKSPACE and CTRL+BACKSPACE only edit text."""
-    if keys & {'ENTER', 'RETURN'}:
+    if 'ENTER' in keys:
         return True
-    if keys & {'DELETE', 'DEL'}:
-        return not (after_typing and keys <= {'DELETE', 'DEL'})
+    if 'DELETE' in keys:
+        return not (after_typing and keys == {'DELETE'})
     if 'BACKSPACE' in keys:
-        return bool(keys & GUI) or bool(keys & CTRL) and 'SHIFT' in keys
+        return 'GUI' in keys or {'CTRL', 'SHIFT'} <= keys
     return False
 
 
