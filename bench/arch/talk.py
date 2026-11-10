@@ -7,7 +7,8 @@ While Home is held the microphone streams (pw-record) to Deepgram, starting half
 or asks is spoken back by Piper on the laptop (no key, about 0.05 s a sentence). Holding Home again while it works is
 a new request: the newest wins. The agent's own virtual keyboard is never listened to.
 A command for the box itself ("talk faster", "repeat that": brain.voice.commands) is answered aloud here, and the
-agent drops those words. The talking speed is kept across restarts (brain.voice.settings).
+agent drops those words. The talking speed is kept across restarts (brain.voice.settings). "Start dictating" has
+each later utterance typed at the caret and read back, until "stop dictating" (brain.voice.controls).
 Home is withheld from the foreground app; other keys pass through.
 Reading the keyboard needs the `input` group. Ctrl+C stops.
 
@@ -97,12 +98,13 @@ class Mic:
 
 
 class Utterance:
-    """One press of Home: the microphone streamed to Deepgram; `heard(words, speaking)` gets the words so far."""
+    """One press of Home: the microphone streamed to Deepgram (at `url`); `heard(words, speaking)` gets the words so
+    far."""
 
-    def __init__(self, key: str, mic: Mic, heard) -> None:
+    def __init__(self, key: str, mic: Mic, heard, url: str = DEEPGRAM) -> None:
         self.heard, self.final, self.interim, self.mic = heard, [], "", mic
         self.audio = mic.listen()  # audio buffers here while Deepgram connects
-        self.ws = connect(DEEPGRAM, additional_headers={"Authorization": f"Token {key}"})
+        self.ws = connect(url, additional_headers={"Authorization": f"Token {key}"})
         self.done = threading.Event()
         # After finish() hands the final words over, a late interim result must not reopen the request as speech.
         self.lock, self.finished = threading.Lock(), False
@@ -323,7 +325,9 @@ def main() -> None:
                         speaker.stop()
                         agent.brain.end_turn()  # the last request is over; this is the next one
                         requests.append({"pressed": pressed, 'request_id':agent.shared.request})
-                        talking = Utterance(os.environ["DEEPGRAM_API_KEY"], mic, agent.brain.hear)
+                        # Dictated words go to the agent whole, on release, as a typing goal: never as they come.
+                        heard = (lambda words, speaking: None) if controls.dictating else agent.brain.hear
+                        talking = Utterance(os.environ["DEEPGRAM_API_KEY"], mic, heard, controls.deepgram(DEEPGRAM))
                         print("listening...", flush=True)
                     elif value == 0 and talking is not None:
                         released = time.monotonic() - agent.started

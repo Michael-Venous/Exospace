@@ -7,7 +7,7 @@ import urllib.request
 import pytest
 
 from brain.voice import settings
-from brain.voice.commands import MAX_SPEED, MIN_SPEED, STEP, Repeat, Speed, parse
+from brain.voice.commands import MAX_SPEED, MIN_SPEED, STEP, Dictate, Echo, Repeat, Speed, parse
 from brain.voice.controls import Controls, Reply
 from brain.voice.layer import Agent, page_server
 
@@ -103,3 +103,42 @@ def test_the_voice_page_answers_a_command_itself_and_sends_a_request_on(tmp_path
         assert sent == [("/goal", {"text": "open firefox", "continues": False})]
     finally:
         server.shutdown()
+
+
+@pytest.mark.parametrize("words, command", [
+    ("Start dictating.", Dictate(True)),
+    ("start dictation", Dictate(True)),
+    ("Stop dictating.", Dictate(False)),
+    ("I'm done dictating.", Dictate(False)),
+    ("Echo off.", Echo(False)),
+    ("turn echo on", Echo(True)),
+])
+def test_dictation_commands(words, command):
+    assert parse(words) == command
+
+
+@pytest.mark.parametrize("words", ["start dictating a letter to Janet", "open the dictation settings",
+                                   "type echo off in the terminal"])
+def test_dictation_words_inside_a_request_go_to_the_agent(words):
+    assert parse(words) is None
+
+
+def test_dictation_types_each_utterance_reads_it_back_and_stops(tmp_path):
+    controls = Controls(tmp_path / "voice.json")
+    assert controls.handle("Start dictating.") == Reply(say="Dictating. Say stop dictating when you're done.")
+    first = controls.handle("Dear Janet,")
+    assert first.say == "Dear Janet," and first.goal.endswith(": Dear Janet,") and "a space" not in first.goal
+    assert "a space" in controls.handle("thanks for the notes.").goal  # later lines don't run into the last
+    assert controls.handle("talk faster").goal is None  # commands still work while dictating
+    assert controls.handle("echo off") == Reply(say="I won't read back what you dictate.")
+    assert controls.handle("See you Friday.").say is None
+    assert controls.handle("Stop dictating.") == Reply(say="Stopped dictating.")
+    assert controls.handle("open firefox") == Reply(goal="open firefox")
+    assert settings.load(tmp_path / "voice.json").echo is False
+
+
+def test_deepgram_hears_spoken_punctuation_only_while_dictating(tmp_path):
+    controls = Controls(tmp_path / "voice.json")
+    assert controls.deepgram("wss://dg?x=1") == "wss://dg?x=1"
+    controls.handle("start dictating")
+    assert controls.deepgram("wss://dg?x=1").endswith("&dictation=true")

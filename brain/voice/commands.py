@@ -1,4 +1,5 @@
-"""Spoken commands meant for the box itself, not the agent: how fast it talks, and "repeat that".
+"""Spoken commands meant for the box itself, not the agent: how fast it talks, "repeat that", dictation on and off,
+and whether dictated words are read back.
 
 Only a whole utterance counts ("talk faster", "Talk faster, please."), so a request that merely contains the words
 ("type talk faster in the doc") still goes to the agent. Case and punctuation don't matter: Deepgram adds both.
@@ -35,7 +36,21 @@ class Repeat:
     """Say the last line again."""
 
 
-Command = Speed | Repeat
+@dataclass(frozen=True)
+class Dictate:
+    """Dictation mode on or off: while on, each utterance is typed where the caret is."""
+
+    on: bool
+
+
+@dataclass(frozen=True)
+class Echo:
+    """Read dictated words back aloud, or not."""
+
+    on: bool
+
+
+Command = Speed | Repeat | Dictate | Echo
 
 
 def normalize(words: str) -> str:
@@ -63,6 +78,12 @@ _FIXED: dict[str, Command] = {
                                               "read at half speed")},
     **{phrase: Repeat() for phrase in ("repeat", "repeat that", "repeat it", "say that again", "say it again",
                                        "what did you say", "what did you just say", "come again")},
+    **{phrase: Dictate(True) for phrase in ("start dictating", "start dictation", "begin dictating",
+                                            "begin dictation")},
+    **{phrase: Dictate(False) for phrase in ("stop dictating", "stop dictation", "end dictation",
+                                             "done dictating", "i m done dictating", "finish dictating")},
+    **{phrase: Echo(True) for phrase in ("echo on", "turn echo on", "turn on echo")},
+    **{phrase: Echo(False) for phrase in ("echo off", "turn echo off", "turn off echo")},
 }
 _PATTERNS: list[tuple[re.Pattern[str], float]] = [  # (pattern, exponent on the number): slower means 1/n
     (re.compile(rf"{_VERB} at {_NUMBER}{_TIMES}(?: (?:the )?speed)?"), 1.0),

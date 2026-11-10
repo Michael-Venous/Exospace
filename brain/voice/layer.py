@@ -16,7 +16,9 @@ With the page's Describe toggle on, Gemini Live describes the screen after each 
 instead of the bare result line (brain/voice/describe.py). The page can also show the
 target's live screen, relayed from the agent's GET /screen.jpg. This process never
 writes HID. A command for the box itself ("talk faster", "repeat that": brain.voice.commands) never reaches the
-agent: it is answered here, and every spoken line carries the talking speed for the page.
+agent: it is answered here, and every spoken line carries the talking speed for the page. While dictating ("start
+dictating" ... "stop dictating") each request types its words at the caret and they are read back aloud; the
+agent's narration then speaks only questions and failures.
 
 Mic audio is relayed to Deepgram server-side, so DEEPGRAM_API_KEY never reaches
 the browser. The page and relay only answer to this machine.
@@ -137,7 +139,7 @@ class Agent:
                         elif event.get("ev") == "result":
                             self.busy = False
                         line = narrate(event)
-                        if not (line and fresh):
+                        if not (line and fresh) or self.dictation_quiet(event):
                             continue
                         if self.describing(event):
                             threading.Thread(target=self._describe, args=(lines, line), daemon=True).start()
@@ -146,6 +148,11 @@ class Agent:
             except OSError:
                 threading.Event().wait(1.0)  # agent restarting; reconnect
 
+
+    def dictation_quiet(self, event: dict[str, Any]) -> bool:
+        """While dictating, each line typed was already read back: only a question or a failure is said."""
+        return self.controls.dictating and not (event.get("ev") == "result"
+                                                and event.get("status") in ("ask_user", "fail"))
 
     def describing(self, event: dict[str, Any]) -> bool:
         """A finished request is described; questions are always read word for word."""
@@ -163,7 +170,8 @@ class Agent:
         """Fill silence while a request runs, forever."""
         while True:
             time.sleep(0.5)
-            line = filler(time.monotonic() - self._said_at, self._spoken) if self.busy else None
+            quiet = not self.busy or self.controls.dictating
+            line = None if quiet else filler(time.monotonic() - self._said_at, self._spoken)
             if line:
                 self._say(lines, line)
 
@@ -279,17 +287,17 @@ def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
                          name="ptt-button", daemon=True).start()
     page_server(agent, port, ws_port, lines)
     print(f"Voice layer on http://127.0.0.1:{port} -> agent {agent.base}", flush=True)
-    asyncio.run(_relay_forever(port, ws_port, deepgram_key))
+    asyncio.run(_relay_forever(port, ws_port, deepgram_key, agent.controls))
 
 
-async def _relay_forever(port: int, ws_port: int, key: str) -> None:
-    """Pipe mic audio from the page to Deepgram and transcripts back."""
+async def _relay_forever(port: int, ws_port: int, key: str, controls: Controls) -> None:
+    """Pipe mic audio from the page to Deepgram and transcripts back (spoken punctuation while dictating)."""
     from websockets.asyncio.client import connect
     from websockets.asyncio.server import serve as ws_serve
     from websockets.exceptions import ConnectionClosed
 
     async def relay(browser) -> None:
-        async with connect(DG_URL, additional_headers={"Authorization": f"Token {key}"}) as dg:
+        async with connect(controls.deepgram(DG_URL), additional_headers={"Authorization": f"Token {key}"}) as dg:
             async def upload() -> None:
                 try:
                     async for chunk in browser:
