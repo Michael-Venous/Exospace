@@ -8,6 +8,11 @@ is turned off.
 While the spoken setup runs ("set up", or by itself on a first run: brain.voice.setup) every utterance is an answer
 to it, and none reaches the agent; so too while the box asks which computer it is plugged into (brain.voice.plug_in,
 when it starts on a screen its computer profiles don't place for sure).
+
+Private mode ("I'll type my password", issue #27): the agent never sees or types a password, so the user types it
+and the box stops the agent and ignores every utterance until "done" (the agent continues the request it was on)
+or "cancel" (nothing is sent). Those utterances never reach the agent, and front ends print `shown(words)`, never
+the words themselves.
 """
 
 from __future__ import annotations
@@ -19,21 +24,29 @@ from typing import Protocol
 
 from brain.types import Frame
 from brain.voice import profiles, settings
-from brain.voice.commands import Dictate, Echo, Repeat, SetUp, Speed, parse, speed_line
+from brain.voice.commands import Dictate, Echo, Private, Repeat, SetUp, Speed, leave_private, parse, speed_line
 from brain.voice.plug_in import WhichComputer
 from brain.voice.setup import Setup, Turn
 
 # Deepgram's dictation mode turns spoken "comma" and "period" into punctuation; it needs punctuate on.
 DEEPGRAM_DICTATION = "&punctuate=true&dictation=true"
 START_LINE = "Dictating. Say stop dictating when you're done."
+PRIVATE_LINE = "I'm not looking or listening. Type it, then press the button and say done."
+STILL_PRIVATE_LINE = "I'm still not looking. Say done when you've typed it, or cancel."
+CANCEL_PRIVATE_LINE = "Okay, I'm listening again."
+RESUME_GOAL = ("The user finished typing their password themselves. Continue the previous request from the current "
+               "screen; don't read or repeat what's in the password field.")
+PRIVATE_SHOWN = "(private)"
 
 
 @dataclass(frozen=True)
 class Reply:
-    """`goal` goes to the agent (None: nothing does); `say` is spoken by the box itself."""
+    """`goal` goes to the agent (None: nothing does); `say` is spoken by the box itself; `stop` stops what the
+    agent is doing now (front ends whose "nothing heard" path already stops it need not look)."""
 
     goal: str | None = None
     say: str | None = None
+    stop: bool = False
 
 
 def dictation_goal(words: str, first: bool) -> str:
@@ -65,6 +78,7 @@ class Controls:
         self.last = ""  # the last line spoken
         self.dictating = False
         self.dictated = 0  # utterances typed since dictation started
+        self.private = False  # the user is typing a password: nothing reaches the agent, nothing is shown
 
     @property
     def speed(self) -> float:
@@ -84,7 +98,13 @@ class Controls:
         self.dialog = self.dialog or self._which_computer()
         return self.dialog.question() if self.dialog else None
 
+    def shown(self, words: str) -> str:
+        """The words as a front end may print or log them: in private mode, only "done" or "cancel"."""
+        return PRIVATE_SHOWN if self.private and words and leave_private(words) is None else words
+
     def handle(self, words: str) -> Reply:
+        if self.private:
+            return self._private(words)
         if self.dialog:
             return self._answer(self.dialog, words)
         command = parse(words)
@@ -92,6 +112,9 @@ class Controls:
             setup = self._setup()
             self.dialog, self.dictating = setup, False
             return Reply(say=setup.question())
+        if isinstance(command, Private):
+            self.private = True
+            return Reply(say=PRIVATE_LINE, stop=True)
         if isinstance(command, Speed):
             before = self.settings.speed
             self._save(speed=command.apply(before))
@@ -111,6 +134,15 @@ class Controls:
             self.dictated += 1
             return Reply(goal=dictation_goal(words, self.dictated == 1), say=words if self.settings.echo else None)
         return Reply(goal=words)
+
+    def _private(self, words: str) -> Reply:
+        """One utterance in private mode: "done" hands the request back to the agent, "cancel" sends nothing, and
+        anything else is dropped unheard."""
+        leave = leave_private(words)
+        if leave is None:
+            return Reply(say=STILL_PRIVATE_LINE)
+        self.private = False
+        return Reply(goal=RESUME_GOAL) if leave == "done" else Reply(say=CANCEL_PRIVATE_LINE)
 
     def _answer(self, dialog: Dialog, words: str) -> Reply:
         """One answer to a dialog. Its end is saved even with nothing changed, so a first run is over."""

@@ -20,7 +20,9 @@ agent: it is answered here, and every spoken line carries the talking speed for 
 dictating" ... "stop dictating") each request types its words at the caret and they are read back aloud; the
 agent's narration then speaks only questions and failures. "Set up" (and a first run) starts the spoken setup
 (brain.voice.setup), whose answers never reach the agent either. At start, a screen no computer profile places for
-sure is asked about the same way: "Is this a new computer?" (brain.voice.plug_in).
+sure is asked about the same way: "Is this a new computer?" (brain.voice.plug_in). "I'll type my password" starts
+private mode (brain.voice.controls): the agent is stopped, the page shows no screen, and until "done" or "cancel"
+the relay hands the page no other words, so none reach the agent or the page.
 
 Mic audio is relayed to Deepgram server-side, so DEEPGRAM_API_KEY never reaches
 the browser. The page and relay only answer to this machine.
@@ -45,6 +47,7 @@ from dotenv import load_dotenv
 
 from brain.net import ipv4_only
 from brain.voice import button, profiles, settings
+from brain.voice.commands import leave_private
 from brain.voice.controls import Controls
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
@@ -111,7 +114,11 @@ class Agent:
         self.post("/goal", {"text": text, "continues": continues})
 
     def screen(self) -> bytes | None:
-        """The latest capture-card frame as JPEG, or None when the agent has none or is down."""
+        """The latest capture-card frame as JPEG, or None when the agent has none or is down, or in private mode
+        (the page's view and Describe see nothing while the user types a password; the agent's own /screen.jpg
+        still serves frames to whoever asks it directly: it has no private signal yet)."""
+        if self.controls.private:
+            return None
         try:
             with urllib.request.urlopen(self.base + "/screen.jpg", timeout=2) as response:
                 return response.read() or None  # 204: no frame yet
@@ -235,6 +242,8 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[s
                     if not 0 < len(text) <= 500:
                         return self._reply(400, b'{"error":"text must be 1-500 characters"}')
                     reply = agent.controls.handle(text)
+                    if reply.stop:  # private mode: stop the agent, busy or not (its busy flag may lag)
+                        agent.post("/stop", {})
                     if reply.goal:
                         continues = body.get("continues") is True
                         if not continues:  # a new request barges in; more words of this one join it at its next step
@@ -280,6 +289,21 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[s
     return server
 
 
+def private_transcript(message: str | bytes, controls: Controls) -> str | bytes:
+    """A Deepgram message for the page: in private mode a transcript other than "done" or "cancel" is emptied
+    (its words too), so the page never shows it nor sends it on."""
+    if not controls.private:
+        return message
+    result = json.loads(message)
+    if result.get("type") != "Results":
+        return message
+    alternatives = result.get("channel", {}).get("alternatives") or [{}]
+    if leave_private(str(alternatives[0].get("transcript", ""))) is not None:
+        return message
+    result["channel"]["alternatives"] = [{"transcript": "", "confidence": 0.0, "words": []}]
+    return json.dumps(result)
+
+
 def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
     lines: queue.Queue[dict[str, Any]] = queue.Queue()
     threading.Thread(target=agent.follow, args=(lines,), name="agent-events", daemon=True).start()
@@ -295,7 +319,9 @@ def serve(agent: Agent, port: int, ws_port: int, deepgram_key: str) -> None:
 
 
 async def _relay_forever(port: int, ws_port: int, key: str, controls: Controls) -> None:
-    """Pipe mic audio from the page to Deepgram and transcripts back (spoken punctuation while dictating)."""
+    """Pipe mic audio from the page to Deepgram and transcripts back (spoken punctuation while dictating). In
+    private mode Deepgram still hears each press, to catch "done"; the page opens the microphone only while the
+    button is held, as always."""
     from websockets.asyncio.client import connect
     from websockets.asyncio.server import serve as ws_serve
     from websockets.exceptions import ConnectionClosed
@@ -312,7 +338,7 @@ async def _relay_forever(port: int, ws_port: int, key: str, controls: Controls) 
             uploader = asyncio.create_task(upload())
             try:
                 async for message in dg:
-                    await browser.send(message)
+                    await browser.send(private_transcript(message, controls))
             except ConnectionClosed:
                 pass
             finally:

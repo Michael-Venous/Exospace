@@ -3,13 +3,15 @@
 import json
 import queue
 import urllib.request
+from unittest.mock import patch
 
 import pytest
 
 from brain.voice import settings
-from brain.voice.commands import MAX_SPEED, MIN_SPEED, STEP, Dictate, Echo, Repeat, Speed, parse
-from brain.voice.controls import Controls, Reply
-from brain.voice.layer import Agent, page_server
+from brain.voice.commands import (MAX_SPEED, MIN_SPEED, STEP, Dictate, Echo, Private, Repeat, Speed, leave_private,
+                                  parse)
+from brain.voice.controls import PRIVATE_LINE, RESUME_GOAL, Controls, Reply
+from brain.voice.layer import Agent, page_server, private_transcript
 
 
 @pytest.mark.parametrize("words, speed", [
@@ -142,3 +144,90 @@ def test_deepgram_hears_spoken_punctuation_only_while_dictating(tmp_path):
     assert controls.deepgram("wss://dg?x=1") == "wss://dg?x=1"
     controls.handle("start dictating")
     assert controls.deepgram("wss://dg?x=1").endswith("&dictation=true")
+
+
+@pytest.mark.parametrize("words", ["I'll type it.", "I'll type my password", "I will type the password myself",
+                                   "Let me type it", "Private mode.", "Stop looking", "please stop looking"])
+def test_private_mode_commands(words):
+    assert parse(words) == Private()
+
+
+@pytest.mark.parametrize("words", ["type my password reset email", "I'll type it later in the doc",
+                                   "open private mode in firefox", "stop looking for flights",
+                                   "type I'll type it in the chat"])
+def test_private_words_inside_a_request_go_to_the_agent(words):
+    assert parse(words) is None
+
+
+@pytest.mark.parametrize("words, leave", [("Done.", "done"), ("I'm done", "done"), ("finished", "done"),
+                                          ("Cancel.", "cancel"), ("done my password is hunter2", None),
+                                          ("hunter2", None), ("open firefox", None)])
+def test_only_done_or_cancel_leave_private_mode(words, leave):
+    assert leave_private(words) == leave
+
+
+def test_private_mode_hides_every_utterance_until_done(tmp_path):
+    controls = Controls(tmp_path / "voice.json")
+    assert controls.handle("I'll type my password") == Reply(say=PRIVATE_LINE, stop=True)
+    for words in ("hunter2", "my password is hunter2", "talk faster", "open firefox", "start dictating"):
+        assert controls.shown(words) == "(private)"
+        reply = controls.handle(words)
+        assert reply.goal is None and "hunter2" not in (reply.say or "")
+    assert controls.speed == 1.0 and not controls.dictating  # box commands wait too
+    assert controls.shown("I'm done.") == "I'm done."
+    assert controls.handle("I'm done.") == Reply(goal=RESUME_GOAL)
+    assert controls.shown("open firefox") == "open firefox"
+    assert controls.handle("open firefox") == Reply(goal="open firefox")
+
+
+def test_cancel_leaves_private_mode_and_sends_nothing(tmp_path):
+    controls = Controls(tmp_path / "voice.json")
+    controls.handle("private mode")
+    reply = controls.handle("cancel")
+    assert reply.goal is None and reply.say
+    assert not controls.private
+    assert controls.handle("done") == Reply(goal="done")  # outside private mode "done" is an ordinary request
+
+
+def test_the_voice_page_stops_the_agent_and_hides_the_screen_in_private_mode(tmp_path):
+    agent = Agent("http://127.0.0.1:9", controls=Controls(tmp_path / "voice.json"))
+    sent = []
+    agent.post = lambda path, body: sent.append((path, body))
+    lines: queue.Queue = queue.Queue()
+    server = page_server(agent, 0, 0, lines)
+    port = server.server_address[1]
+
+    def segment(text):
+        request = urllib.request.Request(f"http://127.0.0.1:{port}/segment", json.dumps({"text": text}).encode(),
+                                         {"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{port}"})
+        urllib.request.urlopen(request, timeout=5).close()
+
+    try:
+        segment("I'll type my password")
+        assert sent == [("/stop", {})]
+        assert lines.get_nowait()["say"] == PRIVATE_LINE
+        with patch("urllib.request.urlopen", side_effect=AssertionError("no frame is fetched while private")):
+            assert agent.screen() is None
+        segment("hunter2")
+        assert sent == [("/stop", {})]
+        segment("done")
+        assert sent[-1] == ("/goal", {"text": RESUME_GOAL, "continues": False})
+    finally:
+        server.shutdown()
+
+
+def test_the_relay_hands_the_page_no_private_words(tmp_path):
+    controls = Controls(tmp_path / "voice.json")
+
+    def result(words):
+        return json.dumps({"type": "Results", "is_final": True, "channel": {"alternatives": [
+            {"transcript": words, "words": [{"word": w} for w in words.split()]}]}})
+
+    assert private_transcript(result("hunter2"), controls) == result("hunter2")  # not private: unchanged
+    controls.handle("private mode")
+    hidden = private_transcript(result("my password is hunter2"), controls)
+    assert "hunter2" not in hidden
+    assert json.loads(hidden)["channel"]["alternatives"][0]["transcript"] == ""
+    assert private_transcript(result("I'm done."), controls) == result("I'm done.")
+    metadata = json.dumps({"type": "Metadata"})
+    assert private_transcript(metadata, controls) == metadata
