@@ -230,12 +230,14 @@ class OptimizedExecutor(Executor):
             # {"type":"born","status":"answer"} typed "born" into the page: an answer mixed into an input.
             return 'error', ('status only goes with say ({"say":"...","status":"answer"}); an action never has one. '
                              'Nothing was sent: send the action, or the answer, on its own.')
-        if kind == 'type':  # the credential guard: never type into a password, PIN, card or code field
+        if kind in ('type', 'key'):  # the credential guard: never type into a password, PIN, card or code field
             with self.cond:
-                sent = [r.action for r in self.shared.log[self.shared.turn_start:] if r.result == 'done']
-            if credentials.refuses(action, sent):
-                c.event('credential-guard', field=credentials.typing_target(action, sent))
-                return 'error', credentials.REFUSAL
+                history = [(r.action, r.result) for r in self.shared.log[self.shared.turn_start:]]
+            refused = credentials.refusal(action, history)
+            if refused is not None:  # the field's label, never the text, is logged
+                c.event('credential-guard', input=kind,
+                        field=action.get('into') or credentials.focused_field(history), reason=refused)
+                return 'error', refused
         # Confirm before act, ahead of every branch that sends input (close shortcuts, hover, triple_click, held
         # clicks, drag, the base handler): none of them reaches the HID unjudged.
         held = self._confirm(action)
