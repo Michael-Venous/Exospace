@@ -713,13 +713,15 @@ class CredentialGuardTests(unittest.TestCase):
             self.assertIsNone(refusal({'type':text,'into':'the search box'},[]),repr(text))
     def test_a_run_of_character_keys_on_an_unnamed_field_must_name_it(self):
         lost=[({'click':'Email'},'done'),({'key':['TAB']},'done')]
-        self.assertIsNone(refusal({'key':['K']},lost))  # one shortcut key (YouTube's play/pause) runs
-        self.assertEqual(refusal({'key':['U']},[*lost,({'key':['H']},'done')]),NAME_THE_FIELD)
-        self.assertEqual(refusal({'key':['U']},[*lost,({'key':['H']},'done'),({'scroll':3},'done')]),NAME_THE_FIELD)
+        self.assertIsNone(refusal({'key':['K']},[]))  # one shortcut key (YouTube's play/pause) before anything is named
+        self.assertEqual(refusal({'key':['K']},lost),NAME_THE_FIELD)  # after Tab the caret may be in a password
+        self.assertEqual(refusal({'key':['U']},[*lost,({'key':['H']},'error')]),NAME_THE_FIELD)
         self.assertEqual(refusal({'key':['U']},[({'key':['H']},'done')]),NAME_THE_FIELD)  # nothing named yet
-        self.assertIsNone(refusal({'key':['U']},[*lost,({'key':['H']},'error')]))  # a refused key typed nothing
+        self.assertEqual(refusal({'key':['U']},[({'key':['H']},'done'),({'scroll':3},'done')]),NAME_THE_FIELD)
+        self.assertEqual(refusal({'key':['A','B']},[]),NAME_THE_FIELD)  # counted per character, not per action
+        self.assertEqual(refusal({'key':['U']},[({'key':['A','B']},'done'),({'click':'Email'},'error')]),NAME_THE_FIELD)
         self.assertIsNone(refusal({'key':['U']},[*lost,({'key':['H']},'done'),({'click':'the video'},'done')]))
-        self.assertIsNone(refusal({'key':['CTRL','C']},[*lost,({'key':['H']},'done')]))  # a shortcut, not typing
+        self.assertIsNone(refusal({'key':['CTRL','C']},lost))  # a shortcut, not typing
     def test_keys_cannot_type_a_password_one_at_a_time(self):
         history=[({'click':'the Password field'},'done')]
         for keys in (['H'],'h',['1'],['SHIFT','A'],['SPACE'],['ALT','4'],['A','B','C']):

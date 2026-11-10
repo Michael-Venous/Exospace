@@ -71,7 +71,7 @@ def _scan(history: list[tuple[dict, str]]) -> tuple[Field, int]:
             if MOVES_FOCUS & set(keys):
                 field = None
             elif _types_characters(keys) and result == 'done':
-                run += 1
+                run += _characters(keys)
     return field, run
 
 
@@ -80,10 +80,11 @@ def refusal(action: dict, history: list[tuple[dict, str]]) -> str | None:
 
     A `type` is judged on its "into", else on the focused field; an unknown field asks for "into", and so does a
     Tab or line break before the text's last character (a final one, such as ENTER after a search, is fine).
-    A key that types a letter, digit or SPACE is refused in a secret field. Where no field is named, one such key
-    runs (YouTube's "k", Gmail's "c" are shortcuts), but a second one before a field is named asks for "into": a
-    password could otherwise go in key by key after a Tab. The trade-off: two shortcut keys in a row on an unnamed
-    field need a click first. CTRL+V or GUI+V in a secret field is allowed: what it pastes is on the clipboard the
+    A key that types a letter, digit or SPACE is refused in a secret field, and asks for "into" where the caret may
+    have moved somewhere unknown (after Tab, Enter, a drag...). Before any field is named, one such character runs
+    (YouTube's "k", Gmail's "c" are shortcuts), counted per character, not per action, so ["A", "B"] is two; a
+    second asks for "into", or a password could go in key by key. The trade-off: two shortcut keys in a row before
+    anything is clicked need a click first. CTRL+V or GUI+V in a secret field is allowed: what it pastes is on the clipboard the
     user's password manager filled, not text the agent read."""
     if 'type' in action:
         field = str(action['into']) if action.get('into') else focused_field(history)
@@ -96,7 +97,9 @@ def refusal(action: dict, history: list[tuple[dict, str]]) -> str | None:
         field, run = _scan(history)
         if field and is_secret_field(field):
             return REFUSAL
-        return NAME_THE_FIELD if not field and run >= 1 else None
+        if field is None or (field == '' and run + _characters(_keys(action['key'])) > 1):
+            return NAME_THE_FIELD
+        return None
     return None
 
 
@@ -111,6 +114,11 @@ def _keys(value) -> list[str]:
 def _types_characters(keys: list[str]) -> bool:
     """A letter, digit or SPACE, alone or with SHIFT or ALT: it types into the field instead of running a shortcut."""
     return not SHORTCUT_MODIFIERS & set(keys) and any(len(k) == 1 or k == 'SPACE' for k in keys if k not in MODIFIERS)
+
+
+def _characters(keys: list[str]) -> int:
+    """How many characters a key action types (each letter, digit or SPACE in it)."""
+    return sum(1 for k in keys if k not in MODIFIERS and (len(k) == 1 or k == 'SPACE'))
 
 
 def _leaves_field(text: str) -> bool:
