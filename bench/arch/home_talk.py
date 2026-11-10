@@ -2,9 +2,10 @@
 
 Pressing Home stops whatever the agent is doing (POST /listen: it is logged "interrupted", as in talk.py); the
 microphone streams to Deepgram while it is held (talk.py's Mic and Utterance, half a second of pre-roll included);
-letting go sends the whole request to POST /goal, or POST /stop when nothing was heard. What the agent
-says comes back on GET /events and is spoken with Piper, never while Home is held. The voice page and its Space key
-are a separate front end (`serve_laptop.sh --page`); this one never touches the page.
+letting go sends the whole request to POST /goal, or POST /stop when nothing was heard. A command for the box
+itself ("talk faster", "repeat that": brain.voice.commands) is answered here and never reaches the agent. What the
+agent says comes back on GET /events and is spoken with Piper at the chosen speed, never while Home is held. The
+voice page and its Space key are a separate front end (`serve_laptop.sh --page`); this one never touches the page.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import os
 import threading
 import time
 import urllib.request
+
+from brain.voice.controls import Controls
 
 AGENT = os.environ.get("EXO_AGENT", "http://127.0.0.1:8770")
 # A request that ended without saying anything still gets a word, as the voice page says (brain.voice.layer
@@ -33,11 +36,12 @@ def post(path: str, body: dict | None = None) -> None:
 class HomeTalk:
     """Home's press and release, turned into /listen and /goal (or /stop); the agent's lines, spoken."""
 
-    def __init__(self, post, speaker, listen) -> None:
+    def __init__(self, post, speaker, listen, controls: Controls) -> None:
         """`listen()` starts one utterance and returns it (its `finish()` gives the words heard)."""
-        self.post, self.speaker, self.listen = post, speaker, listen
+        self.post, self.speaker, self.listen, self.controls = post, speaker, listen, controls
         self.held = threading.Event()
         self.talking = None
+        self.answering: threading.Thread | None = None  # the box's own answer, spoken without holding up the key
 
     def changed(self, down: bool) -> None:
         if down and self.talking is None:
@@ -50,10 +54,19 @@ class HomeTalk:
             words, self.talking = self.talking.finish(), None
             self.held.clear()
             print(f"you: {words or '(nothing heard)'}", flush=True)
-            if words:
-                self.post("/goal", {"text": words})
-            else:  # nothing heard: the request /listen opened is dropped
+            reply = self.controls.handle(words) if words else None
+            if reply and reply.goal:
+                self.post("/goal", {"text": reply.goal})
+            else:  # nothing heard, or a command for the box: the request /listen opened is dropped
                 self.post("/stop")
+            if reply and reply.say:
+                print(f"  box: {reply.say}", flush=True)
+                self.answering = threading.Thread(target=self.say, args=(reply.say,), daemon=True)
+                self.answering.start()
+
+    def say(self, line: str) -> None:
+        self.controls.said(line)
+        self.speaker.say(line, self.controls.speed)
 
     def hear(self, event: dict) -> None:
         """One agent event: a line it says (a result the page would speak word for word) is spoken, and a request
@@ -63,8 +76,10 @@ class HomeTalk:
         line = event.get("message") if event.get("status") == "ask_user" else QUIET_LINES.get(event.get("status"))
         if line:
             print(f"  agent: {line}", flush=True)
-            if not self.held.is_set():
-                self.speaker.say(line)
+            if self.held.is_set():
+                self.controls.said(line)  # not spoken over the user, but "repeat that" can still say it
+            else:
+                self.say(line)
 
     def follow(self) -> None:
         """The agent's event stream, reconnected whenever it drops (the agent may start after this)."""
@@ -87,7 +102,7 @@ def main() -> None:
     env = {**os.environ, **SESSION}
     speaker, mic = Speaker(env), Mic(env)
     key = os.environ["DEEPGRAM_API_KEY"]
-    home = HomeTalk(post, speaker, lambda: Utterance(key, mic, lambda words, speaking: None))
+    home = HomeTalk(post, speaker, lambda: Utterance(key, mic, lambda words, speaking: None), Controls())
     threading.Thread(target=home.follow, daemon=True).start()
     print("Ready: hold Home anywhere and speak; let go when you're done. Ctrl+C stops.", flush=True)
     try:

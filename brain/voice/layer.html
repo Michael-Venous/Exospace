@@ -128,12 +128,14 @@ listMics();
 // Narration: speak the agent's questions and results, but never over the user. Lines that
 // arrive while the mic is open are held and spoken when the user stops, so a confirmation
 // question is never lost.
-let unspoken = [], doneTimer;
-const speak = text => speechSynthesis.speak(new SpeechSynthesisUtterance(text));
+// Each spoken line carries the talking speed the user chose ("talk faster"); Describe's PCM keeps its own pace.
+let unspoken = [], doneTimer, speed = 1;
+const speak = text => speechSynthesis.speak(Object.assign(new SpeechSynthesisUtterance(text), {rate: speed}));
 new EventSource("/narration").onmessage = e => {
   const m = JSON.parse(e.data);
   if (m.button) return m.button === "down" ? press() : release();  // the Pi's push-to-talk button
   if (m.pcm) return stopListening || play(m.pcm, m.rate);  // never over the user
+  if (m.say) speed = m.rate || 1;
   const line = m.say || m.show;
   waiting(false);
   document.body.classList.add("done");

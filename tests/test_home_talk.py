@@ -1,9 +1,12 @@
 """Home as a global push-to-talk for the agent server: press stops and listens, release sends, lines are spoken."""
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from bench.arch import home_talk
+from brain.voice.controls import Controls
 
 
 class HomeTalkTests(unittest.TestCase):
@@ -11,8 +14,30 @@ class HomeTalkTests(unittest.TestCase):
         self.sent, self.speaker = [], Mock()
         self.words = "open firefox"
         utterance = Mock(finish=lambda: self.words)
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
         self.home = home_talk.HomeTalk(lambda path, body=None: self.sent.append((path, body)), self.speaker,
-                                       lambda: utterance)
+                                       lambda: utterance, Controls(Path(folder.name) / "voice.json"))
+
+    def say(self, words):
+        """One press and release of Home with `words` heard; the box's own answer, if any, has been spoken."""
+        self.words = words
+        self.home.changed(True)
+        self.home.changed(False)
+        if self.home.answering:
+            self.home.answering.join(2)
+
+    def test_a_command_for_the_box_is_answered_aloud_and_never_reaches_the_agent(self):
+        self.say("Talk at 2x.")
+        self.assertEqual(self.sent, [("/listen", None), ("/stop", None)])
+        self.speaker.say.assert_called_with("Speaking at 2 times speed.", 2.0)
+        self.home.hear({"ev": "result", "status": "ask_user", "message": "Firefox is open."})
+        self.speaker.say.assert_called_with("Firefox is open.", 2.0)
+        self.say("Repeat that.")
+        self.speaker.say.assert_called_with("Firefox is open.", 2.0)
+        self.assertNotIn("/goal", [path for path, _ in self.sent])
+        self.say("type talk faster in the doc")
+        self.assertEqual(self.sent[-1], ("/goal", {"text": "type talk faster in the doc"}))
 
     def test_press_stops_the_agent_and_release_sends_the_whole_request(self):
         self.home.changed(True)

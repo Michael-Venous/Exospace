@@ -15,7 +15,8 @@ always spoken, plan stages briefly, then the result; a request that runs silentl
 With the page's Describe toggle on, Gemini Live describes the screen after each request
 instead of the bare result line (brain/voice/describe.py). The page can also show the
 target's live screen, relayed from the agent's GET /screen.jpg. This process never
-writes HID.
+writes HID. A command for the box itself ("talk faster", "repeat that": brain.voice.commands) never reaches the
+agent: it is answered here, and every spoken line carries the talking speed for the page.
 
 Mic audio is relayed to Deepgram server-side, so DEEPGRAM_API_KEY never reaches
 the browser. The page and relay only answer to this machine.
@@ -40,6 +41,7 @@ from dotenv import load_dotenv
 
 from brain.net import ipv4_only
 from brain.voice import button
+from brain.voice.controls import Controls
 from brain.voice.describe import DESCRIBE_MODEL, Describer
 
 # A 200 ms pause ends a segment. Speech often has none after "open chrome" in "open chrome and search cats",
@@ -84,9 +86,10 @@ def filler(quiet_s: float, spoken: bool) -> str | None:
 class Agent:
     """The agent's display server, reached as a local program (no Origin header)."""
 
-    def __init__(self, base_url: str, describer: Describer | None = None) -> None:
+    def __init__(self, base_url: str, describer: Describer | None = None, controls: Controls | None = None) -> None:
         self.base = base_url.rstrip("/")
         self.describer = describer
+        self.controls = controls or Controls()
         self.describe_on = False  # the page's Describe toggle
         self.busy = False
         self._goal = ""
@@ -151,9 +154,10 @@ class Agent:
 
     def _describe(self, lines: queue.Queue[dict[str, Any]], line: str) -> None:
         lines.put({"show": line})
+        self.controls.said(line)  # "repeat that" after a description says the result line
         jpeg = self.screen()
         if not (jpeg and self.describer and self.describer.describe(jpeg, self._goal, line, lines.put)):
-            lines.put({"say": line})
+            lines.put(self.voice(line))
 
     def pace(self, lines: queue.Queue[dict[str, Any]]) -> None:
         """Fill silence while a request runs, forever."""
@@ -167,7 +171,12 @@ class Agent:
         self._said_at, self._spoken = time.monotonic(), True
         if line != self._last:
             self._last = line
-            lines.put({"say": line})
+            lines.put(self.voice(line))
+
+    def voice(self, line: str) -> dict[str, Any]:
+        """One line for the page to speak, at the chosen speed; it is what "repeat that" says next."""
+        self.controls.said(line)
+        return {"say": line, "rate": self.controls.speed}
 
 
 def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[str, Any]]) -> ThreadingHTTPServer:
@@ -215,10 +224,14 @@ def page_server(agent: Agent, port: int, ws_port: int, lines: queue.Queue[dict[s
                     text = str(body.get("text", "")).strip()
                     if not 0 < len(text) <= 500:
                         return self._reply(400, b'{"error":"text must be 1-500 characters"}')
-                    continues = body.get("continues") is True
-                    if not continues:  # a new request barges in; more words of this one join it at the next step
-                        agent.interrupt()
-                    agent.submit(text, continues)
+                    reply = agent.controls.handle(text)
+                    if reply.goal:
+                        continues = body.get("continues") is True
+                        if not continues:  # a new request barges in; more words of this one join it at its next step
+                            agent.interrupt()
+                        agent.submit(reply.goal, continues)
+                    if reply.say:
+                        lines.put(agent.voice(reply.say))
                 else:
                     return self._reply(404, b'{"error":"not found"}')
             except OSError as exc:
