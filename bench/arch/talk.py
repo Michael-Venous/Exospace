@@ -11,7 +11,8 @@ agent drops those words. The talking speed is kept across restarts (brain.voice.
 each later utterance typed at the caret and read back, until "stop dictating" (brain.voice.controls). "Set up", or
 a first run with no settings file, starts the spoken setup (brain.voice.setup; EXO_FIRST_RUN_SETUP=0 skips it). A
 screen no computer profile places for sure is asked about aloud (brain.voice.profiles, brain.voice.plug_in).
-Home is withheld from the foreground app; other keys pass through.
+Home is withheld from the foreground app; other keys pass through. EXO_STT=local hears speech on the laptop instead of
+Deepgram (brain.voice.local_stt): no DEEPGRAM_API_KEY, but the words come only on release.
 Reading the keyboard needs the `input` group. Ctrl+C stops.
 
 Each model reply and action prints with its time, and each request ends with a timing line (first action and end,
@@ -41,7 +42,7 @@ from websockets.sync.client import connect
 from bench.arch.laptop import SESSION, LaptopTarget
 from bench.arch.queue_agent import QueueAgent
 from brain.types import Frame
-from brain.voice import button, settings
+from brain.voice import button, local_stt, settings
 from brain.voice.controls import Controls
 from brain.voice.talk_key import EVENT, PassThrough, keyboards
 
@@ -183,8 +184,9 @@ class Speaker:
 
 
 def main() -> None:
-    missing = [name for name in ("OPENROUTER_API_KEY", "TYPESAFE_API_KEY", "DEEPGRAM_API_KEY")
-               if not os.environ.get(name)]
+    local = local_stt.chosen()
+    needed = ("OPENROUTER_API_KEY", "TYPESAFE_API_KEY") + (() if local else ("DEEPGRAM_API_KEY",))
+    missing = [name for name in needed if not os.environ.get(name)]
     if missing:
         raise SystemExit(f"Missing environment keys: {', '.join(missing)}")
     try:
@@ -195,6 +197,8 @@ def main() -> None:
     pi = os.environ.get("EXO_TARGET") == "pi"  # the real rig: capture card + Pico, the talk keyboard on the Pi
     env = dict(os.environ) if pi else {**os.environ, **SESSION}
     speaker, mic = Speaker(env), Mic(env)
+    if local:
+        local_stt.whisper()  # loaded now, not on the first press
     session = LOGS / time.strftime("%Y%m%d-%H%M%S")  # each call's screenshot and Jev's log land here
     session.mkdir(parents=True, exist_ok=True)
     if pi:
@@ -317,7 +321,7 @@ def main() -> None:
 
     threading.Thread(target=speak_back, daemon=True).start()
     threading.Thread(target=trace, daemon=True).start()
-    talking: Utterance | None = None
+    talking: Utterance | local_stt.LocalUtterance | None = None
     button_r, button_w = os.pipe()  # the Pi push-to-talk button (GPIO17) counts as holding Home
     if button.available():
         threading.Thread(target=button.watch, args=(lambda down: os.write(button_w, b"1" if down else b"0"),),
@@ -342,7 +346,8 @@ def main() -> None:
                         requests.append({"pressed": pressed, 'request_id':agent.shared.request})
                         # Dictated words go to the agent whole, on release, as a typing goal: never as they come.
                         heard = (lambda words, speaking: None) if controls.dictating else agent.brain.hear
-                        talking = Utterance(os.environ["DEEPGRAM_API_KEY"], mic, heard, controls.deepgram(DEEPGRAM))
+                        talking = local_stt.utterance(mic, heard, controls.dictating, lambda: Utterance(
+                            os.environ["DEEPGRAM_API_KEY"], mic, heard, controls.deepgram(DEEPGRAM)))
                         print("listening...", flush=True)
                     elif value == 0 and talking is not None:
                         released = time.monotonic() - agent.started

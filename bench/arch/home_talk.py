@@ -8,7 +8,8 @@ the agent; while dictating, each request is a goal to type its words at the care
 (or "set up") starts the spoken setup, answered here too (brain.voice.setup), as is the question of which computer
 this is when its screen matches no profile for sure (brain.voice.plug_in). What the agent says comes back on
 GET /events and is spoken with Piper at the chosen speed, never while Home is held. The voice page and its Space
-key are a separate front end (`serve_laptop.sh --page`); this one never touches the page.
+key are a separate front end (`serve_laptop.sh --page`); this one never touches the page. EXO_STT=local hears speech
+on the laptop instead of Deepgram (brain.voice.local_stt), with no DEEPGRAM_API_KEY.
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import time
 import urllib.request
 
 from brain.types import Frame
-from brain.voice import profiles, settings
+from brain.voice import local_stt, profiles, settings
 from brain.voice.controls import Controls
 
 AGENT = os.environ.get("EXO_AGENT", "http://127.0.0.1:8770")
@@ -117,9 +118,13 @@ def main() -> None:
 
     env = {**os.environ, **SESSION}
     speaker, mic, controls = Speaker(env), Mic(env), Controls(first_run_setup=settings.FIRST_RUN_SETUP, frame=screen)
-    key = os.environ["DEEPGRAM_API_KEY"]
-    home = HomeTalk(post, speaker, lambda: Utterance(key, mic, lambda words, speaking: None,
-                                                     controls.deepgram(DEEPGRAM)), controls)
+    local = local_stt.chosen()
+    if local:
+        local_stt.whisper()  # loaded now, not on the first press
+    key = "" if local else os.environ["DEEPGRAM_API_KEY"]
+    heard = lambda words, speaking: None  # noqa: E731 - the whole request goes on release, never as it comes
+    home = HomeTalk(post, speaker, lambda: local_stt.utterance(
+        mic, heard, controls.dictating, lambda: Utterance(key, mic, heard, controls.deepgram(DEEPGRAM))), controls)
     threading.Thread(target=home.follow, daemon=True).start()
     print("Ready: hold Home anywhere and speak; let go when you're done. Ctrl+C stops.", flush=True)
     if greeting := controls.greeting():  # the spoken setup on a first run, or which computer this is
