@@ -226,6 +226,11 @@ class OptimizedExecutor(Executor):
             # {"type":"born","status":"answer"} typed "born" into the page: an answer mixed into an input.
             return 'error', ('status only goes with say ({"say":"...","status":"answer"}); an action never has one. '
                              'Nothing was sent: send the action, or the answer, on its own.')
+        # Confirm before act, ahead of every branch that sends input (close shortcuts, hover, triple_click, held
+        # clicks, drag, the base handler): none of them reaches the HID unjudged.
+        held = self._confirm(action)
+        if held is not None:
+            return held
         if kind=='key':
             keys=frozenset(str(k).upper() for k in (action[kind] if isinstance(action[kind],list) else [action[kind]]))
             closing=keys in (frozenset(('ALT','F4')),frozenset(('CTRL','Q')),frozenset(('CTRL','W')))
@@ -259,9 +264,6 @@ class OptimizedExecutor(Executor):
             c.attempts[key] += 1
             if c.attempts[key] > limit:
                 return 'not_shown', 'This same input already ran without observable progress. Inspect or use another approach.'
-        held = self._confirm(action)
-        if held is not None:
-            return held
         if kind == 'key' and self._opens_launcher(action['key']) and getattr(self.controller.hid, 'launcher_settles', False):
             return self._open_launcher(action)
         return super()._do(action)

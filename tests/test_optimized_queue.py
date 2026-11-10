@@ -597,6 +597,32 @@ class ConfirmTests(unittest.TestCase):
         self.assertIsNotNone(candidate({'key':['DELETE']},after_typing=False))
         self.assertIsNotNone(candidate({'key':['SHIFT','DELETE']},after_typing=True))
         self.assertIsNotNone(candidate({'type':'thanks!\n'},after_typing=False))
+    def test_every_line_break_counts_as_enter(self):
+        for text in ('hi\r','hi\r\nthere','hi\vthere','hi\fthere','hi there','hi '):
+            self.assertIsNotNone(candidate({'type':text},after_typing=False),repr(text))
+        self.assertIsNone(candidate({'type':'hello Maria'},after_typing=False))
+    def test_destructive_key_combos_are_judged_and_text_editing_is_not(self):
+        for keys in (['GUI','BACKSPACE'],['CMD','BACKSPACE'],['CTRL','SHIFT','DELETE'],['CTRL','SHIFT','BACKSPACE'],
+                     ['SHIFT','DELETE'],['CTRL','ENTER'],['RETURN']):
+            self.assertIsNotNone(candidate({'key':keys},after_typing=True),keys)
+        for keys in (['BACKSPACE'],['CTRL','BACKSPACE'],['CTRL','A'],['GUI']):
+            self.assertIsNone(candidate({'key':keys},after_typing=False),keys)
+    def test_sibling_click_kinds_and_drags_to_the_trash_are_judged(self):
+        for action in ({'right_click':'the Delete item'},{'triple_click':'the Send row'},
+                       {'click':'Send','hold':['SHIFT']},{'drag':['report.pdf','the Trash']},
+                       {'drag':['the old file','the recycle bin']},{'drag':['Delete me','the folder']}):
+            self.assertIsNotNone(candidate(action,after_typing=False),action)
+        self.assertIsNone(candidate({'drag':['the slider knob','the right end']},after_typing=False))
+    def test_held_sibling_inputs_send_nothing(self):
+        self.target.features=frozenset({'triple_click','hold'})
+        self.ex._find=Mock(return_value=(.5,.5))
+        for action in ({'triple_click':'the Send row'},{'right_click':'Delete'},{'drag':['report.pdf','the Trash']},
+                       {'click':'Send','hold':['CTRL']},{'key':['GUI','BACKSPACE']},{'type':'ok\r'}):
+            self.judged('irreversible',.9,'Delete the file')
+            p=self.plan(action)
+            self.assertEqual(self.ex._do(p.action)[0],'asked',action)
+        self.assertEqual(self.sent(),[])
+        self.ex._find.assert_not_called()
     def test_yes_approves_only_the_held_input_once(self):
         self.held_enter()
         self.answer('Yeah, go ahead.')
