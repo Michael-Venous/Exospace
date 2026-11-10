@@ -8,7 +8,8 @@ or asks is spoken back by Piper on the laptop (no key, about 0.05 s a sentence).
 a new request: the newest wins. The agent's own virtual keyboard is never listened to.
 A command for the box itself ("talk faster", "repeat that": brain.voice.commands) is answered aloud here, and the
 agent drops those words. The talking speed is kept across restarts (brain.voice.settings). "Start dictating" has
-each later utterance typed at the caret and read back, until "stop dictating" (brain.voice.controls).
+each later utterance typed at the caret and read back, until "stop dictating" (brain.voice.controls). "Set up", or
+a first run with no settings file, starts the spoken setup (brain.voice.setup; EXO_FIRST_RUN_SETUP=0 skips it).
 Home is withheld from the foreground app; other keys pass through.
 Reading the keyboard needs the `input` group. Ctrl+C stops.
 
@@ -38,7 +39,7 @@ from websockets.sync.client import connect
 
 from bench.arch.laptop import SESSION, LaptopTarget
 from bench.arch.queue_agent import QueueAgent
-from brain.voice import button
+from brain.voice import button, settings
 from brain.voice.controls import Controls
 from brain.voice.talk_key import EVENT, PassThrough, keyboards
 
@@ -191,7 +192,7 @@ def main() -> None:
                          "then log out and back in.") from None
     pi = os.environ.get("EXO_TARGET") == "pi"  # the real rig: capture card + Pico, the talk keyboard on the Pi
     env = dict(os.environ) if pi else {**os.environ, **SESSION}
-    speaker, mic, controls = Speaker(env), Mic(env), Controls()
+    speaker, mic, controls = Speaker(env), Mic(env), Controls(first_run_setup=settings.FIRST_RUN_SETUP)
     session = LOGS / time.strftime("%Y%m%d-%H%M%S")  # each call's screenshot and Jev's log land here
     session.mkdir(parents=True, exist_ok=True)
     if pi:
@@ -211,6 +212,10 @@ def main() -> None:
         configure(agent)
         print("Experimental reliability candidate enabled (visual checks can still be wrong).", flush=True)
     print("Ready: hold Home and speak; let go when you're done. Ctrl+C stops.", flush=True)
+    if greeting := controls.greeting():  # a first run: the spoken setup's first question
+        print(f"  box: {greeting}", flush=True)
+        controls.said(greeting)
+        threading.Thread(target=speaker.say, args=(greeting, controls.speed), daemon=True).start()
 
     def speak_back() -> None:  # what the agent says or asks, aloud
         spoken = 0
