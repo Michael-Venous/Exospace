@@ -1,5 +1,5 @@
 """Spoken commands meant for the box itself, not the agent: how fast it talks, "repeat that", dictation on and off,
-and whether dictated words are read back.
+whether dictated words are read back, and "set up" (the spoken setup, brain.voice.setup).
 
 Only a whole utterance counts ("talk faster", "Talk faster, please."), so a request that merely contains the words
 ("type talk faster in the doc") still goes to the agent. Case and punctuation don't matter: Deepgram adds both.
@@ -50,7 +50,12 @@ class Echo:
     on: bool
 
 
-Command = Speed | Repeat | Dictate | Echo
+@dataclass(frozen=True)
+class SetUp:
+    """Start the spoken setup."""
+
+
+Command = Speed | Repeat | Dictate | Echo | SetUp
 
 
 def normalize(words: str) -> str:
@@ -84,6 +89,7 @@ _FIXED: dict[str, Command] = {
                                              "done dictating", "i m done dictating", "finish dictating")},
     **{phrase: Echo(True) for phrase in ("echo on", "turn echo on", "turn on echo")},
     **{phrase: Echo(False) for phrase in ("echo off", "turn echo off", "turn off echo")},
+    **{f"{verb}{space}up": SetUp() for verb in ("set", "start set", "run set") for space in (" ", "")},
 }
 _PATTERNS: list[tuple[re.Pattern[str], float]] = [  # (pattern, exponent on the number): slower means 1/n
     (re.compile(rf"{_VERB} at {_NUMBER}{_TIMES}(?: (?:the )?speed)?"), 1.0),

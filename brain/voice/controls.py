@@ -4,6 +4,9 @@ and anything else goes to the agent as its goal. Also remembers the last line sp
 In dictation mode ("start dictating" ... "stop dictating") each utterance becomes a goal that has the agent type
 exactly those words at the caret, and the words are read back (a blind user can't see what was typed), unless echo
 is turned off.
+
+While the spoken setup runs ("set up", or by itself on a first run: brain.voice.setup) every utterance is an answer
+to it, and none reaches the agent.
 """
 
 from __future__ import annotations
@@ -12,7 +15,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from brain.voice import settings
-from brain.voice.commands import Dictate, Echo, Repeat, Speed, parse, speed_line
+from brain.voice.commands import Dictate, Echo, Repeat, SetUp, Speed, parse, speed_line
+from brain.voice.setup import Setup
 
 # Deepgram's dictation mode turns spoken "comma" and "period" into punctuation; it needs punctuate on.
 DEEPGRAM_DICTATION = "&punctuate=true&dictation=true"
@@ -36,8 +40,11 @@ def dictation_goal(words: str, first: bool) -> str:
 
 
 class Controls:
-    def __init__(self, path: Path = settings.PATH) -> None:
+    def __init__(self, path: Path = settings.PATH, first_run_setup: bool = False) -> None:
+        """With `first_run_setup`, a missing settings file starts the spoken setup (front ends pass
+        settings.FIRST_RUN_SETUP; tests leave it off)."""
         self.path = path
+        self.setup = Setup() if first_run_setup and not path.exists() else None
         self.settings = settings.load(path)
         self.last = ""  # the last line spoken
         self.dictating = False
@@ -55,8 +62,17 @@ class Controls:
         """A line the front end speaks: what "repeat that" says next."""
         self.last = line
 
+    def greeting(self) -> str | None:
+        """What a front end says as it starts: setup's first question on a first run, else nothing."""
+        return self.setup.question() if self.setup else None
+
     def handle(self, words: str) -> Reply:
+        if self.setup:
+            return self._answer(self.setup, words)
         command = parse(words)
+        if isinstance(command, SetUp):
+            self.setup, self.dictating = Setup(), False
+            return Reply(say=self.setup.question())
         if isinstance(command, Speed):
             before = self.settings.speed
             self._save(speed=command.apply(before))
@@ -76,6 +92,16 @@ class Controls:
             self.dictated += 1
             return Reply(goal=dictation_goal(words, self.dictated == 1), say=words if self.settings.echo else None)
         return Reply(goal=words)
+
+    def _answer(self, setup: Setup, words: str) -> Reply:
+        """One answer to the spoken setup. Its end is saved even with nothing changed, so a first run is over."""
+        turn = setup.handle(words, self.settings)
+        if turn.settings != self.settings or turn.over:
+            self.settings = turn.settings
+            settings.save(self.settings, self.path)
+        if turn.over:
+            self.setup = None
+        return Reply(say=turn.say)
 
     def _save(self, **changes: float | bool) -> None:
         self.settings = replace(self.settings, **changes)
