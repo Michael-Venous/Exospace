@@ -102,6 +102,18 @@ class CompletionOrderingTests(unittest.TestCase):
         self.assertEqual(list(ex.shared.queue), [{'key': ['CTRL', 'S']}, {'say': 'Saved.'}])
         self.assertEqual(brain.said, [])
 
+    def test_cancel_turn_drops_words_streamed_for_a_box_command(self):
+        ex = executor()
+        brain = Brain.__new__(Brain)
+        brain.executor, brain.shared, brain.cond = ex, ex.shared, ex.cond
+        brain.cancel_call = threading.Event()
+        brain.words, brain.speaking, brain.dirty = "i'll type my password", True, True
+        ex.shared.queue.append({'click': 'the password field'})
+        brain.cancel_turn()
+        self.assertEqual((brain.words, brain.speaking, brain.dirty), ('', False, False))
+        self.assertEqual(list(ex.shared.queue), [])
+        self.assertTrue(brain.cancel_call.is_set() and ex.shared.finished)
+
     def test_no_terminal_report_while_the_user_is_still_speaking(self):
         ex = executor()
         brain = Brain.__new__(Brain)

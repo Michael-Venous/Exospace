@@ -362,8 +362,7 @@ def main() -> None:
                             agent.brain.hear(reply.goal, speaking=False)
                         else:  # nothing heard, a command for the box or private mode: the agent drops the words
                             requests.pop()
-                            if hasattr(agent.brain,'cancel_turn'):
-                                agent.brain.cancel_turn()
+                            agent.brain.cancel_turn()  # both queues cut the call the streamed words started
                         if reply and reply.say:
                             print(f"  box: {reply.say}", flush=True)
                             controls.said(reply.say)

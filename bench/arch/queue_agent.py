@@ -502,6 +502,16 @@ class Brain(threading.Thread):
                 self.conversation.append({"user": self.words})
             self.words, self.speaking = "", False
 
+    def cancel_turn(self) -> None:
+        """Drop the request being spoken (a command for the box, private mode, nothing heard): its words were
+        streamed while the user talked, so the call in flight is cut and nothing it queued runs."""
+        with self.cond:
+            self.words, self.speaking, self.dirty = "", False, False
+            self.shared.queue.clear()
+            self.shared.finished = True
+            self.cancel_call.set()
+            self.cond.notify_all()
+
     def busy(self) -> bool:
         """Still working: speech pending, a call running, or the executor with something to do."""
         with self.cond:
