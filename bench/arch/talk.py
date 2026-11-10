@@ -6,6 +6,8 @@ While Home is held the microphone streams (pw-record) to Deepgram, starting half
 0.1 s) and the request is complete. The agent acts on the screen through the uinput keyboard and mouse; what it says
 or asks is spoken back by Piper on the laptop (no key, about 0.05 s a sentence). Holding Home again while it works is
 a new request: the newest wins. The agent's own virtual keyboard is never listened to.
+A command for the box itself ("talk faster", "repeat that": brain.voice.commands) is answered aloud here, and the
+agent drops those words. The talking speed is kept across restarts (brain.voice.settings).
 Home is withheld from the foreground app; other keys pass through.
 Reading the keyboard needs the `input` group. Ctrl+C stops.
 
@@ -30,12 +32,13 @@ import wave
 from collections import deque
 from pathlib import Path
 
-from piper import PiperVoice
+from piper import PiperVoice, SynthesisConfig
 from websockets.sync.client import connect
 
 from bench.arch.laptop import SESSION, LaptopTarget
 from bench.arch.queue_agent import QueueAgent
 from brain.voice import button
+from brain.voice.controls import Controls
 from brain.voice.talk_key import EVENT, PassThrough, keyboards
 
 RATE = 16000
@@ -159,12 +162,13 @@ class Speaker:
             if self.player is not None and self.player.poll() is None:
                 self.player.terminate()
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, speed: float = 1.0) -> None:
+        """Speak `text` at `speed` times normal (Piper stretches each phoneme by 1/speed)."""
         with self.lock:
             generation = self.generation
         sound = io.BytesIO()
         with wave.open(sound, "wb") as out:
-            self.voice.synthesize_wav(text, out)
+            self.voice.synthesize_wav(text, out, syn_config=SynthesisConfig(length_scale=1 / speed))
         with self.lock:
             if generation != self.generation:
                 return
@@ -185,7 +189,7 @@ def main() -> None:
                          "then log out and back in.") from None
     pi = os.environ.get("EXO_TARGET") == "pi"  # the real rig: capture card + Pico, the talk keyboard on the Pi
     env = dict(os.environ) if pi else {**os.environ, **SESSION}
-    speaker, mic = Speaker(env), Mic(env)
+    speaker, mic, controls = Speaker(env), Mic(env), Controls()
     session = LOGS / time.strftime("%Y%m%d-%H%M%S")  # each call's screenshot and Jev's log land here
     session.mkdir(parents=True, exist_ok=True)
     if pi:
@@ -215,7 +219,8 @@ def main() -> None:
                     spoken += 1
                     continue
                 print(f"  agent: {said[spoken]}", flush=True)
-                speaker.say(said[spoken])
+                controls.said(said[spoken])
+                speaker.say(said[spoken], controls.speed)
                 spoken += 1
             time.sleep(0.2)
 
@@ -327,13 +332,19 @@ def main() -> None:
                                 agent.control.requests[requests[-1]['request_id']]['released_at'] = released
                         words, talking = talking.finish(), None
                         print(f"[{released:.2f}] you: {words or '(nothing heard)'}", flush=True)
-                        if words:
+                        reply = controls.handle(words) if words else None
+                        if reply and reply.goal:
                             requests[-1].update(released=released, words=words)
-                            agent.brain.hear(words, speaking=False)
-                        else:
+                            agent.brain.hear(reply.goal, speaking=False)
+                        else:  # nothing heard, or a command for the box: the agent drops the words
                             requests.pop()
                             if hasattr(agent.brain,'cancel_turn'):
                                 agent.brain.cancel_turn()
+                        if reply and reply.say:
+                            print(f"  box: {reply.say}", flush=True)
+                            controls.said(reply.say)
+                            threading.Thread(target=speaker.say, args=(reply.say, controls.speed),
+                                             daemon=True).start()
     except KeyboardInterrupt:
         pass
     finally:
