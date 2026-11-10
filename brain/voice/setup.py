@@ -10,6 +10,7 @@ saved as it is made, and nothing said during setup reaches the agent.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from enum import IntEnum
 
@@ -85,10 +86,12 @@ def talk_level(text: str) -> Talk | None:
 
 
 class Setup:
-    """One run through the setup steps; `handle` takes each answer in turn."""
+    """One run through the setup steps; `handle` takes each answer in turn. `name_computer` keeps the name given
+    for this computer (its profile, brain.voice.profiles)."""
 
-    def __init__(self) -> None:
+    def __init__(self, name_computer: Callable[[str], None]) -> None:
         self.step = Step.WELCOME
+        self.name_computer = name_computer
 
     def question(self) -> str:
         return QUESTIONS[self.step]
@@ -112,6 +115,7 @@ class Setup:
             name = computer_name(words)
             if not name:
                 return Turn(self.question(), current)
+            self.name_computer(name)
             return self._next(f"I'll call this computer {name}.", replace(current, computer=name))
         level = talk_level(text)
         if level is None:
