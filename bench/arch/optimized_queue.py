@@ -15,6 +15,7 @@ from typing import Callable
 
 import httpx
 
+from bench.arch import credentials
 from bench.arch.confirm import IrreversibleCheck, candidate
 from bench.arch.frames import PLANNER_PIXELS, POINTER_PIXELS, fit_jpeg, fit_scale
 from bench.arch.queue_control import Control, Planned, Superseded, TimedTarget, changed, thumbnail
@@ -90,7 +91,10 @@ Rules
   ("the message box at the bottom"), not by its placeholder text, which often repeats a name shown elsewhere.
 - Name windows by their title bar. A window behind another is still open.
 - Never repeat something that may already have worked (save, send, create, launch, paste): check first.
-- Never type passwords or other credentials (PINs, card numbers, security codes): ask the user to type them.
+- Never type passwords or other credentials (PINs, card numbers, security codes); typing into such a field is
+  refused. At a login or password field, first use the device's password manager (its autofill shortcut if the
+  device names one, else click the field and pick the browser's saved password) or a passkey, Windows Hello or
+  Touch ID prompt the user can approve. If none works, {"ask":"Please type your password, then say done."}
 - Don't ask before sending, deleting, paying, posting or submitting: just send that input. Such an input is held
   and the user is asked to approve it.
 - While something loads, wait with until; don't click or reload again.
@@ -226,6 +230,12 @@ class OptimizedExecutor(Executor):
             # {"type":"born","status":"answer"} typed "born" into the page: an answer mixed into an input.
             return 'error', ('status only goes with say ({"say":"...","status":"answer"}); an action never has one. '
                              'Nothing was sent: send the action, or the answer, on its own.')
+        if kind == 'type':  # the credential guard: never type into a password, PIN, card or code field
+            with self.cond:
+                sent = [r.action for r in self.shared.log[self.shared.turn_start:] if r.result == 'done']
+            if credentials.refuses(action, sent):
+                c.event('credential-guard', field=credentials.typing_target(action, sent))
+                return 'error', credentials.REFUSAL
         # Confirm before act, ahead of every branch that sends input (close shortcuts, hover, triple_click, held
         # clicks, drag, the base handler): none of them reaches the HID unjudged.
         held = self._confirm(action)

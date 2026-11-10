@@ -11,10 +11,11 @@ import httpx
 import numpy as np
 
 from bench.arch.confirm import Verdict, candidate, is_yes
+from bench.arch.credentials import is_secret_field, typing_target
 from bench.arch.optimized_queue import PROMPT, Planned, Superseded, create
 from bench.arch.openrouter_study import ModelHTTPError
 from bench.arch.pointer import Pointer
-from bench.arch.queue_agent import RUNAWAY, Brain
+from bench.arch.queue_agent import RUNAWAY, Brain, Record
 from bench.arch.queue_control import changed, thumbnail
 from brain.cancel import CancelToken
 
@@ -665,5 +666,61 @@ class ConfirmTests(unittest.TestCase):
         self.assertEqual(self.sent(),[])
     def test_the_prompt_never_types_credentials(self):
         self.assertIn('Never type passwords or other credentials',PROMPT)
+        self.assertIn('password manager',PROMPT)
+        self.assertIn('{"ask":"Please type your password, then say done."}',PROMPT)
+
+
+class CredentialGuardTests(unittest.TestCase):
+    """The agent never types into a password, PIN, card number or code field (issue #27)."""
+    setUp,tearDown,plan=ControlTests.setUp,ControlTests.tearDown,ControlTests.plan
+    def typed(self):
+        return [x for x in self.target.sent if x['op']=='type']
+    def test_secret_fields_are_named(self):
+        for label in ('the Password box','Enter password','passcode','the PIN field','Enter PIN','your pin',
+                      'pin code','CVV','the CVC box','security code','Card number','the credit card field',
+                      'one-time code','2FA code','the verification code box','authenticator code','Client secret',
+                      'the passphrase field','OTP'):
+            self.assertTrue(is_secret_field(label),label)
+    def test_ordinary_fields_are_not_secret(self):
+        for label in ('the search box','Pinterest','the pinned tab','Pin tab','spinner','the message box',
+                      'Email or phone','the username field','the email box on the Reset password page',
+                      'search passwords','the address bar','Pin to taskbar','compass',''):
+            self.assertFalse(is_secret_field(label),label)
+    def test_the_field_is_into_or_the_last_click(self):
+        self.assertEqual(typing_target({'type':'x','into':'Password'},[{'click':'Email'}]),'Password')
+        self.assertEqual(typing_target({'type':'x'},[{'click':'Password'},{'key':['CTRL','A']}]),'Password')
+        self.assertEqual(typing_target({'type':'x'},[{'click':'Password'},{'double_click':'Email'}]),'Email')
+        self.assertEqual(typing_target({'type':'x'},[{'key':['TAB']}]),'')
+    def test_typing_into_a_password_field_is_refused_and_sends_nothing(self):
+        self.ex._find=Mock(return_value=(.5,.5))
+        p=self.plan({'type':'hunter2','into':'the Password field'})
+        result,detail=self.ex._do(p.action)
+        self.assertEqual(result,'error')
+        self.assertIn('password manager',detail)
+        self.assertIn('Please type your password, then say done.',detail)
+        self.assertFalse([x for x in self.target.sent if x['op']!='release_all'])
+        self.ex._find.assert_not_called()
+        guard=[e for e in self.c.events if e['kind']=='credential-guard'][-1]
+        self.assertEqual(guard['field'],'the Password field')
+        self.assertNotIn('hunter2',json.dumps(list(self.c.events)))
+    def test_typing_after_clicking_a_pin_field_is_refused(self):
+        self.ex._find=Mock(return_value=(.5,.5))
+        p=self.plan({'click':'the PIN box'})
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+        self.agent.shared.log.append(Record(0.0,p.action,'done'))  # run() logs each sent input
+        self.assertEqual(self.ex._do({'type':'4321'})[0],'error')
+        self.assertEqual(self.typed(),[])
+    def test_a_password_from_an_earlier_request_does_not_block_this_one(self):
+        self.agent.shared.log.append(Record(0.0,{'click':'the Password field'},'done'))
+        p=self.plan({'type':'lofi'})  # a new request: its own clicks only
+        self.ex._find=Mock(return_value=(.5,.5))
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+    def test_usernames_and_autofill_go_through(self):
+        self.ex._find=Mock(return_value=(.5,.5))
+        p=self.plan({'type':'maria@example.com','into':'Email or phone'})
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+        self.assertEqual(self.ex._do({'key':['CTRL','SHIFT','L']})[0],'done')  # Bitwarden's autofill
+        self.assertEqual(self.ex._do({'click':'the Password field'})[0],'done')  # a click shows saved passwords
+        self.assertEqual([x['text'] for x in self.typed()],['maria@example.com'])
 
 if __name__=='__main__':unittest.main()
