@@ -49,7 +49,7 @@ class PiRigTests(unittest.TestCase):
             self.agent = create(self.target, "deepseek/deepseek-v4.1-flash-1017", "", "test", Path(self.tmp.name), "")
         self.ex, self.c = self.agent.executor, self.agent.control
         self.addCleanup(self.target.close)
-        self.addCleanup(lambda: (self.ex.checks.close(), self.agent.jev.close(), self.agent.brain.client.close(),
+        self.addCleanup(lambda: (self.ex.checks.close(), self.ex.gate.close(), self.agent.jev.close(), self.agent.brain.client.close(),
                                  self.c.events_log.close()))
 
     def run_action(self, action, at=(.5, .5)):

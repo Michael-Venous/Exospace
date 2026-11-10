@@ -22,7 +22,7 @@ class ServeAgentTests(unittest.TestCase):
              patch("bench.arch.optimized_queue.OptimizedExecutor.start"), \
              patch("bench.arch.optimized_queue.OptimizedBrain.start"):
             self.agent = create(Target(), "deepseek/deepseek-v4.1-flash-1017", "", "test", self.dir, "")
-        self.addCleanup(lambda: (self.agent.executor.checks.close(), self.agent.jev.close(),
+        self.addCleanup(lambda: (self.agent.executor.checks.close(), self.agent.executor.gate.close(), self.agent.jev.close(),
                                  self.agent.brain.client.close(), self.agent.control.events_log.close()))
         self.events = serve_agent.Events()
         self.seen = []

@@ -10,7 +10,8 @@ from unittest.mock import Mock, patch
 import httpx
 import numpy as np
 
-from bench.arch.optimized_queue import Planned, Superseded, create
+from bench.arch.confirm import Verdict, candidate, is_yes
+from bench.arch.optimized_queue import PROMPT, Planned, Superseded, create
 from bench.arch.openrouter_study import ModelHTTPError
 from bench.arch.pointer import Pointer
 from bench.arch.queue_agent import RUNAWAY, Brain
@@ -40,9 +41,12 @@ class ControlTests(unittest.TestCase):
              patch('bench.arch.optimized_queue.OptimizedBrain.start'):
             self.agent=create(self.target,'deepseek/deepseek-v4.1-flash-1017','','test',Path(self.tmp.name),'')
         self.c,self.brain,self.ex=self.agent.control,self.agent.brain,self.agent.executor
+        # No network: an input the prefilter picks (ENTER) is judged reversible unless a test says otherwise.
+        self.ex.gate.judge=Mock(return_value=Verdict('reversible',0.05,'Search'))
     def tearDown(self):
         self.brain.client.close()
         self.ex.checks.close()
+        self.ex.gate.close()
         self.agent.jev.close()
         self.c.events_log.close()
         self.tmp.cleanup()
@@ -525,5 +529,137 @@ class PointingServiceTests(unittest.TestCase):
             self.assertEqual(ask.call_count,1)
             self.assertEqual(pointer.client.max_tokens,128)
         finally:pointer.close()
+
+
+class ConfirmTests(unittest.TestCase):
+    """Confirm before act: a possibly irreversible input waits for the user's spoken yes."""
+    setUp,tearDown,plan=ControlTests.setUp,ControlTests.tearDown,ControlTests.plan
+    def judged(self, decision, score, effect=''):
+        self.ex.gate.judge=Mock(return_value=Verdict(decision,score,effect))
+    def sent(self):
+        return [x for x in self.target.sent if x['op']!='release_all']
+    def held_enter(self):
+        self.judged('irreversible',.92,'Send the reply to Maria')
+        p=self.plan({'key':['ENTER']})
+        self.assertEqual(self.ex._do(p.action)[0],'asked')
+        return p
+    def answer(self, words):
+        self.brain.end_turn()
+        self.brain.hear(words,False)
+        self.agent.cancel.reset()
+        self.c.observe(self.target.grab())
+        self.ex.active_plan=Planned({},self.c.epoch,self.agent.shared.request,self.c.view)
+    def test_enter_in_a_chat_compose_field_asks_and_sends_nothing(self):
+        p=self.held_enter()
+        self.assertEqual(self.sent(),[])
+        self.assertEqual(self.brain.said[-1],'Send the reply to Maria? Say yes or no.')
+        self.assertEqual(self.c.requests[p.request]['status'],'asked')
+        self.assertTrue(self.agent.shared.finished)
+        gate=[e for e in self.c.events if e['kind']=='gate'][-1]
+        self.assertEqual((gate['decision'],gate['input']),('irreversible',{'key':['ENTER']}))
+    def test_enter_in_a_search_box_is_sent(self):
+        p=self.plan({'key':['ENTER']})
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+        self.assertEqual([x['op'] for x in self.sent()],['key'])
+        self.assertEqual(self.ex.gate.judge.call_count,1)
+    def test_clicking_send_asks(self):
+        self.judged('irreversible',.88,'Send the email to John')
+        p=self.plan({'click':'the Send button'})
+        self.ex._find=Mock(return_value=(.5,.5))
+        self.assertEqual(self.ex._do(p.action)[0],'asked')
+        self.assertEqual(self.sent(),[])
+        self.ex._find.assert_not_called()  # judged before it is even placed
+    def test_an_unsure_or_failed_classifier_asks(self):
+        for verdict in (Verdict('unsure',.4,'Submit the form'),Verdict('error',None,'')):
+            self.ex.gate.judge=Mock(return_value=verdict)
+            p=self.plan({'key':['CTRL','ENTER']})
+            self.assertEqual(self.ex._do(p.action)[0],'asked')
+        self.assertEqual(self.sent(),[])
+        self.assertIn('Should I go ahead? Say yes or no.',self.brain.said[-1])
+    def test_a_classifier_error_is_a_question_not_a_send(self):
+        from bench.arch.confirm import IrreversibleCheck
+        check=IrreversibleCheck([],'qwen','host','test')
+        try:
+            check.client.call=Mock(side_effect=httpx.ReadTimeout('slow'))
+            self.assertEqual(check.judge(b'jpeg','send it',{'key':['ENTER']},[]).decision,'error')
+            check.client.call=Mock(return_value=({'observed':'x','irreversible':'no','score':'n/a','effect':''},{}))
+            self.assertEqual(check.judge(b'jpeg','send it',{'key':['ENTER']},[]).decision,'error')
+        finally:check.close()
+    def test_an_ordinary_click_makes_no_extra_model_call(self):
+        self.ex.gate.judge=Mock(side_effect=AssertionError('extra model call'))
+        p=self.plan({'click':'the Downloads folder'})
+        self.ex._find=Mock(return_value=(.5,.5))
+        self.assertEqual(self.ex._do(p.action)[0],'done')
+        for action in ({'type':'hello Maria'},{'key':['CTRL','L']},{'scroll':3}):
+            self.assertEqual(self.ex._do(action)[0],'done')
+    def test_delete_right_after_typing_edits_the_text(self):
+        self.assertIsNone(candidate({'key':['DELETE']},after_typing=True))
+        self.assertIsNotNone(candidate({'key':['DELETE']},after_typing=False))
+        self.assertIsNotNone(candidate({'key':['SHIFT','DELETE']},after_typing=True))
+        self.assertIsNotNone(candidate({'type':'thanks!\n'},after_typing=False))
+    def test_every_line_break_counts_as_enter(self):
+        for text in ('hi\r','hi\r\nthere','hi\vthere','hi\fthere','hi there','hi '):
+            self.assertIsNotNone(candidate({'type':text},after_typing=False),repr(text))
+        self.assertIsNone(candidate({'type':'hello Maria'},after_typing=False))
+    def test_destructive_key_combos_are_judged_and_text_editing_is_not(self):
+        for keys in (['GUI','BACKSPACE'],['CMD','BACKSPACE'],['CTRL','SHIFT','DELETE'],['CTRL','SHIFT','BACKSPACE'],
+                     ['SHIFT','DELETE'],['CTRL','ENTER'],['RETURN']):
+            self.assertIsNotNone(candidate({'key':keys},after_typing=True),keys)
+        for keys in (['BACKSPACE'],['CTRL','BACKSPACE'],['CTRL','A'],['GUI']):
+            self.assertIsNone(candidate({'key':keys},after_typing=False),keys)
+    def test_sibling_click_kinds_and_drags_to_the_trash_are_judged(self):
+        for action in ({'right_click':'the Delete item'},{'triple_click':'the Send row'},
+                       {'click':'Send','hold':['SHIFT']},{'drag':['report.pdf','the Trash']},
+                       {'drag':['the old file','the recycle bin']},{'drag':['Delete me','the folder']}):
+            self.assertIsNotNone(candidate(action,after_typing=False),action)
+        self.assertIsNone(candidate({'drag':['the slider knob','the right end']},after_typing=False))
+    def test_held_sibling_inputs_send_nothing(self):
+        self.target.features=frozenset({'triple_click','hold'})
+        self.ex._find=Mock(return_value=(.5,.5))
+        for action in ({'triple_click':'the Send row'},{'right_click':'Delete'},{'drag':['report.pdf','the Trash']},
+                       {'click':'Send','hold':['CTRL']},{'key':['GUI','BACKSPACE']},{'type':'ok\r'}):
+            self.judged('irreversible',.9,'Delete the file')
+            p=self.plan(action)
+            self.assertEqual(self.ex._do(p.action)[0],'asked',action)
+        self.assertEqual(self.sent(),[])
+        self.ex._find.assert_not_called()
+    def test_yes_approves_only_the_held_input_once(self):
+        self.held_enter()
+        self.answer('Yeah, go ahead.')
+        self.assertIn('Send exactly this input now',self.c.approvals.note(self.agent.shared.request))
+        self.ex.gate.judge=Mock(side_effect=AssertionError('the approved input is not judged again'))
+        self.assertEqual(self.ex._do({'key':['ENTER']})[0],'done')
+        self.assertEqual([x['op'] for x in self.sent()],['key'])
+        self.judged('irreversible',.9,'Send the reply to Maria')
+        self.assertEqual(self.ex._do({'key':['ENTER']})[0],'asked')  # once: a second send asks again
+        self.assertEqual(len(self.sent()),1)
+        answers=[e for e in self.c.events if e['kind']=='gate-answer']
+        self.assertEqual((answers[-1]['answer'],answers[-1]['approved']),('Yeah, go ahead.',True))
+    def test_yes_does_not_approve_a_different_input(self):
+        self.held_enter()
+        self.answer('yes')
+        self.judged('irreversible',.9,'Delete the folder')
+        self.ex._find=Mock(return_value=(.5,.5))
+        self.assertEqual(self.ex._do({'click':'Delete folder'})[0],'asked')
+        self.assertEqual(self.sent(),[])
+    def test_a_yes_to_an_earlier_request_does_not_approve_a_new_one(self):
+        self.held_enter()
+        self.answer('open firefox')  # a new request in between drops the held input
+        self.answer('yes')
+        self.judged('irreversible',.9,'Send the reply to Maria')
+        self.assertEqual(self.ex._do({'key':['ENTER']})[0],'asked')
+        self.assertEqual(self.sent(),[])
+    def test_anything_but_a_clear_yes_drops_the_held_input(self):
+        for words in ('no','yes but send it to John instead','wait','please'):
+            self.assertFalse(is_yes(words),words)
+        for words in ('yes','Yeah.','go ahead','do it','send it','yes please, do it','OK'):
+            self.assertTrue(is_yes(words),words)
+        self.held_enter()
+        self.answer('no')
+        self.judged('irreversible',.9,'Send the reply to Maria')
+        self.assertEqual(self.ex._do({'key':['ENTER']})[0],'asked')
+        self.assertEqual(self.sent(),[])
+    def test_the_prompt_never_types_credentials(self):
+        self.assertIn('Never type passwords or other credentials',PROMPT)
 
 if __name__=='__main__':unittest.main()

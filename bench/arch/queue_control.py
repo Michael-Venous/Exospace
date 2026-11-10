@@ -11,6 +11,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from bench.arch.confirm import Approvals
+
 THUMB = (320, 200)  # change detection: about 9x9 laptop pixels per thumbnail pixel
 CHANGED_LEVEL = 24  # a thumbnail pixel this much brighter or darker has changed
 # Changed thumbnail pixels that count as a new view. Measured on a 2880x1800 frame: a blinking caret 3, one
@@ -54,6 +56,7 @@ class Control:
         self.calls = 0
         self.unanswered = 0  # inputs in a row after which the screen didn't change (a control that doesn't respond)
         self.corrected = False  # this request's report was already corrected once after the check disagreed
+        self.approvals = Approvals()  # the input held for the user's yes, and that yes
         self.frame = None
         self.thumb = None
         self.changed_at = self.started
