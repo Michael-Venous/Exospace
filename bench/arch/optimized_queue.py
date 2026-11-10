@@ -15,6 +15,7 @@ from typing import Callable
 
 import httpx
 
+from bench.arch.confirm import IrreversibleCheck, candidate
 from bench.arch.frames import PLANNER_PIXELS, POINTER_PIXELS, fit_jpeg, fit_scale
 from bench.arch.queue_control import Control, Planned, Superseded, TimedTarget, changed, thumbnail
 from bench.arch.openrouter_study import ModelHTTPError, OpenRouterJSON
@@ -89,6 +90,9 @@ Rules
   ("the message box at the bottom"), not by its placeholder text, which often repeats a name shown elsewhere.
 - Name windows by their title bar. A window behind another is still open.
 - Never repeat something that may already have worked (save, send, create, launch, paste): check first.
+- Never type passwords or other credentials (PINs, card numbers, security codes): ask the user to type them.
+- Don't ask before sending, deleting, paying, posting or submitting: just send that input. Such an input is held
+  and the user is asked to approve it.
 - While something loads, wait with until; don't click or reload again.
 - If a step didn't work, try another way (keyboard, another label) instead of repeating it. If a control
   doesn't respond to two different tries, stop and say blocked with what the screen shows (the option may not
@@ -157,6 +161,7 @@ class ClaimChecks(ScreenChecks):
 
 class OptimizedExecutor(Executor):
     control: Control
+    gate: IrreversibleCheck
     active_plan: Planned | None = None
 
     def _where(self, point: tuple[float,float]) -> str:
@@ -254,9 +259,46 @@ class OptimizedExecutor(Executor):
             c.attempts[key] += 1
             if c.attempts[key] > limit:
                 return 'not_shown', 'This same input already ran without observable progress. Inspect or use another approach.'
+        held = self._confirm(action)
+        if held is not None:
+            return held
         if kind == 'key' and self._opens_launcher(action['key']) and getattr(self.controller.hid, 'launcher_settles', False):
             return self._open_launcher(action)
         return super()._do(action)
+
+    def _confirm(self, action: dict) -> tuple[str,str] | None:
+        """Confirm before act (bench/arch/confirm.py): None sends the input. An input that could commit something
+        (Enter, Delete, a click on "Send") gets one Qwen look first, unless it is the one the user just approved;
+        irreversible, unsure or a failed look holds it and ends the request with a yes-or-no question."""
+        c = self.control
+        with self.cond:
+            mine = self.shared.log[self.shared.turn_start:]
+            what = candidate(action, bool(mine) and 'type' in mine[-1].action and mine[-1].result == 'done')
+            if what is None:
+                return None
+            if self.active_plan is None:
+                raise Superseded('the plan was cancelled before input')
+            request = self.active_plan.request
+            if c.approvals.take(request, action):
+                c.event('gate', input=action, decision='approved')
+                return None
+            goal, recent = self.shared.goal, [r.action for r in mine if r.result == 'done']
+        jpeg = fit_jpeg(self.controller.capture.grab(), POINTER_PIXELS, 85)
+        started = time.monotonic()
+        verdict = self.controller.cancel.run(lambda: self.gate.judge(jpeg, goal, action, recent))
+        with self.cond:
+            c.event('gate', input=action, decision=verdict.decision, score=verdict.score, effect=verdict.effect,
+                    duration_s=round(time.monotonic()-started, 4))
+            if verdict.decision == 'reversible':
+                return None
+            if self.active_plan is None or not c.valid(self.active_plan.epoch):
+                return 'superseded', 'the plan was stopped before the input was sent'
+            question = (f'{verdict.effect}? Say yes or no.' if verdict.effect else
+                        f"This might send, delete or submit something ({what}). Should I go ahead? Say yes or no.")
+            c.approvals.hold(request, action, question)
+            c.finish('asked', question)
+        return 'asked', (f'Not sent ({verdict.decision}): it may not be undone, so the user was asked "{question}" '
+                         'If they say yes, send exactly this input again.')
 
     @staticmethod
     def _opens_launcher(keys) -> bool:
@@ -509,6 +551,9 @@ class OptimizedBrain(Brain):
             self.dirty = not speaking
             self.active_until = time.monotonic()+8
             if not speaking:
+                approved = self.control.approvals.answer(self.shared.request, words)
+                if approved is not None:
+                    self.control.event('gate-answer', answer=words, approved=approved)
                 now = round(time.monotonic()-self.started,4)
                 self.control.requests[self.shared.request].setdefault('released_at',now)
                 self.control.requests[self.shared.request].update(transcript_final_at=now,status='working')
@@ -535,7 +580,7 @@ class OptimizedBrain(Brain):
                     return
                 # One last call that may only report: the user hears what didn't respond, not a generic stop.
                 self.final_report = self.reported = True
-        self.note = FINAL_REPORT if self.final_report else ''
+        self.note = (FINAL_REPORT if self.final_report else '') + c.approvals.note(self.shared.request)
         try:
             super()._call()
             self.transient = 0
@@ -675,6 +720,7 @@ def create(target, model: str, effort: str, jev_key: str, log_dir: Path,
         agent.brain.loop_handler = lambda: control.finish('blocked', "I'm going in circles, so I've stopped. Tell me what to change.")
         agent.executor.strict_reports = True
         agent.executor.checks = ClaimChecks(agent.trace)
+        agent.executor.gate = IrreversibleCheck(agent.trace, QWEN_CHECK, QWEN_CHECK_HOST, os.environ['OPENROUTER_API_KEY'])
         agent.brain.observe = agent.executor.checks.observe
         def observed(frame):
             with agent.cond:
@@ -694,6 +740,7 @@ def create(target, model: str, effort: str, jev_key: str, log_dir: Path,
             control.invalidate()
         close()
         agent.executor.checks.close()
+        agent.executor.gate.close()
         control.save(log_dir/'control.json')
         control.events_log.close()
     agent.close=close_all
