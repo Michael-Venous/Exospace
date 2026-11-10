@@ -18,6 +18,8 @@ local = ["mss>=9.0", "pyautogui>=0.9.54"]
 browser = ["playwright>=1.50,<2"]
 # Voice layer: Deepgram relay (brain/voice/layer.py).
 voice = ["websockets>=13"]
+# Speech to text on the box instead of Deepgram, opt in with EXO_STT=local (brain/voice/local_stt.py).
+local-speech = ["faster-whisper>=1.0"]
 
 [tool.setuptools]
 packages = ["brain", "brain.agent", "brain.display", "brain.skills", "brain.voice"]
