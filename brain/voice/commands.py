@@ -1,5 +1,6 @@
 """Spoken commands meant for the box itself, not the agent: how fast it talks, "repeat that", dictation on and off,
-whether dictated words are read back, and "set up" (the spoken setup, brain.voice.setup).
+whether dictated words are read back, "set up" (the spoken setup, brain.voice.setup), and private mode ("I'll type
+my password": the box stops looking and listening until "done" or "cancel").
 
 Only a whole utterance counts ("talk faster", "Talk faster, please."), so a request that merely contains the words
 ("type talk faster in the doc") still goes to the agent. Case and punctuation don't matter: Deepgram adds both.
@@ -9,6 +10,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 MIN_SPEED, MAX_SPEED = 0.5, 5.0
 STEP = 1.25  # "faster" and "slower" multiply or divide the speed by this
@@ -55,7 +57,13 @@ class SetUp:
     """Start the spoken setup."""
 
 
-Command = Speed | Repeat | Dictate | Echo | SetUp
+@dataclass(frozen=True)
+class Private:
+    """The user will type something secret (a password) themselves: stop the agent, look and listen to nothing."""
+
+
+Command = Speed | Repeat | Dictate | Echo | SetUp | Private
+Leave = Literal["done", "cancel"]
 
 
 def normalize(words: str) -> str:
@@ -90,6 +98,15 @@ _FIXED: dict[str, Command] = {
     **{phrase: Echo(True) for phrase in ("echo on", "turn echo on", "turn on echo")},
     **{phrase: Echo(False) for phrase in ("echo off", "turn echo off", "turn off echo")},
     **{f"{verb}{space}up": SetUp() for verb in ("set", "start set", "run set") for space in (" ", "")},
+    **{f"{who} type {what}{end}": Private() for who in ("i ll", "i will", "let me")
+       for what in ("it", "my password", "the password", "it in", "my password in") for end in ("", " myself")},
+    **{phrase: Private() for phrase in ("private mode", "go private", "stop looking", "don t look")},
+}
+# The only words heard in private mode: "done" goes back to the agent's request, "cancel" back to listening.
+_LEAVE: dict[str, Leave] = {
+    **{phrase: "done" for phrase in ("done", "i m done", "i am done", "all done", "finished", "i m finished",
+                                     "i ve finished", "i have finished")},
+    **{phrase: "cancel" for phrase in ("cancel", "cancel that", "cancel it")},
 }
 _PATTERNS: list[tuple[re.Pattern[str], float]] = [  # (pattern, exponent on the number): slower means 1/n
     (re.compile(rf"{_VERB} at {_NUMBER}{_TIMES}(?: (?:the )?speed)?"), 1.0),
@@ -109,6 +126,11 @@ def parse(words: str) -> Command | None:
             number = _number(*match.groups())
             return Speed(rate=number ** exponent) if number > 0 else None
     return None
+
+
+def leave_private(words: str) -> Leave | None:
+    """In private mode, whether these words end it: "done" (the user typed it) or "cancel"; None for anything else."""
+    return _LEAVE.get(normalize(words))
 
 
 def speed_line(speed: float, before: float) -> str:

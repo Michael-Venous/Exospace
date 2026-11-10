@@ -11,6 +11,8 @@ agent drops those words. The talking speed is kept across restarts (brain.voice.
 each later utterance typed at the caret and read back, until "stop dictating" (brain.voice.controls). "Set up", or
 a first run with no settings file, starts the spoken setup (brain.voice.setup; EXO_FIRST_RUN_SETUP=0 skips it). A
 screen no computer profile places for sure is asked about aloud (brain.voice.profiles, brain.voice.plug_in).
+"I'll type my password" starts private mode: the agent is stopped, and until "done" or "cancel" nothing heard
+reaches it, is printed or is logged (brain.voice.controls).
 Home is withheld from the foreground app; other keys pass through.
 Reading the keyboard needs the `input` group. Ctrl+C stops.
 
@@ -341,7 +343,10 @@ def main() -> None:
                         agent.brain.end_turn()  # the last request is over; this is the next one
                         requests.append({"pressed": pressed, 'request_id':agent.shared.request})
                         # Dictated words go to the agent whole, on release, as a typing goal: never as they come.
-                        heard = (lambda words, speaking: None) if controls.dictating else agent.brain.hear
+                        # In private mode none go to it at all. Deepgram still hears this press (to catch "done"):
+                        # the microphone's audio leaves the laptop only while Home is held, as always.
+                        quiet = controls.dictating or controls.private
+                        heard = (lambda words, speaking: None) if quiet else agent.brain.hear
                         talking = Utterance(os.environ["DEEPGRAM_API_KEY"], mic, heard, controls.deepgram(DEEPGRAM))
                         print("listening...", flush=True)
                     elif value == 0 and talking is not None:
@@ -350,12 +355,12 @@ def main() -> None:
                             with agent.cond:
                                 agent.control.requests[requests[-1]['request_id']]['released_at'] = released
                         words, talking = talking.finish(), None
-                        print(f"[{released:.2f}] you: {words or '(nothing heard)'}", flush=True)
+                        print(f"[{released:.2f}] you: {controls.shown(words) or '(nothing heard)'}", flush=True)
                         reply = controls.handle(words) if words else None
                         if reply and reply.goal:
                             requests[-1].update(released=released, words=words)
                             agent.brain.hear(reply.goal, speaking=False)
-                        else:  # nothing heard, or a command for the box: the agent drops the words
+                        else:  # nothing heard, a command for the box or private mode: the agent drops the words
                             requests.pop()
                             if hasattr(agent.brain,'cancel_turn'):
                                 agent.brain.cancel_turn()

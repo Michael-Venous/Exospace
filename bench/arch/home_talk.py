@@ -6,7 +6,9 @@ letting go sends the whole request to POST /goal, or POST /stop when nothing was
 itself ("talk faster", "repeat that", "start dictating": brain.voice.commands) is answered here and never reaches
 the agent; while dictating, each request is a goal to type its words at the caret, read back aloud. A first run
 (or "set up") starts the spoken setup, answered here too (brain.voice.setup), as is the question of which computer
-this is when its screen matches no profile for sure (brain.voice.plug_in). What the agent says comes back on
+this is when its screen matches no profile for sure (brain.voice.plug_in). "I'll type my password" starts private
+mode (brain.voice.controls): the agent is stopped, and until "done" or "cancel" nothing heard reaches it or is
+printed. What the agent says comes back on
 GET /events and is spoken with Piper at the chosen speed, never while Home is held. The voice page and its Space
 key are a separate front end (`serve_laptop.sh --page`); this one never touches the page.
 """
@@ -62,16 +64,18 @@ class HomeTalk:
             self.held.set()
             self.speaker.stop()
             self.post("/listen")  # Home stops the agent at once and opens the next request, as in talk.py
+            # In private mode too: Deepgram still hears this press (to catch "done"), so the microphone stays
+            # closed except while Home is held, as always.
             self.talking = self.listen()
             print("listening...", flush=True)
         elif not down and self.talking is not None:
             words, self.talking = self.talking.finish(), None
             self.held.clear()
-            print(f"you: {words or '(nothing heard)'}", flush=True)
+            print(f"you: {self.controls.shown(words) or '(nothing heard)'}", flush=True)
             reply = self.controls.handle(words) if words else None
             if reply and reply.goal:
                 self.post("/goal", {"text": reply.goal})
-            else:  # nothing heard, or a command for the box: the request /listen opened is dropped
+            else:  # nothing heard, a command for the box or private mode: the request /listen opened is dropped
                 self.post("/stop")
             if reply and reply.say:
                 print(f"  box: {reply.say}", flush=True)

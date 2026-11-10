@@ -80,6 +80,31 @@ class HomeTalkTests(unittest.TestCase):
         self.assertEqual([c.args[0] for c in self.speaker.say.call_args_list],
                          ["Firefox is open.", "Done.", "Sorry, I couldn't do that."])
 
+    def test_private_mode_stops_the_agent_and_never_sends_or_prints_the_words(self):
+        with patch("builtins.print") as printed:
+            self.say("I'll type my password.")
+            self.assertEqual(self.sent, [("/listen", None), ("/stop", None)])
+            self.speaker.say.assert_called_with(
+                "I'm not looking or listening. Type it, then press the button and say done.", 1.0)
+            self.say("my password is hunter2")
+            self.say("open firefox")
+        self.assertNotIn("/goal", [path for path, _ in self.sent])
+        shown = " ".join(str(arg) for call in printed.call_args_list for arg in call.args)
+        self.assertNotIn("hunter2", shown)
+        self.assertNotIn("open firefox", shown)
+        self.assertIn("you: (private)", shown)
+        self.say("I'm done")
+        path, body = self.sent[-1]
+        self.assertEqual(path, "/goal")
+        self.assertTrue(body["text"].startswith("The user finished typing their password themselves."))
+
+    def test_cancel_leaves_private_mode_and_sends_nothing(self):
+        self.say("stop looking")
+        self.say("cancel")
+        self.assertNotIn("/goal", [path for path, _ in self.sent])
+        self.say("open firefox")
+        self.assertEqual(self.sent[-1], ("/goal", {"text": "open firefox"}))
+
     def test_an_agent_that_is_not_up_does_not_break_the_key(self):
         with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
             home_talk.post("/stop")  # reported, not raised
